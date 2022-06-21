@@ -1,0 +1,1 @@
+from ..strategies.SMACross import SmaCross
