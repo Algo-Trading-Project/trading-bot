@@ -13,6 +13,7 @@ import time
 import redshift_connector
 import pandas as pd
 import numpy as np
+import multiprocessing as mp
 
 #################################
 #      TRADING STRATEGIES       #
@@ -137,23 +138,27 @@ class BackTester:
         
         return backtest_results
 
-optimize_args_ichimoku_cloud = {
-    'tenkan_window':np.arange(5, 51, 5).tolist(),
-    'kijun_window':np.arange(10, 101, 10).tolist(),
-    'senkou_b_window':np.arange(24, 241, 24).tolist(),
-    'senkou_ab_period':np.arange(1, 4).tolist(),
-    'constraint':lambda x: (x.tenkan_window < x.kijun_window) and (x.tenkan_window < x.senkou_b_window) and (x.kijun_window < x.senkou_b_window)
-}
 
-symbol_ids = [
-    'ETH_USD_COINBASE', 'LINK_ETH_BINANCE', 'BNB_ETH_BINANCE',
-    'ADA_ETH_BINANCE', 'DOGE_ETH_YOBIT', 'EOS_ETH_BINANCE', 
-    'XRP_ETH_BINANCE', 'THETA_ETH_GATEIO', 'XLM_ETH_BINANCE', 
-    'XMR_ETH_BINANCE', 'ZEC_ETH_BINANCE', 'BCH_ETH_HITBTC',
-    'IOTA_ETH_BINANCE'
-]
+if __name__ == '__main__': 
+    mp.set_start_method('fork')
 
-b = BackTester(
+    optimize_args_ichimoku_cloud = {
+        'tenkan_window':np.arange(5, 5 * 10 + 1, 5).tolist(),
+        'kijun_window':np.arange(10, 10 * 10 + 1, 10).tolist(),
+        'senkou_b_window':np.arange(24, 24 * 10 + 1, 24).tolist(),
+        'senkou_ab_period':np.arange(1, 6).tolist(),
+        'constraint':lambda x: (x.tenkan_window < x.kijun_window) and (x.tenkan_window < x.senkou_b_window) and (x.kijun_window < x.senkou_b_window)
+    }
+
+    symbol_ids = [
+        'ETH_USD_COINBASE', 'LINK_ETH_BINANCE', 'BNB_ETH_BINANCE',
+        'ADA_ETH_BINANCE', 'DOGE_ETH_YOBIT', 'EOS_ETH_BINANACE',
+        'XRP_ETH_BINANCE', 'THETA_ETH_GATEIO', 'XLM_ETH_BINANCE',
+        'XMR_ETH_BINANCE', 'ZEC_ETH_BINANCE', 'BCH_ETH_HITBTC',
+        'IOTA_ETH_BINANCE'
+    ]
+
+    b = BackTester(
     symbol_ids = symbol_ids,
     start_date = '2019/06/19',
     end_date = '2022/06/19',
@@ -161,12 +166,11 @@ b = BackTester(
     optimize = True,
     optimize_dict = {
         IchimokuCloud:optimize_args_ichimoku_cloud
-    }
-)
+    })
 
-backtest_start = time.time()
-strat_results = b.evaluate_strategies()
-backtest_end = time.time()
+    backtest_start = time.time()
+    strat_results = b.evaluate_strategies()
+    backtest_end = time.time()
 
-print()
-print('time elapsed since backtest: {} mins'.format(round(abs(backtest_end - backtest_start) / 60.0, 2)))
+    print()
+    print('time elapsed since backtest: {} mins'.format(round(abs(backtest_end - backtest_start) / 60.0, 2)))
