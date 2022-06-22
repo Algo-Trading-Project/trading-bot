@@ -4,7 +4,7 @@ import numpy as np
 
 class IchimokuCloud(Strategy):
     ########### INDICATOR PARAMETERS ##################
-
+    
     # DEFAULT: 9, OPTIMAL: 18
     tenkan_window = 18
 
@@ -103,6 +103,10 @@ class IchimokuCloud(Strategy):
     def name():
         return 'IchimokuCloud'
 
+    def update_hyperparameters(params_dict):
+        for param_name, optimal_param_value in params_dict.items():
+            setattr(IchimokuCloud, param_name, optimal_param_value)
+
     def init(self):
         # Initiate parent classes
         super().init()
@@ -159,7 +163,7 @@ class IchimokuCloud(Strategy):
             self.position.close()
 
         # Open position--buy asset (this does not do shorting yet)
-        elif (not self.position) and entry_signal and (atr / close >= 0.02):
+        elif (not self.position) and entry_signal:
             # Trailing stop adjustment
             stop_loss = close - (atr * self.atr_stop_loss_multiplier)
             self.buy(sl = stop_loss)
