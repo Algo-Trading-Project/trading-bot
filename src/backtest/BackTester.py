@@ -179,10 +179,12 @@ if __name__ == '__main__':
     mp.set_start_method('fork')
 
     optimize_args_ichimoku_cloud = {
-        'tenkan_window':np.arange(5, 5 * 5 + 1, 5).tolist(),
-        'kijun_window':np.arange(10, 10 * 5 + 1, 10).tolist(),
-        'senkou_b_window':np.arange(24, 24 * 5 + 1, 24).tolist(),
+        'tenkan_window':np.arange(5, 5 * 3 + 1, 5).tolist(),
+        'kijun_window':np.arange(10, 10 * 3 + 1, 10).tolist(),
+        'senkou_b_window':np.arange(24, 24 * 3 + 1, 24).tolist(),
         'senkou_ab_period':np.arange(1, 6).tolist(),
+        'en_bar':np.arange(4, 9).tolist(),
+        'ex_bar':np.arange(4, 8).tolist(),
         'constraint':lambda x: (x.tenkan_window < x.kijun_window) and (x.tenkan_window < x.senkou_b_window) and (x.kijun_window < x.senkou_b_window)
     }
 
@@ -196,7 +198,7 @@ if __name__ == '__main__':
 
     b = BackTester(
         symbol_ids = symbol_ids,
-        start_date = '2019/06/19',
+        start_date = '2018/06/19',
         end_date = '2021/06/19',
         strategies = [IchimokuCloud],
         optimize = True,

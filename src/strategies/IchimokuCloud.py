@@ -1,10 +1,12 @@
 from backtesting import Strategy
+from backtesting.lib import crossover, cross
+
 import pandas as pd
 import numpy as np
 
 class IchimokuCloud(Strategy):
     ########### INDICATOR PARAMETERS ##################
-    
+
     # DEFAULT: 9, OPTIMAL: 18
     tenkan_window = 18
 
@@ -38,11 +40,6 @@ class IchimokuCloud(Strategy):
 
     # DEFAULT: 1, OPTIMAL: 7
     ex_bar = 4
-
-    # Fraction of available funds being put up for each trade
-
-    # DEFAULT: 1, OPTIMAL: ?
-    entry_size = 1
 
     ###################################################
 
@@ -129,7 +126,7 @@ class IchimokuCloud(Strategy):
 
         # List of position entry indicators
         entry_indicators = np.array([
-            (tenkan_sen > kijun_sen), # [1]: MACD crossover
+            crossover(tenkan_sen, kijun_sen), # [1]: MACD crossover
             (tenkan_sen > (senkou_span_a if senkou_span_a > senkou_span_b else senkou_span_b)), # [2]: conversion line over the high part of the cloud
             (tenkan_sen > (senkou_span_b if senkou_span_a > senkou_span_b else senkou_span_a)), # [3]: conversion line over the low part of the cloud
             (senkou_span_a > senkou_span_b), # [4]: green cloud
@@ -143,7 +140,7 @@ class IchimokuCloud(Strategy):
         
         # List of position exit indicators
         exit_indicators = np.array([
-            (tenkan_sen < kijun_sen),
+            (cross(tenkan_sen, kijun_sen) and not crossover(tenkan_sen, kijun_sen)) ,
             (tenkan_sen < senkou_span_a),
             (senkou_span_a < senkou_span_b),
             (close < senkou_span_a),
