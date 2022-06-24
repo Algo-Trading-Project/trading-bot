@@ -1,7 +1,7 @@
 #################################
 # ADDING PACKAGE TO PYTHON PATH #
 #################################
-from math impot ceil
+from math import ceil
 import sys
 import os
 
