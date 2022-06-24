@@ -1,4 +1,6 @@
 from backtesting import Strategy
+from backtesting.lib import crossover, cross
+
 import pandas as pd
 import numpy as np
 
@@ -38,11 +40,6 @@ class IchimokuCloud(Strategy):
 
     # DEFAULT: 1, OPTIMAL: 7
     ex_bar = 4
-
-    # Fraction of available funds being put up for each trade
-
-    # DEFAULT: 1, OPTIMAL: ?
-    entry_size = 1
 
     ###################################################
 
@@ -103,6 +100,10 @@ class IchimokuCloud(Strategy):
     def name():
         return 'IchimokuCloud'
 
+    def update_hyperparameters(params_dict):
+        for param_name, optimal_param_value in params_dict.items():
+            setattr(IchimokuCloud, param_name, optimal_param_value)
+
     def init(self):
         # Initiate parent classes
         super().init()
@@ -125,7 +126,7 @@ class IchimokuCloud(Strategy):
 
         # List of position entry indicators
         entry_indicators = np.array([
-            (tenkan_sen > kijun_sen), # [1]: MACD crossover
+            crossover(tenkan_sen, kijun_sen), # [1]: MACD crossover
             (tenkan_sen > (senkou_span_a if senkou_span_a > senkou_span_b else senkou_span_b)), # [2]: conversion line over the high part of the cloud
             (tenkan_sen > (senkou_span_b if senkou_span_a > senkou_span_b else senkou_span_a)), # [3]: conversion line over the low part of the cloud
             (senkou_span_a > senkou_span_b), # [4]: green cloud
@@ -139,7 +140,7 @@ class IchimokuCloud(Strategy):
         
         # List of position exit indicators
         exit_indicators = np.array([
-            (tenkan_sen < kijun_sen),
+            (cross(tenkan_sen, kijun_sen) and not crossover(tenkan_sen, kijun_sen)) ,
             (tenkan_sen < senkou_span_a),
             (senkou_span_a < senkou_span_b),
             (close < senkou_span_a),
@@ -159,7 +160,7 @@ class IchimokuCloud(Strategy):
             self.position.close()
 
         # Open position--buy asset (this does not do shorting yet)
-        elif (not self.position) and entry_signal and (atr / close >= 0.02):
+        elif (not self.position) and entry_signal:
             # Trailing stop adjustment
             stop_loss = close - (atr * self.atr_stop_loss_multiplier)
             self.buy(sl = stop_loss)
