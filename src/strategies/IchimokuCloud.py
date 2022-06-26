@@ -126,7 +126,7 @@ class IchimokuCloud(Strategy):
 
         # List of position entry indicators
         entry_indicators = np.array([
-            crossover(tenkan_sen, kijun_sen), # [1]: MACD crossover
+            crossover(self.tenkan_sen, self.kijun_sen), # [1]: MACD crossover
             (tenkan_sen > (senkou_span_a if senkou_span_a > senkou_span_b else senkou_span_b)), # [2]: conversion line over the high part of the cloud
             (tenkan_sen > (senkou_span_b if senkou_span_a > senkou_span_b else senkou_span_a)), # [3]: conversion line over the low part of the cloud
             (senkou_span_a > senkou_span_b), # [4]: green cloud
@@ -140,7 +140,7 @@ class IchimokuCloud(Strategy):
         
         # List of position exit indicators
         exit_indicators = np.array([
-            (cross(tenkan_sen, kijun_sen) and not crossover(tenkan_sen, kijun_sen)) ,
+            (cross(self.tenkan_sen, self.kijun_sen) and not crossover(self.tenkan_sen, self.kijun_sen)) ,
             (tenkan_sen < senkou_span_a),
             (senkou_span_a < senkou_span_b),
             (close < senkou_span_a),
