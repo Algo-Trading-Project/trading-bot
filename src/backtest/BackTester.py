@@ -1,7 +1,6 @@
 #################################
 # ADDING PACKAGE TO PYTHON PATH #
 #################################
-from math import ceil
 import sys
 import os
 
@@ -15,12 +14,13 @@ import redshift_connector
 import pandas as pd
 import numpy as np
 import multiprocessing as mp
+from math import ceil
 
 #################################
 #      TRADING STRATEGIES       #
 #################################
 from backtesting import Backtest
-from src.strategies.IchimokuCloud import IchimokuCloud
+from src.backtest.strategies.BlueMoonBull_0_run2 import BlueMoonBull_0
 
 class BackTester:
 
@@ -166,8 +166,7 @@ class BackTester:
                 stats_for_strat['asset_id_base'] = asset_id_base
                 stats_for_strat['asset_id_quote'] = asset_id_quote
                 stats_for_strat['exchange_id'] = exchange_id
-                stats_for_strat['strategy_name'] = strat.name()
-
+                stats_for_strat['strategy_name'] = optimal_strat_params_str
                 stats_for_strat_df = stats_for_strat[backtest_result_cols].to_frame().T
                 backtest_results = backtest_results.append(stats_for_strat_df, ignore_index = True)
 
@@ -179,33 +178,34 @@ if __name__ == '__main__':
     mp.set_start_method('fork')
 
     optimize_args_ichimoku_cloud = {
-        'tenkan_window':np.arange(5, 5 * 3 + 1, 5).tolist(),
-        'kijun_window':np.arange(10, 10 * 3 + 1, 10).tolist(),
-        'senkou_b_window':np.arange(24, 24 * 3 + 1, 24).tolist(),
-        'senkou_ab_period':np.arange(1, 6).tolist(),
-        'en_bar':np.arange(4, 9).tolist(),
-        'ex_bar':np.arange(4, 8).tolist(),
+        'tenkan_window':np.arange(9, 9 * 3 + 1, 9).tolist(),
+        'kijun_window':np.arange(26, 26 * 3 + 1, 26).tolist(),
+        'senkou_b_window':np.arange(52, 52 * 3 + 1, 52).tolist(),
+        'bollinger_sma_window':np.arange(24, 24 * 3 + 1, 24).tolist(),
+        # 'bollinger_window_std':np.arange(1, 4).tolist(),
+        'entry_bar':np.arange(9, 19, 4).tolist(),
+        'exit_bar':np.arange(9, 20, 4).tolist(),
         'constraint':lambda x: (x.tenkan_window < x.kijun_window) and (x.tenkan_window < x.senkou_b_window) and (x.kijun_window < x.senkou_b_window)
     }
 
     symbol_ids = [
         'ETH_USD_COINBASE', 'LINK_ETH_BINANCE', 'BNB_ETH_BINANCE',
-        'ADA_ETH_BINANCE', 'DOGE_ETH_YOBIT', 'EOS_ETH_BINANCE',
-        'XRP_ETH_BINANCE', 'THETA_ETH_GATEIO', 'XLM_ETH_BINANCE',
-        'XMR_ETH_BINANCE', 'ZEC_ETH_BINANCE', 'BCH_ETH_HITBTC',
-        'IOTA_ETH_BINANCE'
-    ]
+        'ADA_ETH_BINANCE', #'DOGE_ETH_YOBIT', 'EOS_ETH_BINANCE',
+    #     'XRP_ETH_BINANCE', 'THETA_ETH_GATEIO', 'XLM_ETH_BINANCE',
+    #     'XMR_ETH_BINANCE', 'ZEC_ETH_BINANCE', 'BCH_ETH_HITBTC',
+    #     'IOTA_ETH_BINANCE'
+     ]
 
     b = BackTester(
         symbol_ids = symbol_ids,
-        start_date = '2018/06/19',
+        start_date = '2019/06/19',
         end_date = '2021/06/19',
-        strategies = [IchimokuCloud],
+        strategies = [BlueMoonBull_0],
         optimize = True,
         optimize_dict = {
-            IchimokuCloud:optimize_args_ichimoku_cloud
+            BlueMoonBull_0:optimize_args_ichimoku_cloud
         },
-        pct_training_data = 0.5
+        pct_training_data = 0.8
     )
 
     backtest_start = time.time()
