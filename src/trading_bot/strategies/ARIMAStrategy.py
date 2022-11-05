@@ -1,7 +1,5 @@
 from BaseStrategy import BaseStrategy
 
-
-
 class ARIMAStrategy(BaseStrategy):
 
     def __init__(self, strat_time_frame_minutes, sl, symbol_id):
