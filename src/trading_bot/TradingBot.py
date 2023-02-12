@@ -1,6 +1,8 @@
 import websocket
 import json
 import time
+import datetime
+import redshift_connector
 
 from Position import Position
 from strategies.ARIMAStrategy import ARIMAStrategy
@@ -13,18 +15,49 @@ class TradingBot:
         self.time = 0
         self.test = test
 
+    def __log_trade(self, trade_type, tick_data):
+        with redshift_connector.connect(
+            host = 'project-poseidon.cpsnf8brapsd.us-west-2.redshift.amazonaws.com',
+            database = 'administrator',
+            user = 'administrator',
+            password = 'Free2play2'
+        ) as conn:
+            with conn.cursor() as cursor:
+                # Query to fetch open price data for an ETH pair & exchange of interest
+                # within a specified date range
+                exchange, _, base, quote = self.symbol_id.split('_')
+                date = datetime.datetime.now()
+                query = """
+                INSERT INTO trading_bot.eth.trading_log VALUES ({base}, {quote}, {exchange}, {trade_type}, {price}, {amount}, {date})
+                """.format(base, quote, exchange, trade_type, tick_data['price_close'], 100, date)
+                # Execute query on Redshift and return result
+                cursor.execute(query)
+
+                if trade_type == 'Buy':
+                    self.strategy.position = Position(
+                        base=base,
+                        quote=quote,
+                        exchange=exchange,
+                        buy_price=tick_data['price_close'],
+                        amount=100,
+                        buy_date=date
+                    )
+                else:
+                    self.strategy.position = None
+
     def execute(self):
+        
         def on_open(ws):
             print('connection opened')
             print()
             
             hello_message = {
                 'type': 'hello',
-                'apikey': '3D7A02BB-EC62-40F9-8C5C-8625AB51D5ED',
+                'apikey': '34FA476E-CCCB-4AC7-A033-B472113BBD22',
                 'heartbeat': False,
                 'subscribe_data_type': ['ohlcv'],
                 'subscribe_filter_period_id': ['1MIN'],
-                'subscribe_filter_symbol_id': [self.symbol_id]
+                'subscribe_filter_symbol_id': [self.symbol_id + '$']
             }
             
             ws.send(json.dumps(hello_message))
@@ -39,9 +72,12 @@ class TradingBot:
 
         def on_message(ws, message):
             curr_time = time.time()
-            time_elapsed_minutes = curr_time - self.time
+            time_elapsed_minutes = (curr_time - self.time) / 60
+            
+            print('time_elapsed_minutes:', time_elapsed_minutes)
+            print('tick count: {}'.format(self.strategy.tick_count))
 
-            if time_elapsed_minutes >= 1:
+            if time_elapsed_minutes >= 1 or self.strategy.tick_count == 0:
                 self.time = curr_time
 
                 message = json.loads(message)
@@ -56,23 +92,29 @@ class TradingBot:
                 }
 
                 trading_signal = self.strategy.process_tick(tick_data)
+                print('trading strategy: {}'.format(trading_signal))
 
-                if trading_signal == 'Buy':
+                print(trading_signal == None or trading_signal == '')
+
+                if trading_signal == 'Buy' and self.strategy.position == None:
                     # log buy in Redshift and create position to store in Strategy class
-                    pass
-                elif trading_signal == 'Sell':
+                    # self.__log_trade('Buy', tick_data)
+                    print('logging buy...')
+
+                elif trading_signal == 'Sell' and self.strategy.position != None:
                     # log sell in Redshift and delete position in Strategy class
-                    
-                    pass
-                else:
-                    return
+                    # self.__log_trade('Sell', tick_data)
+                    print('logging sell...')
+
+                elif trading_signal == None:
+                    print('no trade being made...')
 
         def on_error(ws, error):
             print('error occurred!')
             print(error)
             print()
 
-        endpoint = 'ws://ws-sandbox.coinapi.io/v1/'
+        endpoint = 'ws://ws.coinapi.io/v1/'
 
         w = websocket.WebSocketApp(
             url = endpoint,
@@ -84,7 +126,9 @@ class TradingBot:
 
         w.run_forever()
 
-strat = ARIMAStrategy(strat_time_frame_minutes = 60, sl = 0.1)
+# strat = ARIMAStrategy(strat_time_frame_minutes = 60, sl = 0.1, symbol_id = 'COINBASE_SPOT_ETH_USD')
 
+strat = ARIMAStrategy(strat_time_frame_minutes=1, sl = 0.1, symbol_id='COINBASE_SPOT_ETH_USD')
 bot = TradingBot(strategy = strat, symbol_id = 'COINBASE_SPOT_ETH_USD')
 bot.execute()
+ 

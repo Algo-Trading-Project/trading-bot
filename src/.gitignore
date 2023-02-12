@@ -2,3 +2,4 @@ __pycache__/
 backtest_results.csv
 *.html
 .DS_Store
+.vscode/settings.json
