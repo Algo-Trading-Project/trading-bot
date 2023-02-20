@@ -9,6 +9,9 @@ sys.path.append(os.getcwd())
 #################################
 #             MISC              #
 #################################
+import warnings
+warnings.filterwarnings("ignore")
+
 import time
 import redshift_connector
 import pandas as pd
@@ -20,7 +23,8 @@ from math import ceil
 #      TRADING STRATEGIES       #
 #################################
 from backtesting import Backtest
-from src.backtest.strategies.BlueMoonBull_0_run2 import BlueMoonBull_0
+from src.backtest.strategies.IchimokuCloud import IchimokuCloud
+from src.backtest.strategies.ARIMA import ARIMAStrategy
 
 class BackTester:
 
@@ -30,7 +34,7 @@ class BackTester:
                  end_date,
                  strategies,
                  optimize = False,
-                 optimize_dict = None,
+                 optimize_dict = {},
                  backtest_params = {'starting_cash':10_000, 'commission':0.0025},
                  pct_training_data = 0.7):
 
@@ -138,6 +142,9 @@ class BackTester:
                 optimal_strat_params_list = optimal_strat_params_str.strip(strat.name()).strip('()').split(',')
                 optimal_strat_params = {}
 
+                print(optimal_strat_params_str)
+                print(optimal_strat_params_list)
+
                 for param in optimal_strat_params_list:
                     key, val = param.split('=')
                     val = int(val)
@@ -177,20 +184,15 @@ class BackTester:
 if __name__ == '__main__': 
     mp.set_start_method('fork')
 
-    optimize_args_ichimoku_cloud = {
-        'tenkan_window':np.arange(9, 9 * 3 + 1, 9).tolist(),
-        'kijun_window':np.arange(26, 26 * 3 + 1, 26).tolist(),
-        'senkou_b_window':np.arange(52, 52 * 3 + 1, 52).tolist(),
-        'bollinger_sma_window':np.arange(24, 24 * 3 + 1, 24).tolist(),
-        # 'bollinger_window_std':np.arange(1, 4).tolist(),
-        'entry_bar':np.arange(9, 19, 4).tolist(),
-        'exit_bar':np.arange(9, 20, 4).tolist(),
-        'constraint':lambda x: (x.tenkan_window < x.kijun_window) and (x.tenkan_window < x.senkou_b_window) and (x.kijun_window < x.senkou_b_window)
+    optimize_args_ARIMA = {
+        'p':[1,2],
+        'd':[1,2],
+        'q':[1,2],
     }
 
     symbol_ids = [
-        'ETH_USD_COINBASE', 'LINK_ETH_BINANCE', 'BNB_ETH_BINANCE',
-        'ADA_ETH_BINANCE', #'DOGE_ETH_YOBIT', 'EOS_ETH_BINANCE',
+        'ETH_USD_COINBASE', #'LINK_ETH_BINANCE', 'BNB_ETH_BINANCE',
+        #'ADA_ETH_BINANCE', #'DOGE_ETH_YOBIT', 'EOS_ETH_BINANCE',
     #     'XRP_ETH_BINANCE', 'THETA_ETH_GATEIO', 'XLM_ETH_BINANCE',
     #     'XMR_ETH_BINANCE', 'ZEC_ETH_BINANCE', 'BCH_ETH_HITBTC',
     #     'IOTA_ETH_BINANCE'
@@ -198,13 +200,11 @@ if __name__ == '__main__':
 
     b = BackTester(
         symbol_ids = symbol_ids,
-        start_date = '2019/06/19',
-        end_date = '2021/06/19',
-        strategies = [BlueMoonBull_0],
+        start_date = '2022/08/01',
+        end_date = '2022/09/01',
+        strategies = [ARIMAStrategy],
         optimize = True,
-        optimize_dict = {
-            BlueMoonBull_0:optimize_args_ichimoku_cloud
-        },
+        optimize_dict = {ARIMAStrategy: optimize_args_ARIMA},
         pct_training_data = 0.8
     )
 
