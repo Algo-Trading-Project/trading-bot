@@ -3,14 +3,15 @@
 #################################
 import sys
 import os
-
 sys.path.append(os.getcwd())
-
 #################################
 #             MISC              #
 #################################
 import warnings
-warnings.filterwarnings("ignore")
+from statsmodels.tools.sm_exceptions import ConvergenceWarning
+
+warnings.simplefilter('ignore', ConvergenceWarning)
+warnings.simplefilter('ignore', UserWarning)
 
 import time
 import redshift_connector
@@ -142,9 +143,6 @@ class BackTester:
                 optimal_strat_params_list = optimal_strat_params_str.strip(strat.name()).strip('()').split(',')
                 optimal_strat_params = {}
 
-                print(optimal_strat_params_str)
-                print(optimal_strat_params_list)
-
                 for param in optimal_strat_params_list:
                     key, val = param.split('=')
                     val = int(val)
@@ -182,12 +180,13 @@ class BackTester:
         return backtest_results
 
 if __name__ == '__main__': 
-    mp.set_start_method('fork')
+    # mp.set_start_method('fork')
 
     optimize_args_ARIMA = {
-        'p':[1,2],
-        'd':[1,2],
-        'q':[1,2],
+        'p':[2],
+        'd':[2],
+        'q':[3],
+        'ema_window':[6, 12, 24],
     }
 
     symbol_ids = [
@@ -199,13 +198,13 @@ if __name__ == '__main__':
      ]
 
     b = BackTester(
-        symbol_ids = symbol_ids,
         start_date = '2022/08/01',
         end_date = '2022/09/01',
+        symbol_ids = symbol_ids,
         strategies = [ARIMAStrategy],
         optimize = True,
         optimize_dict = {ARIMAStrategy: optimize_args_ARIMA},
-        pct_training_data = 0.8
+        pct_training_data = 0.7
     )
 
     backtest_start = time.time()
