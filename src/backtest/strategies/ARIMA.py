@@ -1,6 +1,11 @@
 from backtesting import Strategy
-from pmdarima.arima import ARIMA
+from backtesting.lib import crossover
+
+from statsmodels.tsa.arima.model import ARIMA
+
 from ta.trend import EMAIndicator
+from ta.volatility import BollingerBands
+
 import pandas as pd
 import numpy as np
 
@@ -11,8 +16,7 @@ class ARIMAStrategy(Strategy):
     d = 0
     q = 1
     ema_window = 24
-    
-
+                
     def ema(open, ema_window):
         ema = EMAIndicator(close = open, window = ema_window)
         return ema.ema_indicator()
@@ -26,7 +30,6 @@ class ARIMAStrategy(Strategy):
 
     def init(self):
         super().init()
-
         self.ema = self.I(ARIMAStrategy.ema, pd.Series(self.data.Close), self.ema_window)
 
     def next(self):
@@ -36,15 +39,20 @@ class ARIMAStrategy(Strategy):
         print('{}.) (p = {}, d = {}, q = {}) ema_window = {}'.format(len(self.data), self.p, self.d, self.q, self.ema_window))
         
         if len(self.data.Close) >= 50:
-            model = ARIMA(order = (self.p, self.d, self.q))
-            fit_model = model.fit(self.data.Close)                
-            model_forecasts = fit_model.predict(n_periods = 1)
+            model = ARIMA(self.data.Close, order = (self.p, self.d, self.q))
+            fit_model = model.fit()          
+            model_forecast = fit_model.forecast()[0]
+
+            price_slope = self.data.Close[-1] - self.data.Close[-2]
             
-            entry_signal = (np.mean(model_forecasts) > self.data.Close[-1]) and (self.data.Close[-1] < self.ema[-1])
-            exit_signal = (np.mean(model_forecasts) < self.data.Close[-1]) and (self.data.Close[-1] > self.ema[-1])
+            entry_signal = ((model_forecast > self.data.Close[-1]) and 
+                            (self.data.Close[-1] < self.ema[-1]) and 
+                            (price_slope > 0))
+            
+            exit_signal = (model_forecast < self.data.Close[-1]) and (self.data.Close[-1] > self.ema[-1]) and (price_slope < 0)
 
             if self.position and exit_signal:
                 self.position.close()
 
             elif not self.position and entry_signal:
-                self.buy(sl = self.data.Close[-1] * 0.95)
+                self.buy(sl = self.data.Close[-1] * 0.95, tp = self.data.Close[-1] * 1.1)

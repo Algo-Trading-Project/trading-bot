@@ -26,6 +26,7 @@ from math import ceil
 from backtesting import Backtest
 from src.backtest.strategies.IchimokuCloud import IchimokuCloud
 from src.backtest.strategies.ARIMA import ARIMAStrategy
+from src.backtest.strategies.MovingAverage import MovingAverage
 
 class BackTester:
 
@@ -132,7 +133,7 @@ class BackTester:
                 if self.optimize and isinstance(self.optimize_dict.get(strat), dict):
                     stats_for_strat = in_sample_backtest.optimize(
                         **self.optimize_dict.get(strat),
-                        maximize = 'Return [%]'
+                        maximize = 'Equity Final [$]',
                     )
                 else:
                     stats_for_strat = in_sample_backtest.run()
@@ -182,11 +183,11 @@ class BackTester:
 if __name__ == '__main__': 
     # mp.set_start_method('fork')
 
-    optimize_args_ARIMA = {
-        'p':[2],
-        'd':[2],
-        'q':[3],
-        'ema_window':[6, 12, 24],
+    optimize_args = {
+        'ema_window_small':[3, 6, 12, 24],
+        'ema_window_large':range(24 * 7, 24 * 14 + 1, 24),
+        'lookback_window_trend': [24*7, 24*14, 24*21, 24*28],
+        'trend_threshold': [10, 20, 30, 40, 50],
     }
 
     symbol_ids = [
@@ -198,13 +199,14 @@ if __name__ == '__main__':
      ]
 
     b = BackTester(
-        start_date = '2022/08/01',
-        end_date = '2022/09/01',
+        start_date = '2021/06/25',
+        end_date = '2022/11/11',
         symbol_ids = symbol_ids,
-        strategies = [ARIMAStrategy],
+        strategies = [MovingAverage],
         optimize = True,
-        optimize_dict = {ARIMAStrategy: optimize_args_ARIMA},
-        pct_training_data = 0.7
+        optimize_dict = {MovingAverage: optimize_args},
+        pct_training_data = 0.7,
+
     )
 
     backtest_start = time.time()
