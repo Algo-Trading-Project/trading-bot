@@ -24,9 +24,7 @@ from math import ceil
 #      TRADING STRATEGIES       #
 #################################
 from backtesting import Backtest
-from src.backtest.strategies.IchimokuCloud import IchimokuCloud
 from src.backtest.strategies.ARIMA import ARIMAStrategy
-from src.backtest.strategies.MovingAverage import MovingAverage
 
 class BackTester:
 
@@ -63,23 +61,66 @@ class BackTester:
             with conn.cursor() as cursor:
                 # Query to fetch OHLCV data for an ETH pair & exchange of interest
                 # within a specified date range
-                query = """
-                SELECT 
-                    time_period_start,
-                    price_open,
-                    price_high,
-                    price_low,
-                    price_close,
-                    volume_traded
-                FROM token_price.eth.stg_price_data_1h
-                WHERE 
-                    asset_id_base = '{}' AND
-                    asset_id_quote = '{}' AND
-                    exchange_id = '{}' AND
-                    time_period_start >= '{}' AND
-                    time_period_end <= '{}'
-                ORDER BY time_period_start ASC
-                """.format(asset_id_base, asset_id_quote, exchange_id, self.start_date, self.end_date)
+                if asset_id_base == 'ETH' and asset_id_quote == 'USD':
+                    query = """
+                    SELECT 
+                        time_period_start,
+                        price_open,
+                        price_high,
+                        price_low,
+                        price_close,
+                        volume_traded
+                    FROM token_price.eth.stg_price_data_1h
+                    WHERE 
+                        asset_id_base = '{}' AND
+                        asset_id_quote = '{}' AND
+                        exchange_id = '{}' AND
+                        time_period_start >= '{}' AND
+                        time_period_end <= '{}'
+                    ORDER BY time_period_start ASC
+                    """.format(asset_id_base, asset_id_quote, exchange_id, self.start_date, self.end_date)
+                else:
+                    query = """
+                    WITH requested_pair AS (
+                        SELECT 
+                            time_period_start,
+                            price_open,
+                            price_high,
+                            price_low,
+                            price_close,
+                            volume_traded
+                        FROM token_price.eth.stg_price_data_1h
+                        WHERE
+                            asset_id_base = '{}' AND
+                            asset_id_quote = '{}' AND
+                            exchange_id = '{}'
+                        ORDER BY time_period_start
+                    ), 
+                    eth_usd_coinbase AS (
+                        SELECT
+                            time_period_start,
+                            price_open,
+                            price_close
+                        FROM token_price.eth.stg_price_data_1h
+                        WHERE
+                            asset_id_base = 'ETH' AND
+                            asset_id_quote = 'USD' AND
+                            exchange_id = 'COINBASE' AND
+                            time_period_start >= '{}'
+                        ORDER BY time_period_start
+                    )
+
+                    SELECT
+                        e.time_period_start,
+                        r.price_open / (1 / e.price_open) AS price_open,
+                        r.price_close / (1 / e.price_close) AS price_high,
+                        r.price_close / (1 / e.price_close) AS price_low,
+                        r.price_close / (1 / e.price_close) AS price_close,
+                        r.volume_traded
+                    FROM eth_usd_coinbase e INNER JOIN requested_pair r
+                        ON e.time_period_start = r.time_period_start
+                    ORDER BY e.time_period_start
+                    """.format(asset_id_base, asset_id_quote, exchange_id, self.start_date)
 
                 # Execute query on Redshift and return result
                 cursor.execute(query)
@@ -184,27 +225,25 @@ if __name__ == '__main__':
     # mp.set_start_method('fork')
 
     optimize_args = {
-        'ema_window_small':[3, 6, 12, 24],
-        'ema_window_large':range(24 * 7, 24 * 14 + 1, 24),
-        'lookback_window_trend': [24*7, 24*14, 24*21, 24*28],
-        'trend_threshold': [10, 20, 30, 40, 50],
     }
 
     symbol_ids = [
-        'ETH_USD_COINBASE', #'LINK_ETH_BINANCE', 'BNB_ETH_BINANCE',
-        #'ADA_ETH_BINANCE', #'DOGE_ETH_YOBIT', 'EOS_ETH_BINANCE',
-    #     'XRP_ETH_BINANCE', 'THETA_ETH_GATEIO', 'XLM_ETH_BINANCE',
+        # 'ETH_USD_COINBASE', #'LINK_ETH_BINANCE', 'BNB_ETH_BINANCE',
+        'ADA_ETH_BINANCE', 'DOGE_ETH_YOBIT', 'EOS_ETH_BINANCE',
+         'XRP_ETH_BINANCE', 'THETA_ETH_GATEIO', 'XLM_ETH_BINANCE',
     #     'XMR_ETH_BINANCE', 'ZEC_ETH_BINANCE', 'BCH_ETH_HITBTC',
     #     'IOTA_ETH_BINANCE'
      ]
+    s = '2021/06/25'
+    e =  '2022/11/11'
 
     b = BackTester(
-        start_date = '2021/06/25',
-        end_date = '2022/11/11',
+        start_date = s,
+        end_date = e,
         symbol_ids = symbol_ids,
-        strategies = [MovingAverage],
+        strategies = [ARIMAStrategy],
         optimize = True,
-        optimize_dict = {MovingAverage: optimize_args},
+        optimize_dict = {ARIMAStrategy: optimize_args},
         pct_training_data = 0.7,
 
     )
