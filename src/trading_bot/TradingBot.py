@@ -61,7 +61,7 @@ class TradingBot:
                 'subscribe_filter_period_id': ['1MIN'],
                 'subscribe_filter_symbol_id': [self.symbol_id + '$']
             }
-            
+
             ws.send(json.dumps(hello_message))
 
             self.time = time.time()
