@@ -1,181 +1,239 @@
-#################################
-# ADDING PACKAGE TO PYTHON PATH #
-#################################
-import sys
-import os
-sys.path.append(os.getcwd())
-#################################
-#             MISC              #
-#################################
-import warnings
-from statsmodels.tools.sm_exceptions import ConvergenceWarning
+%%time
 
-warnings.simplefilter('ignore', ConvergenceWarning)
-warnings.simplefilter('ignore', UserWarning)
-
-import time
-import redshift_connector
 import pandas as pd
 import numpy as np
-import multiprocessing as mp
-from math import ceil
+import yfinance as yf
+import matplotlib.pyplot as plt
+import seaborn as sns
+import time
 
-#################################
-#      TRADING STRATEGIES       #
-#################################
-from backtesting import Backtest
-from src.backtest.strategies.ARIMA import ARIMAStrategy
+from statsmodels.regression.rolling import RollingOLS
+from statsmodels.tools import add_constant
+from backtesting.lib import crossover, cross
 
-class BackTester:
+class PairsTradingBacktester:
 
-    def __init__(self, 
-                 symbol_ids,
-                 start_date,
-                 end_date,
-                 strategies,
-                 optimize = False,
-                 optimize_dict = {},
-                 backtest_params = {'starting_cash':10_000, 'commission':0.0025},
-                 pct_training_data = 0.7):
+    z_window = 24
+    hedge_ratio_window = 24
+    z_score_upper_thresh = 2
+    z_score_lower_thresh = -2
 
-        self.symbol_ids = symbol_ids
+    def __init__(self, symbol_id_1, symbol_id_2, start_date, end_date, initial_capital = 10_000, pct_capital_per_trade = 0.1):
+        """
+        symbol_id_1 - The token we're shorting in the backtest
+
+        symbol_id_2 - The token we're longing in the backtest
+
+        start_date - The start date of the backtest
+
+        end_date - The end date of the backtest
+        """
+
+        self.symbol_id_1 = symbol_id_1
+        self.symbol_id_2 = symbol_id_2
 
         self.start_date = start_date
         self.end_date = end_date
+        self.initial_capital = initial_capital
+        self.pct_capital_per_trade = pct_capital_per_trade
 
-        self.strategies = strategies
-        self.optimize = optimize
-        self.optimize_dict = optimize_dict
-        self.backtest_params = backtest_params
+        self.data = self.get_data()
+        self.data['rolling_hedge_ratio'] = self.__rolling_hedge_ratios()
+        self.data['rolling_spread_z_score'] = self.__rolling_spread_z_score()
+        self.data['entry_signals'] = self.__generate_entry_signals()
+        self.data['exit_signals'] = self.__generate_exit_signals()
+        
+        self.position = False
+        self.curr_position_long_units = 0
+        self.curr_position_short_units = 0
 
-        self.pct_training_data = pct_training_data
+        self.trades = pd.DataFrame(columns = ['entry_date', 'exit_date', self.symbol_id_2, self.symbol_id_1])
+        self.positions = self.__generate_positions()
+        self.equity = self.__generate_equity_curve()
 
-    def __fetch_OHLCV_df(self, symbol_id):
-                # Return queried data as a DataFrame
-                df = pd.DataFrame(tuples, columns = ['Time', 'Open', 'High', 'Low', 'Close', 'Volume']).set_index('Time')
-                df = df.astype(float)
+        # self.returns = None
 
-                training_data_end_index = ceil(len(df) * self.pct_training_data)
-                training_data, testing_data = df.iloc[:training_data_end_index], df.iloc[training_data_end_index:]
+    ################################# HELPER METHODS #################################
 
-                return training_data, testing_data
+    def __convert_to_usd(self, df, eth):
+        if 'ETH_USD' in df.columns[0]:
+            return df
+        
+        m = df.merge(eth, on = 'time_period_end', how = 'inner')
+        m[df.columns[0]] = m[df.columns[0]] * m['ETH_USD_COINBASE']
+        return m[df.columns[0]].to_frame()
+    
+    def __rolling_hedge_ratios(self):
+        return RollingOLS(
+            endog = self.data[self.symbol_id_2].to_frame(),
+            exog = add_constant(self.data[self.symbol_id_1].to_frame()),
+            window = PairsTradingBacktester.hedge_ratio_window
+        ).fit().params[self.symbol_id_1]
+    
+    def __rolling_spread_z_score(self):
+        rolling_spread = self.data[self.symbol_id_2] - self.data['rolling_hedge_ratio'] * self.data[self.symbol_id_1]
+        return (rolling_spread - rolling_spread.rolling(window = PairsTradingBacktester.hedge_ratio_window).mean()) / rolling_spread.rolling(window = PairsTradingBacktester.hedge_ratio_window).std()
+    
+    def __generate_entry_signals(self):
+        entry_signals = []
+        for i in range(len(self.data)):
+            if i == 0:
+                entry_signals.append(0)
+                continue
 
-    def evaluate_strategies(self):
-        backtest_result_cols = [
-            'asset_id_base', 'asset_id_quote', 'exchange_id', 'strategy_name', '_strategy',
-            'Start', 'End', 'Duration', 'Equity Final [$]', 
-            'Return [%]', 'Buy & Hold Return [%]', 'Sharpe Ratio', 'Sortino Ratio', 
-            'Calmar Ratio', 'Max. Drawdown [%]', 'Avg. Drawdown [%]', 'Max. Drawdown Duration',
-            'Avg. Drawdown Duration', '# Trades', 'Win Rate [%]', 'Avg. Trade [%]', 
-            'Best Trade [%]', 'Worst Trade [%]', 'Max. Trade Duration', 'Avg. Trade Duration' 
+            prev_time_period_z_score = self.data.loc[self.data.index[i - 1], 'rolling_spread_z_score']
+            curr_time_period_z_score = self.data.loc[self.data.index[i], 'rolling_spread_z_score']
+
+            if prev_time_period_z_score >= PairsTradingBacktester.z_score_lower_thresh and curr_time_period_z_score < PairsTradingBacktester.z_score_lower_thresh:
+                entry_signals.append(1)
+            else:
+                entry_signals.append(0)
+
+        return entry_signals
+
+    def __generate_exit_signals(self):
+        exit_signals = []
+        for i in range(len(self.data)):
+            if i == 0:
+                exit_signals.append(0)
+                continue
+
+            prev_time_period_z_score = self.data.loc[self.data.index[i - 1], 'rolling_spread_z_score']
+            curr_time_period_z_score = self.data.loc[self.data.index[i], 'rolling_spread_z_score']
+
+            if prev_time_period_z_score <= PairsTradingBacktester.z_score_upper_thresh and curr_time_period_z_score > PairsTradingBacktester.z_score_upper_thresh:
+                exit_signals.append(1)
+            else:
+                exit_signals.append(0)
+
+        return exit_signals
+
+    def __generate_positions(self):
+        positions = pd.DataFrame(index = self.data.index, columns = [self.symbol_id_2, self.symbol_id_1])
+
+        for i in range(len(self.data['entry_signals'])):
+            entry_signal = self.data.loc[self.data.index[i], 'entry_signals']
+            exit_signal = self.data.loc[self.data.index[i], 'exit_signals']
+
+            if not self.position:
+                if entry_signal: 
+                    rolling_hedge_ratio = self.data.loc[self.data.index[i], 'rolling_hedge_ratio'] 
+                    
+                    long_allocation = self.initial_capital * self.pct_capital_per_trade / 2
+                    units_long = long_allocation / self.data.loc[self.data.index[i], self.symbol_id_2]
+ 
+                    short_allocation = self.initial_capital * self.pct_capital_per_trade / 2
+                    units_short = short_allocation / self.data.loc[self.data.index[i], self.symbol_id_1]
+
+                    if long_allocation + short_allocation * rolling_hedge_ratio > self.initial_capital:
+                        positions.loc[self.data.index[i], self.symbol_id_2] = 0
+                        positions.loc[self.data.index[i], self.symbol_id_1] = 0
+                        continue
+
+
+                    positions.loc[self.data.index[i], self.symbol_id_2] = units_long
+                    positions.loc[self.data.index[i], self.symbol_id_1] = -units_short * rolling_hedge_ratio
+
+                    self.initial_capital -= (long_allocation + short_allocation * rolling_hedge_ratio)
+                    
+                    self.trades = self.trades.append({
+                        'entry_date':self.data.index[i],
+                        'exit_date':np.nan,
+                         self.symbol_id_2:units_long,
+                         self.symbol_id_1:units_short
+                    }, ignore_index = True)
+                    
+                    self.curr_position_long_units = units_long
+                    self.curr_position_short_units = units_short
+                    self.position = 1
+                else:
+                    positions.loc[self.data.index[i], self.symbol_id_2] = 0
+                    positions.loc[self.data.index[i], self.symbol_id_1] = 0
+
+            else:
+                if exit_signal:
+                    long_value = positions.loc[self.data.index[i - 1], self.symbol_id_2] * self.data.loc[self.data.index[i], self.symbol_id_2]
+                    short_value = positions.loc[self.data.index[i - 1], self.symbol_id_1] * self.data.loc[self.data.index[i], self.symbol_id_1]
+                    
+                    positions.loc[self.data.index[i], self.symbol_id_2] = 0
+                    positions.loc[self.data.index[i], self.symbol_id_1] = 0
+
+                    self.initial_capital += (long_value + short_value)
+                    self.trades.loc[len(self.trades) - 1,'exit_date'] = self.data.index[i]
+                    self.position = 0
+                else:
+                    positions.loc[self.data.index[i], self.symbol_id_2] = self.curr_position_long_units
+                    positions.loc[self.data.index[i], self.symbol_id_1] = self.curr_position_short_units
+
+        return positions
+    
+    def __generate_equity_curve(self):
+        pass
+    
+    ################################# HELPER METHODS #################################
+
+    def buy(self):
+        pass
+
+    def sell(self):
+        pass
+
+    def get_data(self):
+        cols = [
+            'price_open', 'price_high', 'price_low', 
+            'price_close', 'asset_id_base', 'asset_id_quote', 'exchange_id'
         ]
 
-        backtest_results = pd.DataFrame(columns = backtest_result_cols)
+        df = pd.read_csv(
+            '/Users/louisspencer/Desktop/Trading-Bot/src/backtest/backtest_data/price_data_1hr.csv', 
+            index_col='time_period_end'
+        )[cols]
 
-        for symbol_id in self.symbol_ids:
-            split_symbol_id = symbol_id.split('_')
-            asset_id_base, asset_id_quote, exchange_id = split_symbol_id[0], split_symbol_id[1], split_symbol_id[2]
-            
-            training_data, testing_data = self.__fetch_OHLCV_df_from_redshift(asset_id_base, asset_id_quote, exchange_id)
+        df['symbol_id'] = df.asset_id_base + '_' + df.asset_id_quote + '_' + df.exchange_id
 
-            print()
-            print('training data range: {} - {}'.format(training_data.index[0], training_data.index[-1]))
-            print('testing data range: {} - {}'.format(testing_data.index[0], testing_data.index[-1]))
-            print()
+        pivot = df.pivot_table(
+            index = 'time_period_end',
+            columns = 'symbol_id', 
+            values = ['price_open', 'price_high', 'price_low', 'price_close']
+        )
 
-            for strat in self.strategies:
-                print()
-                print('Now backtesting the {}/{} pair on {} using the {} strategy'.format(asset_id_base, asset_id_quote, exchange_id, strat.name()))
-                print()
-
-                in_sample_backtest = Backtest(
-                    data = training_data, 
-                    strategy = strat, 
-                    cash = self.backtest_params['starting_cash'], 
-                    commission = self.backtest_params['commission'],
-                    trade_on_close = True
-                )
-
-                if self.optimize and isinstance(self.optimize_dict.get(strat), dict):
-                    stats_for_strat = in_sample_backtest.optimize(
-                        **self.optimize_dict.get(strat),
-                        maximize = 'Equity Final [$]',
-                    )
-                else:
-                    stats_for_strat = in_sample_backtest.run()
-                
-                # Evaluate optimized trading strategy on unseen data
-                optimal_strat_params_str = str(stats_for_strat['_strategy'])
-                
-                optimal_strat_params_list = optimal_strat_params_str.strip(strat.name()).strip('()').split(',')
-                optimal_strat_params = {}
-
-                for param in optimal_strat_params_list:
-                    key, val = param.split('=')
-                    val = int(val)
-
-                    optimal_strat_params[key] = val
-                
-                strat.update_hyperparameters(optimal_strat_params)
-
-                out_of_sample_backtest = Backtest(
-                    data = testing_data, 
-                    strategy = strat, 
-                    cash = self.backtest_params['starting_cash'], 
-                    commission = self.backtest_params['commission'],
-                    trade_on_close = True
-                )
-
-                stats_for_strat = out_of_sample_backtest.run()
-
-                # Visualize results of trading strategy on unseen data
-                out_of_sample_backtest.plot(
-                    results = stats_for_strat, 
-                    open_browser = False,
-                    filename = 'src/backtest/{}_{}.html'.format(symbol_id, strat.name())
-                )
-
-                stats_for_strat['asset_id_base'] = asset_id_base
-                stats_for_strat['asset_id_quote'] = asset_id_quote
-                stats_for_strat['exchange_id'] = exchange_id
-                stats_for_strat['strategy_name'] = optimal_strat_params_str
-                stats_for_strat_df = stats_for_strat[backtest_result_cols].to_frame().T
-                backtest_results = backtest_results.append(stats_for_strat_df, ignore_index = True)
-
-                backtest_results.to_csv('src/backtest/backtest_results.csv')
+        eth = pivot['price_close']['ETH_USD_COINBASE']
+        to_return = pd.DataFrame(index = pivot.index, columns = ['Open', 'High', 'Low', 'Close'])
         
-        return backtest_results
+        to_return['Open'] = pivot['price_open'][self.symbol_id_2] / pivot['price_open'][self.symbol_id_1]
+        to_return['High'] = pivot['price_high'][self.symbol_id_2] / pivot['price_high'][self.symbol_id_1]
+        to_return['Low'] = pivot['price_low'][self.symbol_id_2] / pivot['price_low'][self.symbol_id_1]
+        to_return['Close'] = pivot['price_close'][self.symbol_id_2] / pivot['price_close'][self.symbol_id_1]
+        
+        to_return[self.symbol_id_1] = self.__convert_to_usd(pivot['price_close'][self.symbol_id_1].to_frame(), eth)
+        to_return[self.symbol_id_2] = self.__convert_to_usd(pivot['price_close'][self.symbol_id_2].to_frame(), eth)
 
-if __name__ == '__main__': 
-    # mp.set_start_method('fork')
+        to_return_index = np.array(to_return.index.to_list())
+        to_return = to_return[(to_return_index >= self.start_date) & (to_return_index <= self.end_date)].fillna(method = 'pad')
+        to_return.index = pd.to_datetime(to_return.index)
 
-    optimize_args = {
-    }
+        return to_return
 
-    symbol_ids = [
-        # 'ETH_USD_COINBASE', #'LINK_ETH_BINANCE', 'BNB_ETH_BINANCE',
-        'ADA_ETH_BINANCE', 'DOGE_ETH_YOBIT', 'EOS_ETH_BINANCE',
-         'XRP_ETH_BINANCE', 'THETA_ETH_GATEIO', 'XLM_ETH_BINANCE',
-    #     'XMR_ETH_BINANCE', 'ZEC_ETH_BINANCE', 'BCH_ETH_HITBTC',
-    #     'IOTA_ETH_BINANCE'
-     ]
-    s = '2021/06/25'
-    e =  '2022/11/11'
+    def calculate_performance_metrics(self):
+        # Your implementation here
+        pass
 
-    b = BackTester(
-        start_date = s,
-        end_date = e,
-        symbol_ids = symbol_ids,
-        strategies = [ARIMAStrategy],
-        optimize = True,
-        optimize_dict = {ARIMAStrategy: optimize_args},
-        pct_training_data = 0.7,
+    def visualize_results(self):
+        # Your implementation here
+        pass
 
-    )
+    def optimize_parameters(self):
+        # Your implementation here
+        pass
 
-    backtest_start = time.time()
-    strat_results = b.evaluate_strategies()
-    backtest_end = time.time()
+    def backtest(self):
+        # Your implementation here
+        pass
 
-    print()
-    print('time elapsed since backtest: {} mins'.format(round(abs(backtest_end - backtest_start) / 60.0, 2)))
+# Example usage
+p = PairsTradingBacktester(
+    symbol_id_1 = 'ETH_USD_COINBASE',
+    symbol_id_2 = 'ALEPH_ETH_GATEIO',
+    start_date = '2022-08-01',
+    end_date = '2022-09-01'
+)
