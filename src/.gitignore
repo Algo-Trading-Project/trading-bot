@@ -1,10 +1,12 @@
 __pycache__/
-backtest_results.csv
+*.csv
 *.html
-.DS_Store
+*.DS_Store
 .vscode/
 *.vscode/
 .idea/
+.idea/*
 *.idea/
 .empty/
 *.empty/
+*.xml
