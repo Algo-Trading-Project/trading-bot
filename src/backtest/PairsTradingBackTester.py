@@ -1,7 +1,9 @@
 import pandas as pd
 import numpy as np
+import yfinance as yf
 import matplotlib.pyplot as plt
-import itertools
+import seaborn as sns
+import time
 
 from statsmodels.regression.rolling import RollingOLS
 from statsmodels.tools import add_constant
@@ -89,6 +91,7 @@ class PairsTradingBacktester:
 
         # Performance metrics for backtest
         self.performance_metrics = None
+
         
     ################################# HELPER METHODS #################################
 
@@ -351,23 +354,34 @@ class PairsTradingBacktester:
             return max([buy_and_hold_return_token_1, buy_and_hold_return_token_2])
         
         def sharpe_ratio():
-            hourly_trade_returns = self.trades['pnl_pct']
-            mean_hourly_return = hourly_trade_returns.mean()
-            std_hourly_return = hourly_trade_returns.std()
-            hourly_sharpe_ratio = mean_hourly_return / std_hourly_return
-            return hourly_sharpe_ratio * np.sqrt(8760)
-                    
+            returns = self.equity.equity.pct_change()
+            mean_returns = returns.mean()
+            std_returns = returns.std()
+            
+            try:
+                return np.sqrt(8760) * mean_returns / std_returns 
+            except:
+                return np.nan
+            
         def sortino_ratio():
-            hourly_trade_returns = self.trades['pnl_pct']
-            mean_hourly_return = hourly_trade_returns.mean()
-            std_negative_hourly_return = self.trades[self.trades['pnl_pct'] < 0]['pnl_pct'].std()
-            hourly_sortino_ratio = mean_hourly_return / std_negative_hourly_return
-            return hourly_sortino_ratio * np.sqrt(8760)
+            returns = self.equity.pct_change()
+            negative_returns = returns[returns['equity'] < 0]
+            
+            mean_returns = returns.mean()
+            std_negative_returns = negative_returns.std()
+            
+            try:
+                return np.sqrt(8760) * mean_returns / std_negative_returns 
+            except:
+                return np.nan
             
         def calmar_ratio():
+            num_years = len(self.data) / 8760
+            cum_ret_final = (1 + self.equity.equity.pct_change()).prod().squeeze()
+            annual_returns = cum_ret_final ** (1 / num_years) - 1
+            
             try:
-                hourly_calmar_ratio = self.trades['pnl_pct'].mean() / abs(max_drawdown() / 100)
-                return hourly_calmar_ratio * 8760
+                return annual_returns / abs(max_drawdown() / 100)
             except:
                 return np.nan
         
@@ -413,16 +427,6 @@ class PairsTradingBacktester:
 
             return round(num_winning_trades / num_trades_total * 100, 2)
         ################################################################################
-        
-        cols = [
-            'Start', 'End', 'Duration', 'Exposure Time [%]',
-            'Equity Final [$]', 'Equity Peak [$]', 'Return [%]',
-            'Buy & Hold Return [%]', 'Sharpe Ratio', 'Sortino Ratio',
-            'Calmar Ratio', 'Max. Drawdown [%]', 'Avg. Drawdown [%]',
-            'Max. Drawdown Duration', 'Avg. Drawdown Duration', 'Trades',
-            'Win Rate [%]', 'Best Trade [%]', 'Worst Trade [%]', 'Avg. Trade [%]',
-            'Max. Trade Duration', 'Avg. Trade Duration'
-        ]
                 
         start = self.start_date
         end = self.end_date
@@ -453,18 +457,23 @@ class PairsTradingBacktester:
             'Avg. Trade Duration':(pd.to_datetime(self.trades['exit_date']) - pd.to_datetime(self.trades['entry_date'])).mean()
         }
 
-        return pd.DataFrame(metrics_dict)
+        return pd.DataFrame(metrics_dict).reset_index()[metrics_dict.keys()]
 
     def visualize_results(self):
-        fig, (a0, a1, a2) = plt.subplots(nrows = 3, ncols = 1, figsize = (16, 10), gridspec_kw={'height_ratios': [0.25, 0.25, 0.5]})
+        fig, (a0, a1, a2) = plt.subplots(nrows = 3, ncols = 1, figsize = (16, 10), gridspec_kw={'height_ratios': [0.4, 0.4, 0.6]})
         fig.subplots_adjust(hspace=.5)
-
+        
         # Plot % returns curve
         plt.subplot(3,1,1)
         
-        (self.equity / self.initial_capital).plot(ax = a0, grid = True, title = 'Return [%]')
+        (self.equity.rename({'equity':''}, axis = 1) / self.initial_capital).plot(ax = a0, grid = True, title = 'Return [%]')
         
+        a0.get_legend().remove()
         plt.xlabel('')
+
+        y_ticks = a0.get_yticks()
+        y_ticks[-1] = self.returns['return'].max()
+        a0.set_yticks(y_ticks)
 
         # Plot PnL % for all trades taken
         plt.subplot(3,1,2)
@@ -499,6 +508,7 @@ class PairsTradingBacktester:
         )
         
         plt.ylabel('')
+        plt.xlabel('')
 
         # Plot normalized price data of the two tokens used
         plt.subplot(3,1,3)
