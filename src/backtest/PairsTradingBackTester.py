@@ -1,9 +1,7 @@
 import pandas as pd
 import numpy as np
-import yfinance as yf
 import matplotlib.pyplot as plt
-import seaborn as sns
-import time
+import itertools
 
 from statsmodels.regression.rolling import RollingOLS
 from statsmodels.tools import add_constant
@@ -107,15 +105,15 @@ class PairsTradingBacktester:
         return RollingOLS(
             endog = self.data[self.symbol_id_2].to_frame(),
             exog = add_constant(self.data[self.symbol_id_1].to_frame()),
-            window = PairsTradingBacktester.hedge_ratio_window
+            window = self.hedge_ratio_window
         ).fit().params[self.symbol_id_1]
     
     def __rolling_spread(self):
-        return self.data[self.symbol_id_2] - self.data['rolling_hedge_ratio'] * self.data[self.symbol_id_1]
+        return self.data[self.symbol_id_2].values - self.data['rolling_hedge_ratio'].values * self.data[self.symbol_id_1].values
     
     def __rolling_spread_z_score(self):
         rolling_spread = self.data['rolling_spread']
-        return (rolling_spread - rolling_spread.rolling(window = PairsTradingBacktester.z_window).mean()) / rolling_spread.rolling(window = PairsTradingBacktester.z_window).std()
+        return (rolling_spread - rolling_spread.rolling(window = self.z_window).mean()) / rolling_spread.rolling(window = self.z_window).std()
     
     def __generate_entry_signals(self):
         entry_signals = []
@@ -124,8 +122,8 @@ class PairsTradingBacktester:
                 entry_signals.append(0)
                 continue
                 
-            if (not crossover(self.data.loc[:self.data.index[i], 'rolling_spread_z_score'], PairsTradingBacktester.z_score_lower_thresh) and
-                cross(self.data.loc[:self.data.index[i], 'rolling_spread_z_score'], PairsTradingBacktester.z_score_lower_thresh)):
+            if (not crossover(self.data.loc[:self.data.index[i], 'rolling_spread_z_score'], self.z_score_lower_thresh) and
+                cross(self.data.loc[:self.data.index[i], 'rolling_spread_z_score'], self.z_score_lower_thresh)):
                 entry_signals.append(1)
             else:
                 entry_signals.append(0)
@@ -139,7 +137,7 @@ class PairsTradingBacktester:
                 exit_signals.append(0)
                 continue
                 
-            if crossover(self.data.loc[:self.data.index[i], 'rolling_spread_z_score'], PairsTradingBacktester.z_score_upper_thresh):
+            if crossover(self.data.loc[:self.data.index[i], 'rolling_spread_z_score'], self.z_score_upper_thresh):
                 exit_signals.append(1)
             else:
                 exit_signals.append(0)
@@ -182,11 +180,16 @@ class PairsTradingBacktester:
         # Set the PnL and PnL % of the current trade
         self.trades.loc[len(self.trades) - 1, 'pnl_pct'] = trade_pnl_pct
         self.trades.loc[len(self.trades) - 1, 'pnl'] = trade_pnl
+        
+        return end_value_long + end_value_short
 
     def __generate_positions(self):
         # Long and short positions throughout backtest
         positions = pd.DataFrame(index = self.data.index, columns = [self.symbol_id_2, self.symbol_id_1])
-
+        
+        # Tracking available capital throughout backtest
+        curr_capital = self.initial_capital
+        
         # Iterate through each timestamp of dataset
         for i in range(len(self.data)):  
 
@@ -200,14 +203,22 @@ class PairsTradingBacktester:
                 # If entry signal is received
                 if entry_signal: 
                     
+                    # If on the last timestamp then don't open a trade
+                    if i == len(self.data) - 1:
+                        continue
+                        
+                    # If rolling hedge ratio is negative then don't open a trade
+                    if self.data.loc[self.data.index[i], 'rolling_hedge_ratio'] <= 0:
+                        continue
+                    
                     # Amount of dollars to allocate to the long position
-                    long_allocation = (1 - self.comission) * self.initial_capital * self.pct_capital_per_trade / 2
+                    long_allocation = (1 - self.comission) * curr_capital * self.pct_capital_per_trade / 2
                     
                     # Number of units of token2 to long
                     units_long = long_allocation / self.data.loc[self.data.index[i], self.symbol_id_2]
                     
                     # Amount of dollars to allocate to the short position
-                    short_allocation = (1 - self.comission) * self.initial_capital * self.pct_capital_per_trade / 2
+                    short_allocation = (1 - self.comission) * curr_capital * self.pct_capital_per_trade / 2
 
                     # Number of units of token1 to short
                     units_short = short_allocation / self.data.loc[self.data.index[i], self.symbol_id_1]
@@ -215,6 +226,8 @@ class PairsTradingBacktester:
                     # Set long and short position amounts for current timestamp
                     positions.loc[self.data.index[i], self.symbol_id_2] = units_long
                     positions.loc[self.data.index[i], self.symbol_id_1] = units_short
+                    
+                    curr_capital -= (long_allocation + short_allocation)
                     
                     # Initialize a new trade and append it to the trades DataFrame
                     new_trade = {
@@ -251,7 +264,8 @@ class PairsTradingBacktester:
                 if exit_signal:
 
                     # Close the current trade
-                    self.__close_trade(positions = positions, i = i)
+                    end_trade_amount = self.__close_trade(positions = positions, i = i)
+                    curr_capital += end_trade_amount
 
                 # If entry signal is received
                 else:
@@ -264,10 +278,11 @@ class PairsTradingBacktester:
             
             # If the backtest reaches the final timestamp and the current trade hasn't
             # been exited yet 
-            if i == len(self.data) - 1 and type(self.trades.loc[len(self.trades) - 1, 'exit_date']) == type(np.nan):
+            if i == len(self.data) - 1 and len(self.trades) > 0 and type(self.trades.loc[len(self.trades) - 1, 'exit_date']) == type(np.nan):
 
                 # Close the current trade
-                self.__close_trade(positions = positions, i = i)
+                end_trade_amount = self.__close_trade(positions = positions, i = i)
+                curr_capital += end_trade_amount
 
         return positions
     
@@ -282,7 +297,7 @@ class PairsTradingBacktester:
             units_short = trade[self.symbol_id_1]
             
             trade_period = self.data.loc[entry_date:exit_date].copy()
-
+            
             trade_period['long_pnl'] = trade_period[self.symbol_id_2].diff() * units_long
             trade_period['short_pnl'] = -trade_period[self.symbol_id_1].diff() * units_short
             trade_period['total_pnl'] = trade_period['long_pnl'] + trade_period['short_pnl']
@@ -384,6 +399,25 @@ class PairsTradingBacktester:
                 return annual_returns / abs(max_drawdown() / 100)
             except:
                 return np.nan
+
+        def cagr_over_avg_drawdown():
+            num_years = len(self.data) / 8760
+            cum_ret_final = (1 + self.equity.equity.pct_change()).prod().squeeze()
+            annual_returns = cum_ret_final ** (1 / num_years) - 1
+            
+            try:
+                return annual_returns / abs(avg_drawdown() / 100)
+            except:
+                return np.nan
+
+        def profit_factor():
+            if len(self.trades) == 0:
+                return np.nan
+            
+            gross_profit = self.trades[self.trades['pnl'] > 0]['pnl'].sum()
+            gross_loss = abs(self.trades[self.trades['pnl'] < 0]['pnl'].sum())
+            
+            return gross_profit / gross_loss
         
         def max_drawdown():
             rolling_max_equity = self.equity.cummax()
@@ -422,10 +456,43 @@ class PairsTradingBacktester:
             return dates.diff().mean()
 
         def win_rate():
+            if len(self.trades) == 0:
+                return np.nan
+            
             num_winning_trades = len(self.trades[self.trades['pnl_pct'] > 0])
             num_trades_total = len(self.trades)
 
             return round(num_winning_trades / num_trades_total * 100, 2)
+        
+        def best_trade():
+            if len(self.trades) == 0:
+                return np.nan
+            
+            return round(self.trades['pnl_pct'].max() * 100, 2)
+            
+        def worst_trade():
+            if len(self.trades) == 0:
+                return np.nan
+            
+            return round(self.trades['pnl_pct'].min() * 100, 2)
+        
+        def avg_trade():
+            if len(self.trades) == 0:
+                return np.nan
+            
+            return round(self.trades['pnl_pct'].mean() * 100, 2)
+        
+        def max_trade_duration():
+            if len(self.trades) == 0:
+                return np.nan
+            
+            return (pd.to_datetime(self.trades['exit_date']) - pd.to_datetime(self.trades['entry_date'])).max()            
+            
+        def avg_trade_duration():
+            if len(self.trades) == 0:
+                return np.nan
+            
+            return (pd.to_datetime(self.trades['exit_date']) - pd.to_datetime(self.trades['entry_date'])).mean()            
         ################################################################################
                 
         start = self.start_date
@@ -437,24 +504,26 @@ class PairsTradingBacktester:
             'End':end, 
             'Duration':duration, 
             'Exposure Time [%]': exposure_time(duration),
-            'Equity Final [$]':self.equity.iloc[-1]['equity'],
+            'Equity Final [$]':self.equity.dropna().iloc[-1]['equity'],
             'Equity Peak [$]':self.equity['equity'].max(),
-            'Return [%]':round((self.returns.iloc[-1]['return'] - 1) * 100, 2),
+            'Return [%]':round((self.returns.dropna().iloc[-1]['return'] - 1) * 100, 2),
             'Buy & Hold Return [%]':buy_and_hold_return(),
             'Sharpe Ratio':sharpe_ratio(), 
             'Sortino Ratio':sortino_ratio(),
-            'Calmar Ratio':calmar_ratio(), 
+            'Calmar Ratio':calmar_ratio(),
+            'CAGR / Avg. Drawdown':cagr_over_avg_drawdown(),
+            'Profit Factor':profit_factor(),
             'Max. Drawdown [%]':max_drawdown(),
             'Avg. Drawdown [%]':avg_drawdown(),
             'Max. Drawdown Duration':max_drawdown_duration(), 
             'Avg. Drawdown Duration':avg_drawdown_duration(),
             '# Trades':len(self.trades), 
             'Win Rate [%]':win_rate(), 
-            'Best Trade [%]':round(self.trades['pnl_pct'].max() * 100, 2),
-            'Worst Trade [%]':round(self.trades['pnl_pct'].min() * 100, 2), 
-            'Avg. Trade [%]':round(self.trades['pnl_pct'].mean() * 100, 2),
-            'Max. Trade Duration':(pd.to_datetime(self.trades['exit_date']) - pd.to_datetime(self.trades['entry_date'])).max(),
-            'Avg. Trade Duration':(pd.to_datetime(self.trades['exit_date']) - pd.to_datetime(self.trades['entry_date'])).mean()
+            'Best Trade [%]':best_trade(),
+            'Worst Trade [%]':worst_trade(), 
+            'Avg. Trade [%]':avg_trade(),
+            'Max. Trade Duration':max_trade_duration(),
+            'Avg. Trade Duration':avg_trade_duration()
         }
 
         return pd.DataFrame(metrics_dict).reset_index()[metrics_dict.keys()]
@@ -470,10 +539,6 @@ class PairsTradingBacktester:
         
         a0.get_legend().remove()
         plt.xlabel('')
-
-        y_ticks = a0.get_yticks()
-        y_ticks[-1] = self.returns['return'].max()
-        a0.set_yticks(y_ticks)
 
         # Plot PnL % for all trades taken
         plt.subplot(3,1,2)
@@ -520,17 +585,55 @@ class PairsTradingBacktester:
 
         prices.plot(ax = a2, grid = True, title = title, xlabel = '')
                 
-    def optimize_parameters(self, optimize_dict, maximize = 'Equity Final [$]'):
-        # Your implementation here
+    def optimize_parameters(self, optimize_dict, performance_metric = 'Equity Final [$]', minimize = False):
+        """
+        Optimize strategy over every combination of parameters given in
+        
+        optimize_dict and sets the class strategy parameters to the values that
+        
+        maximize/minimize the requested performance metric.        
+        """
+        
         lists = []
         parameter_combinations = []
 
+        best_comb_so_far = None
+        best_metric_so_far = 1000000000000 if minimize else -1000000000000
+        
         for key in optimize_dict.keys():
             lists.append(optimize_dict[key])
 
         parameter_combinations = list(itertools.product(*lists))
         
-    def backtest(self):
+        for i in range(len(parameter_combinations)):
+            
+            print('{}/{}'.format(i + 1, len(parameter_combinations)))            
+            
+            self.z_window = parameter_combinations[i][0]
+            self.hedge_ratio_window = parameter_combinations[i][1]
+            self.z_score_upper_thresh = parameter_combinations[i][2]
+            self.z_score_lower_thresh = parameter_combinations[i][3]
+            
+            self.backtest()
+
+            backtest_result_metric = float(self.performance_metrics[performance_metric][0])
+
+            if not minimize and backtest_result_metric > best_metric_so_far:
+                best_comb_so_far = parameter_combinations[i]
+                best_metric_so_far = backtest_result_metric
+
+            elif minimize and backtest_result_metric < best_metric_so_far:
+                best_comb_so_far = parameter_combinations[i]
+                best_metric_so_far = backtest_result_metric
+
+        self.z_window = best_comb_so_far[0]
+        self.hedge_ratio_window = best_comb_so_far[1]
+        self.z_score_upper_thresh = best_comb_so_far[2]
+        self.z_score_lower_thresh = best_comb_so_far[3]
+        
+        self.backtest()
+        
+    def backtest(self):        
         # Calculate rolling hedge ratios at each timestep
         self.data['rolling_hedge_ratio'] = self.__rolling_hedge_ratios()
         
@@ -546,6 +649,9 @@ class PairsTradingBacktester:
         # Calculate exit signals at each timestep
         self.data['exit_signals'] = self.__generate_exit_signals()
         
+        # Reset trades DataFrame to make sure it's empty
+        self.trades = pd.DataFrame(columns = ['entry_date', 'exit_date', self.symbol_id_2, self.symbol_id_1])
+        
         # Calculate long and short positions at each timestep
         self.positions = self.__generate_positions()
 
@@ -560,7 +666,7 @@ class PairsTradingBacktester:
 
         # Calculate performance metrics for backtest
         self.performance_metrics = self.calculate_performance_metrics()
-
+                
 # Example usage
 
 optimize_dict = {
