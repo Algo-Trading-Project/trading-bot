@@ -18,6 +18,7 @@ import redshift_connector
 import pandas as pd
 import numpy as np
 import multiprocessing as mp
+import json
 from math import ceil
 
 #################################
@@ -33,10 +34,9 @@ class BackTester:
                  start_date,
                  end_date,
                  strategies,
-                 optimize = False,
                  optimize_dict = {},
-                 backtest_params = {'starting_cash':10_000, 'commission':0.0025},
-                 pct_training_data = 0.7):
+                 backtest_params = {'starting_cash':10_000, 'commission':0.01},
+                 ):
 
         self.symbol_ids = symbol_ids
 
@@ -44,11 +44,8 @@ class BackTester:
         self.end_date = end_date
 
         self.strategies = strategies
-        self.optimize = optimize
         self.optimize_dict = optimize_dict
         self.backtest_params = backtest_params
-
-        self.pct_training_data = pct_training_data
 
     def __fetch_OHLCV_df_from_redshift(self, asset_id_base, asset_id_quote, exchange_id):
         # Connect to Redshift cluster containing price data
@@ -64,7 +61,7 @@ class BackTester:
                 if asset_id_base == 'ETH' and asset_id_quote == 'USD':
                     query = """
                     SELECT 
-                        time_period_start,
+                        time_period_end,
                         price_open,
                         price_high,
                         price_low,
@@ -83,7 +80,7 @@ class BackTester:
                     query = """
                     WITH requested_pair AS (
                         SELECT 
-                            time_period_start,
+                            time_period_end,
                             price_open,
                             price_high,
                             price_low,
@@ -106,7 +103,8 @@ class BackTester:
                             asset_id_base = 'ETH' AND
                             asset_id_quote = 'USD' AND
                             exchange_id = 'COINBASE' AND
-                            time_period_start >= '{}'
+                            time_period_start >= '{}' AND
+                            time_period_end <= '{}'
                         ORDER BY time_period_start
                     )
 
@@ -120,7 +118,7 @@ class BackTester:
                     FROM eth_usd_coinbase e INNER JOIN requested_pair r
                         ON e.time_period_start = r.time_period_start
                     ORDER BY e.time_period_start
-                    """.format(asset_id_base, asset_id_quote, exchange_id, self.start_date)
+                    """.format(asset_id_base, asset_id_quote, exchange_id, self.start_date, self.end_date)
 
                 # Execute query on Redshift and return result
                 cursor.execute(query)
@@ -130,126 +128,160 @@ class BackTester:
                 df = pd.DataFrame(tuples, columns = ['Time', 'Open', 'High', 'Low', 'Close', 'Volume']).set_index('Time')
                 df = df.astype(float)
 
-                training_data_end_index = ceil(len(df) * self.pct_training_data)
-                training_data, testing_data = df.iloc[:training_data_end_index], df.iloc[training_data_end_index:]
+                return df
 
-                return training_data, testing_data
+    def backtest(self, base, quote, exchange, strat, training_data, testing_data):
 
-    def evaluate_strategies(self):
-        backtest_result_cols = [
-            'asset_id_base', 'asset_id_quote', 'exchange_id', 'strategy_name', '_strategy',
-            'Start', 'End', 'Duration', 'Equity Final [$]', 
-            'Return [%]', 'Buy & Hold Return [%]', 'Sharpe Ratio', 'Sortino Ratio', 
-            'Calmar Ratio', 'Max. Drawdown [%]', 'Avg. Drawdown [%]', 'Max. Drawdown Duration',
-            'Avg. Drawdown Duration', '# Trades', 'Win Rate [%]', 'Avg. Trade [%]', 
-            'Best Trade [%]', 'Worst Trade [%]', 'Max. Trade Duration', 'Avg. Trade Duration' 
-        ]
+        in_sample_backtest = Backtest(
+            data = training_data, 
+            strategy = strat, 
+            cash = self.backtest_params['starting_cash'], 
+            commission = self.backtest_params['commission'],
+            trade_on_close = True
+        )
 
-        backtest_results = pd.DataFrame(columns = backtest_result_cols)
-
-        for symbol_id in self.symbol_ids:
-            split_symbol_id = symbol_id.split('_')
-            asset_id_base, asset_id_quote, exchange_id = split_symbol_id[0], split_symbol_id[1], split_symbol_id[2]
-            
-            training_data, testing_data = self.__fetch_OHLCV_df_from_redshift(asset_id_base, asset_id_quote, exchange_id)
-
-            print()
-            print('training data range: {} - {}'.format(training_data.index[0], training_data.index[-1]))
-            print('testing data range: {} - {}'.format(testing_data.index[0], testing_data.index[-1]))
-            print()
-
-            for strat in self.strategies:
-                print()
-                print('Now backtesting the {}/{} pair on {} using the {} strategy'.format(asset_id_base, asset_id_quote, exchange_id, strat.name()))
-                print()
-
-                in_sample_backtest = Backtest(
-                    data = training_data, 
-                    strategy = strat, 
-                    cash = self.backtest_params['starting_cash'], 
-                    commission = self.backtest_params['commission'],
-                    trade_on_close = True
-                )
-
-                if self.optimize and isinstance(self.optimize_dict.get(strat), dict):
-                    stats_for_strat = in_sample_backtest.optimize(
-                        **self.optimize_dict.get(strat),
-                        maximize = 'Equity Final [$]',
-                    )
-                else:
-                    stats_for_strat = in_sample_backtest.run()
-                
-                # Evaluate optimized trading strategy on unseen data
-                optimal_strat_params_str = str(stats_for_strat['_strategy'])
-                
-                optimal_strat_params_list = optimal_strat_params_str.strip(strat.name()).strip('()').split(',')
-                optimal_strat_params = {}
-
-                for param in optimal_strat_params_list:
-                    key, val = param.split('=')
-                    val = int(val)
-
-                    optimal_strat_params[key] = val
-                
-                strat.update_hyperparameters(optimal_strat_params)
-
-                out_of_sample_backtest = Backtest(
-                    data = testing_data, 
-                    strategy = strat, 
-                    cash = self.backtest_params['starting_cash'], 
-                    commission = self.backtest_params['commission'],
-                    trade_on_close = True
-                )
-
-                stats_for_strat = out_of_sample_backtest.run()
-
-                # Visualize results of trading strategy on unseen data
-                out_of_sample_backtest.plot(
-                    results = stats_for_strat, 
-                    open_browser = False,
-                    filename = 'src/backtest/{}_{}.html'.format(symbol_id, strat.name())
-                )
-
-                stats_for_strat['asset_id_base'] = asset_id_base
-                stats_for_strat['asset_id_quote'] = asset_id_quote
-                stats_for_strat['exchange_id'] = exchange_id
-                stats_for_strat['strategy_name'] = optimal_strat_params_str
-                stats_for_strat_df = stats_for_strat[backtest_result_cols].to_frame().T
-                backtest_results = backtest_results.append(stats_for_strat_df, ignore_index = True)
-
-                backtest_results.to_csv('src/backtest/backtest_results.csv')
+        in_sample_backtest_results = in_sample_backtest.optimize(
+            **self.optimize_dict.get(strat),
+            maximize = 'Sortino Ratio',
+            )
         
-        return backtest_results
+        # Evaluate optimized trading strategy on unseen data
+        optimal_strat_params_str = str(in_sample_backtest_results['_strategy'])
+        
+        optimal_strat_params_list = optimal_strat_params_str.strip(strat.name()).strip('()').split(',')
+        optimal_strat_params = {}
+
+        for param in optimal_strat_params_list:
+            key, val = param.split('=')
+            val = float(val)
+
+            optimal_strat_params[key] = val
+        
+        strat.update_hyperparameters(optimal_strat_params)
+
+        out_of_sample_backtest = Backtest(
+            data = testing_data, 
+            strategy = strat, 
+            cash = self.backtest_params['starting_cash'], 
+            commission = self.backtest_params['commission'],
+            trade_on_close = True
+        )
+
+        out_of_sample_backtest_results = out_of_sample_backtest.run()
+
+        # Delete unwanted metrics from in-sample and oos
+        # backtest results before uploading to Redshift
+        for del_col in ['Start', 'End', 'Duration', 'Max. Drawdown Duration',
+                        'Avg. Drawdown Duration', 'Max. Trade Duration',
+                        'Avg. Trade Duration', '_strategy']:
+            try:
+                del in_sample_backtest_results[del_col]
+            except:
+                pass
+
+            try:
+                del out_of_sample_backtest_results[del_col]
+            except:
+                pass
+
+        is_res_str = json.dumps(in_sample_backtest_results)
+        oos_res_str = json.dumps(out_of_sample_backtest_results)
+
+        # Upload backtest
+        with redshift_connector.connect(
+            host = 'project-poseidon.cpsnf8brapsd.us-west-2.redshift.amazonaws.com',
+            database = 'administrator',
+            user = 'administrator',
+            password = 'Free2play2'
+        ) as conn:
+            with conn.cursor() as cursor:
+                # Query to insert backtest results into Redshift 
+                query = """
+                INSERT INTO trading_bot.backtest_results VALUES 
+                ({}, {}, {}, {}, {}, {}, {}, {}, {}, {})
+                """.format(base, quote, exchange,
+                           strat.name(), training_data.index[0],
+                           training_data.index[-1], is_res_str,
+                           testing_data.index[0], testing_data.index[1],
+                           oos_res_str)
+                
+                # Execute query on Redshift
+                cursor.execute(query)
+    
+    def walk_forward_optimization(self, base, quote, exchange, strat,
+                                  in_sample_size, out_of_sample_size):
+        # Walk-forward analysis
+        start = 0
+
+        # Fetch revelant price data for backtest
+        backtest_data = self.__fetch_OHLCV_df_from_redshift(
+            asset_id_base = base,
+            asset_id_quote = quote,
+            exchange_id = exchange
+        )
+
+        while start + in_sample_size + out_of_sample_size <= len(backtest_data):
+            
+            if len(backtest_data.iloc[start:]) - (in_sample_size + out_of_sample_size) < out_of_sample_size:
+                in_sample_data = backtest_data.iloc[start:start + in_sample_size].copy()
+                out_of_sample_data = backtest_data.iloc[start + in_sample_size:].copy()
+            else:
+                in_sample_data = backtest_data.iloc[start:start + in_sample_size].copy()
+                out_of_sample_data = backtest_data.iloc[start + in_sample_size:start + in_sample_size + out_of_sample_size].copy()
+                        
+            self.backtest(
+                base = base,
+                quote = quote,
+                exchange = exchange,
+                strat = strat,
+                training_data = in_sample_data,
+                testing_data = out_of_sample_data
+            )
+            
+            start += out_of_sample_size
+                                    
+    def execute(self):
+        # Run a walk-forward optimization on each pair/strategy combination
+        for symbol_id in self.symbol_ids:
+            base, quote, exchange = symbol_id.split('_')
+            
+            for strat in self.strategies:
+                self.walk_forward_optimization(
+                    base = base,
+                    quote = quote, 
+                    exchange = exchange,
+                    strat = strat,
+                    in_sample_size = 24 * 30 * 6,
+                    out_of_sample_size = 24 * 30 * 3
+                )
 
 if __name__ == '__main__': 
     # mp.set_start_method('fork')
 
-    optimize_args = {
+    symbol_ids = [
+        'ETH_USD_COINBASE', 'BNB_ETH_BINANCE', 'LINK_ETH_BINANCE',
+        'ADA_ETH_BINANCE', 'XRP_ETH_BINANCE'
+    ]
+
+    optimize_args_arima = {
+        'p':[1, 2, 3],
+        'd':[0, 1],
+        'q':[1, 2, 3],
+        'ema_window':[3, 6, 12, 24, 48, 96]
     }
 
-    symbol_ids = [
-        # 'ETH_USD_COINBASE', #'LINK_ETH_BINANCE', 'BNB_ETH_BINANCE',
-        'ADA_ETH_BINANCE', 'DOGE_ETH_YOBIT', 'EOS_ETH_BINANCE',
-         'XRP_ETH_BINANCE', 'THETA_ETH_GATEIO', 'XLM_ETH_BINANCE',
-    #     'XMR_ETH_BINANCE', 'ZEC_ETH_BINANCE', 'BCH_ETH_HITBTC',
-    #     'IOTA_ETH_BINANCE'
-     ]
-    s = '2021/06/25'
-    e =  '2022/11/11'
-
     b = BackTester(
-        start_date = s,
-        end_date = e,
+        start_date = '2016/06/10',
+        end_date = '2022/09/01',
         symbol_ids = symbol_ids,
         strategies = [ARIMAStrategy],
-        optimize = True,
-        optimize_dict = {ARIMAStrategy: optimize_args},
-        pct_training_data = 0.7,
-
+        optimize_dict = {ARIMAStrategy: optimize_args_arima}
     )
 
     backtest_start = time.time()
-    strat_results = b.evaluate_strategies()
+
+    b.execute()
+
     backtest_end = time.time()
 
     print()

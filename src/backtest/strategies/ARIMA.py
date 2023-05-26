@@ -49,7 +49,9 @@ class ARIMAStrategy(Strategy):
                             (self.data.Close[-1] < self.ema[-1]) and 
                             (price_slope > 0))
             
-            exit_signal = (model_forecast < self.data.Close[-1]) and (self.data.Close[-1] > self.ema[-1]) and (price_slope < 0)
+            exit_signal = ((model_forecast < self.data.Close[-1]) and
+                          (self.data.Close[-1] > self.ema[-1]) and 
+                          (price_slope < 0))
 
             if self.position and exit_signal:
                 self.position.close()

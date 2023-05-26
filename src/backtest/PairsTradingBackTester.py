@@ -61,8 +61,11 @@ class PairsTradingBacktester:
         self.comission = comission
 
         # Fetch data required for backtest
-        self.data = self.get_data()
-        
+        merge, pivot = self.get_data()
+
+        self.data = merge
+        self.pivot = pivot
+
         # Backtest initialized w/ no position
         self.position = 0
 
@@ -90,7 +93,6 @@ class PairsTradingBacktester:
         # Performance metrics for backtest
         self.performance_metrics = None
 
-        
     ################################# HELPER METHODS #################################
 
     def __convert_to_usd(self, df, eth):
@@ -269,7 +271,6 @@ class PairsTradingBacktester:
 
                 # If entry signal is received
                 else:
-
                     # Set long and short position amounts for current timestamp to
                     # the amounts in the current trade since we haven't exited the
                     # current trade yet
@@ -342,7 +343,7 @@ class PairsTradingBacktester:
         merge = X.merge(Y, on = 'time_period_end', how = 'inner')
         merge = merge[(merge.index >= self.start_date) & (merge.index <= self.end_date)]
         
-        return merge
+        return merge, pivot
     
     def calculate_performance_metrics(self):
         ########################### HELPER FUNCTIONS ####################################
@@ -591,11 +592,12 @@ class PairsTradingBacktester:
         
         optimize_dict and sets the class strategy parameters to the values that
         
-        maximize/minimize the requested performance metric.        
+        maximize/minimize the requested performance metric over the given backtesting period.        
         """
         
         lists = []
         parameter_combinations = []
+        valid_combinations = []
 
         best_comb_so_far = None
         best_metric_so_far = 1000000000000 if minimize else -1000000000000
@@ -605,25 +607,34 @@ class PairsTradingBacktester:
 
         parameter_combinations = list(itertools.product(*lists))
         
-        for i in range(len(parameter_combinations)):
+        for comb in parameter_combinations:
+            if comb[0] > comb[1]:
+                continue
             
-            print('{}/{}'.format(i + 1, len(parameter_combinations)))            
+            valid_combinations.append(comb)
+        
+        for i in range(len(valid_combinations)):
             
-            self.z_window = parameter_combinations[i][0]
-            self.hedge_ratio_window = parameter_combinations[i][1]
-            self.z_score_upper_thresh = parameter_combinations[i][2]
-            self.z_score_lower_thresh = parameter_combinations[i][3]
+            if valid_combinations[i][0] > valid_combinations[i][1]:
+                continue
             
+            print('{}/{}'.format(i + 1, len(valid_combinations)))            
+            
+            self.z_window = valid_combinations[i][0]
+            self.hedge_ratio_window = valid_combinations[i][1]
+            self.z_score_upper_thresh = valid_combinations[i][2]
+            self.z_score_lower_thresh = valid_combinations[i][3]
+                        
             self.backtest()
 
             backtest_result_metric = float(self.performance_metrics[performance_metric][0])
 
             if not minimize and backtest_result_metric > best_metric_so_far:
-                best_comb_so_far = parameter_combinations[i]
+                best_comb_so_far = valid_combinations[i]
                 best_metric_so_far = backtest_result_metric
 
             elif minimize and backtest_result_metric < best_metric_so_far:
-                best_comb_so_far = parameter_combinations[i]
+                best_comb_so_far = valid_combinations[i]
                 best_metric_so_far = backtest_result_metric
 
         self.z_window = best_comb_so_far[0]
@@ -666,22 +677,78 @@ class PairsTradingBacktester:
 
         # Calculate performance metrics for backtest
         self.performance_metrics = self.calculate_performance_metrics()
-                
+
+    def walk_forward_optimization(self, in_sample_size, out_of_sample_size, optimize_dict, performance_metric_to_optimize, minimize = False):
+        # Walk-forward analysis
+        start = 0
+        results = []
+        equity_curves = []
+        trades = []
+        initial_capital = self.initial_capital
+
+        eth = self.pivot['price_close']['ETH_USD_COINBASE'].dropna()
+        X = self.__convert_to_usd(self.pivot['price_close'][self.symbol_id_1].dropna().to_frame(), eth)
+        Y = self.__convert_to_usd(self.pivot['price_close'][self.symbol_id_2].dropna().to_frame(), eth)
+        backtest_data = X.merge(Y, on = 'time_period_end', how = 'inner')
+        backtest_data = backtest_data[(backtest_data.index >= self.start_date) & (backtest_data.index <= self.end_date)]
+
+        while start + in_sample_size + out_of_sample_size <= len(backtest_data):
+            
+            if len(backtest_data.iloc[start:]) - (in_sample_size + out_of_sample_size) < out_of_sample_size:
+                in_sample_data = backtest_data.iloc[start:start + in_sample_size].copy()
+                out_of_sample_data = backtest_data.iloc[start + in_sample_size:].copy()
+            else:
+                in_sample_data = backtest_data.iloc[start:start + in_sample_size].copy()
+                out_of_sample_data = backtest_data.iloc[start + in_sample_size:start + in_sample_size + out_of_sample_size].copy()
+            
+            print('In sample date range: {} - {}'.format(in_sample_data.index[0], in_sample_data.index[-1]))
+            print('Out of sample date range: {} - {}'.format(out_of_sample_data.index[0], out_of_sample_data.index[-1]))
+            
+            self.data = in_sample_data
+
+            self.optimize_parameters(
+                optimize_dict,
+                performance_metric = performance_metric_to_optimize,
+                minimize = minimize
+            )  
+
+            self.data = out_of_sample_data
+
+            self.backtest()
+
+            results.append(self.performance_metrics)
+            equity_curves.append(self.equity)
+            trades.append(self.trades)
+            
+            # Set the initial capital for the next out-of-sample backtest
+            ending_equity = self.equity['equity'].iloc[-1]
+            self.initial_capital = ending_equity
+            
+            start += out_of_sample_size
+                        
+        self.initial_capital = initial_capital
+        
+        # Concatenate the equity curves        
+        self.equity = pd.concat(equity_curves)
+        self.trades = pd.concat(trades).reset_index()
+        self.returns = (self.equity / self.initial_capital).rename({'equity':'return'}, axis = 1)
+        
+        self.data = backtest_data
+        self.start_date = self.data.index[in_sample_size]
+        self.data = self.data.iloc[in_sample_size:]
+        
+        self.performance_metrics = self.calculate_performance_metrics()
+
+        return equity_curves, results
+
 # Example usage
-
-optimize_dict = {
-    'z_window':[6, 12, 24, 24*2, 24*3, 24*4, 24*5, 24*6, 24*7],
-    'hedge_ratio_window':[6, 12, 24, 24*2, 24*3, 24*4, 24*5, 24*6, 24*7],
-    'z_thresh_upper':[1.5, 2, 2.5, 3],
-    'z_thresh_lower':[-1.5, -2, -2.5, -3]
-}
-
 p = PairsTradingBacktester(
     symbol_id_1 = 'ETH_USD_COINBASE',
     symbol_id_2 = 'AAVE_ETH_BINANCE',
-    start_date = '2021-09-01',
+    start_date = '2020-09-01',
     end_date = '2022-09-01',
     pct_capital_per_trade = 1,
     initial_capital = 10_000,
     comission = 0.01
 )
+
