@@ -131,7 +131,6 @@ class BackTester:
                 return df
 
     def backtest(self, base, quote, exchange, strat, training_data, testing_data):
-
         in_sample_backtest = Backtest(
             data = training_data, 
             strategy = strat, 
@@ -148,7 +147,7 @@ class BackTester:
         # Evaluate optimized trading strategy on unseen data
         optimal_strat_params_str = str(in_sample_backtest_results['_strategy'])
         
-        optimal_strat_params_list = optimal_strat_params_str.strip(strat.name()).strip('()').split(',')
+        optimal_strat_params_list = optimal_strat_params_str.replace('Strategy', '').strip(strat.name()).strip('()').split(',')
         optimal_strat_params = {}
 
         for param in optimal_strat_params_list:
@@ -173,7 +172,7 @@ class BackTester:
         # backtest results before uploading to Redshift
         for del_col in ['Start', 'End', 'Duration', 'Max. Drawdown Duration',
                         'Avg. Drawdown Duration', 'Max. Trade Duration',
-                        'Avg. Trade Duration', '_strategy']:
+                        'Avg. Trade Duration', '_strategy', '_equity_curve', '_trades']:
             try:
                 del in_sample_backtest_results[del_col]
             except:
@@ -184,32 +183,36 @@ class BackTester:
             except:
                 pass
 
-        is_res_str = json.dumps(in_sample_backtest_results)
-        oos_res_str = json.dumps(out_of_sample_backtest_results)
+        is_res_str = json.dumps(dict(in_sample_backtest_results))
+        oos_res_str = json.dumps(dict(out_of_sample_backtest_results))
 
         # Upload backtest
         with redshift_connector.connect(
             host = 'project-poseidon.cpsnf8brapsd.us-west-2.redshift.amazonaws.com',
-            database = 'administrator',
+            database = 'trading_bot',
             user = 'administrator',
             password = 'Free2play2'
         ) as conn:
             with conn.cursor() as cursor:
                 # Query to insert backtest results into Redshift 
                 query = """
-                INSERT INTO trading_bot.backtest_results VALUES 
-                ({}, {}, {}, {}, {}, {}, {}, {}, {}, {})
-                """.format(base, quote, exchange,
-                           strat.name(), training_data.index[0],
-                           training_data.index[-1], is_res_str,
-                           testing_data.index[0], testing_data.index[1],
-                           oos_res_str)
+                INSERT INTO trading_bot.eth.backtest_results VALUES 
+                (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """
                 
                 # Execute query on Redshift
-                cursor.execute(query)
+                params = (base, quote, exchange, strat.name(), training_data.index[0],
+                          training_data.index[-1], is_res_str, testing_data.index[0],
+                          testing_data.index[-1], oos_res_str, json.dumps(optimal_strat_params))
+                
+                cursor.execute(query, params)
+                cursor.close()
+
+            conn.commit()
     
     def walk_forward_optimization(self, base, quote, exchange, strat,
                                   in_sample_size, out_of_sample_size):
+        
         # Walk-forward analysis
         start = 0
 
@@ -245,33 +248,36 @@ class BackTester:
         for symbol_id in self.symbol_ids:
             base, quote, exchange = symbol_id.split('_')
             
+            print()
+            print('Now backtesting {}'.format(symbol_id))
+            print()
+            
             for strat in self.strategies:
                 self.walk_forward_optimization(
                     base = base,
                     quote = quote, 
                     exchange = exchange,
                     strat = strat,
-                    in_sample_size = 24 * 30 * 6,
-                    out_of_sample_size = 24 * 30 * 3
+                    in_sample_size = 24 * 30 * 3,
+                    out_of_sample_size = 24 * 30 
                 )
 
 if __name__ == '__main__': 
     # mp.set_start_method('fork')
 
     symbol_ids = [
-        'ETH_USD_COINBASE', 'BNB_ETH_BINANCE', 'LINK_ETH_BINANCE',
-        'ADA_ETH_BINANCE', 'XRP_ETH_BINANCE'
+        'ETH_USD_COINBASE'
     ]
 
     optimize_args_arima = {
-        'p':[1, 2, 3],
-        'd':[0, 1],
-        'q':[1, 2, 3],
-        'ema_window':[3, 6, 12, 24, 48, 96]
+        'p':[1],
+        'd':[0],
+        'q':[1],
+        'ema_window':[6]
     }
 
     b = BackTester(
-        start_date = '2016/06/10',
+        start_date = '2022/07/01',
         end_date = '2022/09/01',
         symbol_ids = symbol_ids,
         strategies = [ARIMAStrategy],
