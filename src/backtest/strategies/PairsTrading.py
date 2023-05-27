@@ -72,7 +72,6 @@ class PairsTrading(Strategy):
         if self.rolling_hedge_ratio[-1] < 0:
             return
         
-        
         entry_signal = (self.rolling_spread_z_score[-2] > self.z_thresh_lower) and (self.rolling_spread_z_score[-1] < self.z_thresh_lower)
         exit_signal = (self.rolling_spread_z_score[-2] < self.z_thresh_upper) and (self.rolling_spread_z_score[-1] > self.z_thresh_upper)
                 

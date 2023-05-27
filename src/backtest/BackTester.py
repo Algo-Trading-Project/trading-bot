@@ -24,8 +24,12 @@ from math import ceil
 #################################
 #      TRADING STRATEGIES       #
 #################################
+
 from backtesting import Backtest
 from src.backtest.strategies.ARIMA import ARIMAStrategy
+from src.backtest.strategies.ARIMA_EXIT_ARIMA import ARIMA_EXIT_ARIMA
+from src.backtest.strategies.ARIMA_EXIT_PSLOPE import ARIMA_EXIT_PSLOPE
+from src.backtest.strategies.ARIMA_EXIT_TA import ARIMA_EXIT_TA
 
 class BackTester:
 
@@ -277,11 +281,11 @@ if __name__ == '__main__':
     }
 
     b = BackTester(
-        start_date = '2022/07/01',
+        start_date = '2017/01/01',
         end_date = '2022/09/01',
         symbol_ids = symbol_ids,
-        strategies = [ARIMAStrategy],
-        optimize_dict = {ARIMAStrategy: optimize_args_arima}
+        strategies = [ARIMAStrategy, ARIMA_EXIT_TA, ARIMA_EXIT_ARIMA, ARIMA_EXIT_PSLOPE],
+        optimize_dict = {ARIMAStrategy: optimize_args_arima, ARIMA_EXIT_TA:optimize_args_arima, ARIMA_EXIT_ARIMA:optimize_args_arima, ARIMA_EXIT_PSLOPE:optimize_args_arima}
     )
 
     backtest_start = time.time()
