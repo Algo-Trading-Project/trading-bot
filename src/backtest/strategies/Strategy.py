@@ -86,7 +86,8 @@ class Strategy:
         portfolio = vbt.Portfolio.from_signals(
             close = self.price_data,
             entries = entries,
-            exits = exits
+            exits = exits,
+            freq = 'h'
         )
 
         backtest_results = portfolio.stats().to_dict()
