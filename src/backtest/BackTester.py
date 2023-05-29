@@ -30,10 +30,6 @@ from strategies.indicator_funcs import indicator_func
 class BackTester:
 
     def __init__(self, 
-                 symbol_ids,
-                 start_date,
-                 end_date,
-                 indicator_funcs,
                  indicator_factory_dict,
                  indicator_func_defaults_dict,
                  optimization_metric = 'Total Return',
@@ -41,16 +37,10 @@ class BackTester:
                  backtest_params = {'starting_cash':10_000, 'commission':0.01}
                  ):
 
-        self.symbol_ids = symbol_ids
-
-        self.start_date = start_date
-        self.end_date = end_date
-
         self.optimization_metric = optimization_metric
         self.optimize_dict = optimize_dict
         self.backtest_params = backtest_params
 
-        self.indicator_funcs = indicator_funcs
         self.indicator_factory_dict = indicator_factory_dict
         self.indicator_func_defaults_dict = indicator_func_defaults_dict   
 
@@ -85,12 +75,10 @@ class BackTester:
                     WHERE 
                         asset_id_base = '{}' AND
                         asset_id_quote = '{}' AND
-                        exchange_id = '{}' AND
-                        time_period_start >= '{}' AND
-                        time_period_end <= '{}'
+                        exchange_id = '{}'
                     ORDER BY time_period_start ASC
                     """.format(title, asset_id_base, asset_id_quote, 
-                               exchange_id, self.start_date, self.end_date)
+                               exchange_id)
                 else:
                     title = asset_id_base + '-' + 'USD'
                     query = """
@@ -103,9 +91,8 @@ class BackTester:
                             asset_id_base = '{}' AND
                             asset_id_quote = '{}' AND
                             exchange_id = '{}'
-                        ORDER BY time_period_start
                     ), 
-                    eth_usd_coinbase AS (
+                    eth_usd_bitfinex AS (
                         SELECT
                             time_period_end,
                             price_close
@@ -113,20 +100,16 @@ class BackTester:
                         WHERE
                             asset_id_base = 'ETH' AND
                             asset_id_quote = 'USD' AND
-                            exchange_id = 'COINBASE' AND
-                            time_period_start >= '{}' AND
-                            time_period_end <= '{}'
-                        ORDER BY time_period_start
+                            exchange_id = 'BITFINEX'
                     )
 
                     SELECT
                         e.time_period_end,
                         r.price_close / (1 / e.price_close) AS "{}"
-                    FROM eth_usd_coinbase e INNER JOIN requested_pair r
+                    FROM eth_usd_bitfinex e INNER JOIN requested_pair r
                         ON e.time_period_end = r.time_period_end
                     ORDER BY e.time_period_end
-                    """.format(asset_id_base, asset_id_quote, exchange_id,
-                               self.start_date, self.end_date, title)
+                    """.format(asset_id_base, asset_id_quote, exchange_id, title)
 
                 # Execute query on Redshift and return result
                 cursor.execute(query)
@@ -216,9 +199,10 @@ class BackTester:
         )
 
         while start + in_sample_size + out_of_sample_size <= len(backtest_data):
+            print()
+            print('Progress: {} / {} days...'.format(int(start / 24), int(len(backtest_data) / 24)))
+            print()
 
-            print('Progress: {}/{}'.format(start, len(backtest_data)))
-            
             if len(backtest_data.iloc[start:]) - (in_sample_size + out_of_sample_size) < out_of_sample_size:
                 in_sample_data = backtest_data.iloc[start:start + in_sample_size]
                 out_of_sample_data = backtest_data.iloc[start + in_sample_size:]
@@ -239,30 +223,72 @@ class BackTester:
                                     
     def execute(self):
         # Run a walk-forward optimization on each pair/strategy combination
-        for symbol_id in self.symbol_ids:
-            base, quote, exchange = symbol_id.split('_')
 
-            for indicator_func in self.indicator_funcs:
+        with redshift_connector.connect(
+            host = 'project-poseidon.cpsnf8brapsd.us-west-2.redshift.amazonaws.com',
+            database = 'token_price',
+            user = 'administrator',
+            password = 'Free2play2'
+        ) as conn:
+            with conn.cursor() as cursor:
+                # Get all unique pairs in Redshift w/ atleast 1 year's worth of
+                # hourly price data
+                query = """
+                WITH num_days_data AS (
+                    SELECT 
+                        asset_id_base,
+                        asset_id_quote,
+                        exchange_id,
+                        COUNT(*) / 24.0 AS num_days_data
+                    FROM token_price.eth.stg_price_data_1h
+                    GROUP BY asset_id_base, asset_id_quote, exchange_id
+                ), 
+                ordered_pairs_by_data_size AS (
+                    SELECT
+                        *,
+                        ROW_NUMBER() OVER (PARTITION BY asset_id_base, asset_id_quote 
+                                           ORDER BY num_days_data DESC) AS pos
+                    FROM num_days_data
+                )
+
+                SELECT 
+                    asset_id_base,
+                    asset_id_quote,
+                    exchange_id
+                FROM ordered_pairs_by_data_size
+                WHERE 
+                    pos = 1 AND
+                    num_days_data >= 365
+                """
+
+                # Execute query on Redshift and return result
+                cursor.execute(query)
+                tuples = cursor.fetchall()
+                
+                # Turn queried data into a DataFrame
+                df = pd.DataFrame(tuples, columns = ['asset_id_base', 'asset_id_quote', 'exchange_id'])
+
+        for i in range(len(df)):
+            row = df.iloc[i]
+            base, quote, exchange = row['asset_id_base'], row['asset_id_quote'], row['exchange_id']
+
+            for indicator_func in self.optimize_dict.keys():
                 print()
                 print('Backtesting the {} strategy on {}'.format(
                     self.indicator_factory_dict.get(indicator_func)['class_name'],
-                    symbol_id
+                    base + '_' + 'USD' + '_' + exchange
                 ))
+
                 self.walk_forward_optimization(
                     base = base,
                     quote = quote, 
                     exchange = exchange,
                     strat = indicator_func,
-                    in_sample_size = 24 * 30 * 6,
-                    out_of_sample_size = 24 * 30 * 3 
+                    in_sample_size = 24 * 30 * 4,
+                    out_of_sample_size = 24 * 30 * 2 
                 )
 
 if __name__ == '__main__': 
-    # Pairs we want to run backtests on
-    
-    symbol_ids = [
-        'ETH_USD_COINBASE'
-    ]
 
     # This section contains one dictionary per strategy.  Each dictionary
     # includes all of the hyperparameters for a given strategy as keys and
@@ -304,17 +330,12 @@ if __name__ == '__main__':
     }
 
     b = BackTester(
-        start_date = '2017/01/01',
-        end_date = '2022/09/01',
-        symbol_ids = symbol_ids,
-        indicator_funcs = [indicator_func],
         indicator_factory_dict = indicator_factory_dict,
         indicator_func_defaults_dict = indicator_func_defaults_dict,
         optimization_metric = 'Calmar Ratio',
         optimize_dict = {
             indicator_func: optimize_args_test_strat_vbt
         }
-
     )
 
     backtest_start = time.time()
