@@ -4,6 +4,7 @@
 import sys
 import os
 sys.path.append(os.getcwd())
+
 #################################
 #             MISC              #
 #################################
@@ -17,15 +18,13 @@ import time
 import redshift_connector
 import pandas as pd
 import numpy as np
-import multiprocessing as mp
 import json
-import vectorbt as vbt
 
 #################################
 #      TRADING STRATEGIES       #
 #################################
 from strategies.Strategy import Strategy
-from strategies.indicator_funcs import indicator_func
+from strategies import config
 
 class BackTester:
 
@@ -290,52 +289,11 @@ class BackTester:
 
 if __name__ == '__main__': 
 
-    # This section contains one dictionary per strategy.  Each dictionary
-    # includes all of the hyperparameters for a given strategy as keys and
-    # a list of hyperparameter values to backtest as the values
-
-    optimize_args_test_strat_vbt = {
-        'fast_window':[3,6,12],
-        'slow_window':[24,48,96]
-    }
-
-    # This section contains one dictionary.  The keys are the custom indicator functions
-    # or strategies that will be backtested and the values are dictionaries with the following
-    # keys:
-    #       class_name : str - Name of the strategy
-    #       short_name : str - Shorter name of the strategy
-    #       input_names : list - List of inputs to the strategy
-    #       param_names : list - List of hyperparameters of the strategy
-    #       output_names : list - List of outputs of the strategy
-
-    indicator_factory_dict = {
-        indicator_func: {
-         'class_name':'Test_Strat_VBT',
-         'short_name':'test_strat',
-         'input_names':['close'],
-         'param_names':['fast_window', 'slow_window'],
-         'output_names':['entries', 'exits']
-         }
-    }
-
-    # This section contains one dictionary.  The keys are the custom indicator functions
-    # or strategies that will be backtested and the values are dictionaries containing
-    # default values for every hyperparameter of a given strategy
-
-    indicator_func_defaults_dict = {
-        indicator_func: {
-            'fast_window':24,
-            'slow_window':24 * 7
-        }
-    }
-
     b = BackTester(
-        indicator_factory_dict = indicator_factory_dict,
-        indicator_func_defaults_dict = indicator_func_defaults_dict,
+        indicator_factory_dict = config.indicator_factory_dict,
+        indicator_func_defaults_dict = config.indicator_func_defaults_dict,
         optimization_metric = 'Calmar Ratio',
-        optimize_dict = {
-            indicator_func: optimize_args_test_strat_vbt
-        }
+        optimize_dict = config.optimize_dict
     )
 
     backtest_start = time.time()
