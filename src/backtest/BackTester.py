@@ -294,4 +294,4 @@ if __name__ == '__main__':
     backtest_end = time.time()
 
     print()
-    print('time elapsed since backtest: {} mins'.format(round(abs(backtest_end - backtest_start) / 60.0, 2)))
+    print('Total Time Elapsed: {} mins'.format(round(abs(backtest_end - backtest_start) / 60.0, 2)))
