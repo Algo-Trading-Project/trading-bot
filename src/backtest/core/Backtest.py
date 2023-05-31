@@ -1,6 +1,6 @@
 import vectorbt as vbt
 
-class Strategy:
+class Backtest:
 
     def __init__(self, 
                  price_data, 

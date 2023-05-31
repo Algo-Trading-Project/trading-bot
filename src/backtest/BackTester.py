@@ -23,8 +23,8 @@ import json
 #################################
 #      TRADING STRATEGIES       #
 #################################
-from strategies.Strategy import Strategy
-from strategies import config
+from core.Backtest import Backtest
+import config
 
 class BackTester:
 
@@ -121,7 +121,7 @@ class BackTester:
                 return df
 
     def backtest(self, base, quote, exchange, strat, training_data, testing_data):
-        in_sample_backtest = Strategy(
+        in_sample_backtest = Backtest(
             price_data = training_data,
             indicator_factory_params = self.indicator_factory_dict.get(strat),
             indicator_func = strat,
@@ -134,7 +134,7 @@ class BackTester:
 
         # Evaluate optimized trading strategy on unseen data
 
-        out_of_sample_backtest = Strategy(
+        out_of_sample_backtest = Backtest(
             price_data = testing_data,
             indicator_factory_params = self.indicator_factory_dict.get(strat),
             indicator_func = strat,
