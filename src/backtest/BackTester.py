@@ -20,28 +20,23 @@ import pandas as pd
 import numpy as np
 import json
 
-#################################
-#      TRADING STRATEGIES       #
-#################################
+###############################################
+#      TRADING STRATEGIES / BACKTESTING       #
+###############################################
 from core.Backtest import Backtest
-import config
+from strategies.TestStratVBT import TestStratVBT
 
 class BackTester:
 
     def __init__(self, 
-                 indicator_factory_dict,
-                 indicator_func_defaults_dict,
-                 optimization_metric = 'Total Return',
-                 optimize_dict = {},
-                 backtest_params = {'starting_cash':10_000, 'commission':0.01}
+                 strategies,
+                 optimization_metric = 'Sortino Ratio',
+                 backtest_params = {'init_cash':10_000, 'fees':0.01}
                  ):
 
         self.optimization_metric = optimization_metric
-        self.optimize_dict = optimize_dict
         self.backtest_params = backtest_params
-
-        self.indicator_factory_dict = indicator_factory_dict
-        self.indicator_func_defaults_dict = indicator_func_defaults_dict   
+        self.strategies = strategies
 
     def serialize_json_data(obj):
         if isinstance(obj, pd.Timedelta):
@@ -121,27 +116,25 @@ class BackTester:
                 return df
 
     def backtest(self, base, quote, exchange, strat, training_data, testing_data):
-        in_sample_backtest = Backtest(
+        is_backtest = Backtest(
+            strategy = strat,
             price_data = training_data,
-            indicator_factory_params = self.indicator_factory_dict.get(strat),
-            indicator_func = strat,
-            indicator_func_defaults = self.indicator_func_defaults_dict.get(strat),
-            optimize_dict = self.optimize_dict.get(strat),
-            optimization_metric = self.optimization_metric
+            optimization_metric = self.optimization_metric,
+            backtest_params = self.backtest_params
         )   
 
-        optimal_params, is_backtest_results = in_sample_backtest.optimize() 
+        optimal_params, is_backtest_results = is_backtest.optimize() 
 
         # Evaluate optimized trading strategy on unseen data
 
-        out_of_sample_backtest = Backtest(
+        oos_backtest = Backtest(
+            strategy = strat,
             price_data = testing_data,
-            indicator_factory_params = self.indicator_factory_dict.get(strat),
-            indicator_func = strat,
-            indicator_func_defaults = self.indicator_func_defaults_dict.get(strat)
+            optimization_metric = self.optimization_metric,
+            backtest_params = self.backtest_params
         )   
 
-        oos_backtest_results = out_of_sample_backtest.backtest(optimal_params)
+        oos_backtest_results = oos_backtest.backtest(optimal_params)
 
         # Delete unwanted metrics from in-sample and oos
         # backtest results before uploading to Redshift
@@ -172,7 +165,7 @@ class BackTester:
                 """
                 
                 # Execute query on Redshift
-                params = (self.indicator_factory_dict.get(strat)['class_name'], base, quote, exchange,
+                params = (strat.indicator_factory_dict['class_name'], base, quote, exchange,
                           training_data.index[0], training_data.index[-1], 
                           json.dumps(is_backtest_results, default = BackTester.serialize_json_data), 
                           testing_data.index[0], testing_data.index[-1], 
@@ -271,10 +264,10 @@ class BackTester:
             row = df.iloc[i]
             base, quote, exchange = row['asset_id_base'], row['asset_id_quote'], row['exchange_id']
 
-            for indicator_func in self.optimize_dict.keys():
+            for strat in self.strategies:
                 print()
                 print('Backtesting the {} strategy on {}'.format(
-                    self.indicator_factory_dict.get(indicator_func)['class_name'],
+                   strat.indicator_factory_dict['class_name'],
                     base + '_' + 'USD' + '_' + exchange
                 ))
 
@@ -282,18 +275,18 @@ class BackTester:
                     base = base,
                     quote = quote, 
                     exchange = exchange,
-                    strat = indicator_func,
+                    strat = strat,
                     in_sample_size = 24 * 30 * 4,
                     out_of_sample_size = 24 * 30 * 2 
                 )
 
 if __name__ == '__main__': 
+    backtest_params = {'init_cash': 10_000, 'fees': 0.01, 'size':0.03, 'tp_stop':0.1}
 
     b = BackTester(
-        indicator_factory_dict = config.indicator_factory_dict,
-        indicator_func_defaults_dict = config.indicator_func_defaults_dict,
-        optimization_metric = 'Calmar Ratio',
-        optimize_dict = config.optimize_dict
+        strategies = [TestStratVBT],
+        optimization_metric = 'Sortino Ratio',
+        backtest_params = backtest_params
     )
 
     backtest_start = time.time()

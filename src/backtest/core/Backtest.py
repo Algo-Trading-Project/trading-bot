@@ -3,35 +3,22 @@ import vectorbt as vbt
 class Backtest:
 
     def __init__(self, 
+                 strategy,
                  price_data, 
-                 indicator_factory_params, 
-                 indicator_func,
-                 indicator_func_defaults,
-                 optimize_dict = {}, 
-                 optimization_metric = 'Total Return'):
+                 optimization_metric,
+                 backtest_params):
         
         """
-        price_data -               Dataframe of closing price data indexed by timestamp
-        
-        optimize_dict -            Dictionary of all hyperparameter combinations to use in backtest
-
-        optimization_metric -      Performance metric to optimize backtests on
-
-        indicator_factory_params - Dictionary of parameters needed to create a custom
-                                   indicator in vectorbt
-
-        indicator_func -           User-defined function that takes in an arbitrary amount
-                                   of input data including close price data as well as
-                                   an arbitrary amount of hyperparameters and returns
-                                   entry and exit signals for the price data
-        
-        indicator_func_defaults - Dictionary of default values for the hyperparameters
-                                  used in indicator_func
+        strategy            - Strategy class in src/backtest/strategies to backtested
+        price_data          - Dataframe of close price data indexed by timestamp
+        optimization_metric - Performance metric to optimize backtest on
+        backtest_params     - Miscellaneous parameters to configure the backtest
         """
         
         self.price_data = price_data
-        self.optimize_dict = optimize_dict
         self.optimization_metric = optimization_metric
+        self.strategy = strategy
+        self.backtest_params = backtest_params
 
         self.metric_map = {
             'Total Return':'total_return',
@@ -59,14 +46,14 @@ class Backtest:
             'Sortino Ratio':'Max'
         }
 
-        self.custom_indicator = (vbt.IndicatorFactory(**indicator_factory_params)
-                                 .from_apply_func(indicator_func, **indicator_func_defaults))
+        self.custom_indicator = (vbt.IndicatorFactory(**strategy.indicator_factory_dict)
+                                 .from_apply_func(strategy.indicator_func, **strategy.default_dict))
 
-    def generate_signals(self):        
+    def generate_signals(self, params, param_product = False): 
         res = self.custom_indicator.run(
-            self.price_data, 
-            param_product = True,
-            **self.optimize_dict
+            self.price_data,
+            param_product = param_product,
+            **params
         )
 
         entries = res.entries
@@ -75,19 +62,14 @@ class Backtest:
         return entries, exits
     
     def backtest(self, params):
-        res = self.custom_indicator.run(
-            self.price_data,
-            **params
-        )
-
-        entries = res.entries
-        exits = res.exits
+        entries, exits = self.generate_signals(params = params)
 
         portfolio = vbt.Portfolio.from_signals(
             close = self.price_data,
             entries = entries,
             exits = exits,
-            freq = 'h'
+            freq = 'h',
+            **self.backtest_params
         )
 
         backtest_results = portfolio.stats().to_dict()
@@ -102,13 +84,17 @@ class Backtest:
         return backtest_results
 
     def optimize(self):
-        entries, exits = self.generate_signals()
+        entries, exits = self.generate_signals(
+            params = self.strategy.optimize_dict,
+            param_product = True
+        )
 
         portfolio = vbt.Portfolio.from_signals(
             close = self.price_data,
             entries = entries,
             exits = exits,
-            freq = 'h'
+            freq = 'h',
+            **self.backtest_params
         )
 
         metric_attribute_path = self.metric_map.get(self.optimization_metric)
