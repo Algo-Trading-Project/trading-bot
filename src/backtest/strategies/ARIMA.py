@@ -1,56 +1,81 @@
-from backtesting import Strategy
-from backtesting.lib import crossover
+import vectorbt as vbt
+import numpy as np
 
 from statsmodels.tsa.arima.model import ARIMA
 
-from ta.trend import EMAIndicator
-from ta.volatility import BollingerBands
-
-import pandas as pd
-import numpy as np
-
-class ARIMAStrategy(Strategy):
-   
-    # ARIMA hyperparameters
-    p = 1
-    d = 0
-    q = 1
-    ema_window = 24
-                
-    def ema(open, ema_window):
-        ema = EMAIndicator(close = open, window = ema_window)
-        return ema.ema_indicator()
-
-    def name():
-        return 'ARIMA'
+class ARIMAStrat:
     
-    def update_hyperparameters(params_dict):
-        for param_name, optimal_param_value in params_dict.items():
-            setattr(ARIMAStrategy, param_name, optimal_param_value)
+    indicator_factory_dict = {
+        'class_name':'ARIMA',
+        'short_name':'arima',
+        'input_names':['close'],
+        'param_names':['p', 'd', 'q', 'ema_window', 'forecast_window'],
+        'output_names':['entries', 'exits']
+    }
 
-    def init(self):
-        super().init()
+    optimize_dict = {
+        'p': [2],
+        'd': [1],
+        'q': [2],
+        'ema_window': [24],
+        'forecast_window': [3]
+    }
 
-        self.ema = self.I(ARIMAStrategy.ema, pd.Series(self.data.Close), self.ema_window)
+    default_dict = {
+        'p': 1,
+        'd': 0,
+        'q': 1,
+        'ema_window': 24,
+        'forecast_window':1
+    }
 
-    def next(self):
-        if len(self.data.Close) >= 50:
-            model = ARIMA(self.data.Close, order = (self.p, self.d, self.q))
-            fit_model = model.fit()          
-            model_forecast = fit_model.forecast()[0]
-
-            price_slope = self.data.Close[-1] - self.data.Close[-2]
+    def indicator_func(close, p, d, q, ema_window, forecast_window):
+        entries = []
+        exits = []
+        
+        ema = vbt.MA.run(
+            close = close, 
+            window = ema_window,
+            ewm = True
+        ).ma.values
+    
+        for i in range(len(close)):
+            print('(p = {}, d = {}, q = {}, ema = {}, forecast_window = {}) {} / {}'.format(p, d, q, ema_window, forecast_window, i + 1, len(close)))
             
-            entry_signal = ((model_forecast > self.data.Close[-1]) and 
-                            (self.data.Close[-1] < self.ema[-1]) and 
-                            (price_slope > 0))
+            if i < 24 * 7:
+                entries.append(False)
+                exits.append(False)
+                continue
             
-            exit_signal = ((model_forecast < self.data.Close[-1]) and
-                          (self.data.Close[-1] > self.ema[-1]) and 
-                          (price_slope < 0))
+            model = ARIMA(
+                close[i - 24 * 7: i + 1], 
+                order = (p, d, q), 
+                enforce_stationarity = False, 
+                enforce_invertibility = False,
+            )
 
-            if self.position and exit_signal:
-                self.position.close()
+            fit_model = model.fit()
+            
+            pred = fit_model.get_prediction(start = 0, end = forecast_window)
+            conf_int = pred.conf_int(alpha = 0.01)
 
-            elif not self.position and entry_signal:
-                self.buy(sl = self.data.Close[-1] * 0.95, tp = self.data.Close[-1] * 1.1)
+            lower_bound = conf_int[-1][0]
+            upper_bound = conf_int[-1][-1]
+
+            entry_signal = (
+                (close[i - 1][0] < ema[i - 1][0]) and
+                (close[i][0] > ema[i][0]) and
+                ((upper_bound - close[i][0]) / close[i][0] >= .005)
+            )
+
+            exit_signal = (
+                (close[i - 1][0] > ema[i - 1][0]) and
+                (close[i][0] < ema[i][0])
+            )
+
+            entries.append(entry_signal)
+            exits.append(exit_signal)
+
+        return entries, exits
+
+print(.000000000000000000000000001)
