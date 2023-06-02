@@ -24,7 +24,9 @@ import json
 #      TRADING STRATEGIES / BACKTESTING       #
 ###############################################
 from core.Backtest import Backtest
+
 from strategies.TestStratVBT import TestStratVBT
+from strategies.ARIMA import ARIMAStrat
 
 class BackTester:
 
@@ -45,9 +47,7 @@ class BackTester:
             return int(obj)
         elif isinstance(obj, np.floating):
             return float(obj)
-        
-        raise TypeError("Type not serializable")
-     
+             
     def __fetch_OHLCV_df_from_redshift(self, asset_id_base, asset_id_quote, exchange_id):
         # Connect to Redshift cluster containing price data
         with redshift_connector.connect(
@@ -112,7 +112,7 @@ class BackTester:
                 # Return queried data as a DataFrame
                 df = pd.DataFrame(tuples, columns = ['Date', title]).set_index('Date')
                 df = df.astype(float)
-
+                
                 return df
 
     def backtest(self, base, quote, exchange, strat, training_data, testing_data):
@@ -161,16 +161,22 @@ class BackTester:
                 # Query to insert backtest results into Redshift 
                 query = """
                 INSERT INTO trading_bot.eth.backtest_results VALUES 
-                (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """
-                
+                str_is_backtest_results = json.dumps(is_backtest_results, default = BackTester.serialize_json_data)
+                str_is_backtest_results = str_is_backtest_results.replace('NaN', 'null').replace('Infinity', 'null')
+
+                str_oos_backtest_results = json.dumps(oos_backtest_results, default = BackTester.serialize_json_data)
+                str_oos_backtest_results = str_oos_backtest_results.replace('NaN', 'null').replace('Infinity', 'null')
+
                 # Execute query on Redshift
                 params = (strat.indicator_factory_dict['class_name'], base, quote, exchange,
                           training_data.index[0], training_data.index[-1], 
-                          json.dumps(is_backtest_results, default = BackTester.serialize_json_data), 
+                          str_is_backtest_results, 
                           testing_data.index[0], testing_data.index[-1], 
-                          json.dumps(oos_backtest_results, default = BackTester.serialize_json_data),
-                          json.dumps(optimal_params, default = BackTester.serialize_json_data), self.optimization_metric)
+                          str_oos_backtest_results,
+                          json.dumps(optimal_params, default = BackTester.serialize_json_data), self.optimization_metric,
+                          json.dumps(self.backtest_params, default = BackTester.serialize_json_data))
                 
                 cursor.execute(query, params)
                 cursor.close()
@@ -259,6 +265,12 @@ class BackTester:
                 
                 # Turn queried data into a DataFrame
                 df = pd.DataFrame(tuples, columns = ['asset_id_base', 'asset_id_quote', 'exchange_id'])
+                
+                eth = df[(df['asset_id_base'] == 'ETH') & (df['asset_id_quote'] == 'USD')].copy()
+                temp = df.iloc[0].copy()
+                
+                df.iloc[0] = eth
+                df.iloc[eth.index] = temp
 
         for i in range(len(df)):
             row = df.iloc[i]
@@ -277,14 +289,14 @@ class BackTester:
                     exchange = exchange,
                     strat = strat,
                     in_sample_size = 24 * 30 * 4,
-                    out_of_sample_size = 24 * 30 * 2 
+                    out_of_sample_size = 24 * 30 * 4 
                 )
 
 if __name__ == '__main__': 
-    backtest_params = {'init_cash': 10_000, 'fees': 0.01, 'size':0.03, 'tp_stop':0.1}
+    backtest_params = {'init_cash': 10_000, 'fees': 0.01, 'size':1}
 
     b = BackTester(
-        strategies = [TestStratVBT],
+        strategies = [ARIMAStrat],
         optimization_metric = 'Sortino Ratio',
         backtest_params = backtest_params
     )

@@ -1,4 +1,5 @@
 import vectorbt as vbt
+import numpy as np
 
 class Backtest:
 
@@ -50,6 +51,8 @@ class Backtest:
                                  .from_apply_func(strategy.indicator_func, **strategy.default_dict))
 
     def generate_signals(self, params, param_product = False): 
+        p = self.price_data.to_numpy()
+
         res = self.custom_indicator.run(
             self.price_data,
             param_product = param_product,
@@ -110,14 +113,14 @@ class Backtest:
         if self.metric_min_max_map.get(self.optimization_metric) == 'Max':
             maximizing_index = backtest_result_metrics.idxmax()
             
-            for param_name, best_value in zip(self.optimize_dict.keys(), maximizing_index):
+            for param_name, best_value in zip(self.strategy.optimize_dict.keys(), maximizing_index):
                 best_param_comb[param_name] = best_value
 
             return best_param_comb, portfolio.loc[maximizing_index].stats().to_dict()
         else:
             minimizing_index = backtest_result_metrics.idxmin()
 
-            for param_name, best_value in zip(self.optimize_dict.keys(), minimizing_index):
+            for param_name, best_value in zip(self.strategy.optimize_dict.keys(), minimizing_index):
                 best_param_comb[param_name] = best_value
 
             return best_param_comb, portfolio.loc[minimizing_index].stats().to_dict()
