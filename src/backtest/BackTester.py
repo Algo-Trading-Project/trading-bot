@@ -112,7 +112,7 @@ class BackTester:
                 # Return queried data as a DataFrame
                 df = pd.DataFrame(tuples, columns = ['Date', title]).set_index('Date')
                 df = df.astype(float)
-                
+
                 return df
 
     def backtest(self, base, quote, exchange, strat, training_data, testing_data):
@@ -257,6 +257,7 @@ class BackTester:
                 WHERE 
                     pos = 1 AND
                     num_days_data >= 365
+                ORDER BY asset_id_base, asset_id_quote, exchange_id
                 """
 
                 # Execute query on Redshift and return result
@@ -278,9 +279,10 @@ class BackTester:
 
             for strat in self.strategies:
                 print()
-                print('Backtesting the {} strategy on {}'.format(
+                print('Backtesting the {} strategy on {} ({} / {})'.format(
                    strat.indicator_factory_dict['class_name'],
-                    base + '_' + 'USD' + '_' + exchange
+                    base + '_' + 'USD' + '_' + exchange,
+                    i + 1, len(df)
                 ))
 
                 self.walk_forward_optimization(
@@ -296,7 +298,7 @@ if __name__ == '__main__':
     backtest_params = {'init_cash': 10_000, 'fees': 0.01, 'size':1}
 
     b = BackTester(
-        strategies = [ARIMAStrat],
+        strategies = [TestStratVBT],
         optimization_metric = 'Sortino Ratio',
         backtest_params = backtest_params
     )

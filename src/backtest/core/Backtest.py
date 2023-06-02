@@ -51,8 +51,6 @@ class Backtest:
                                  .from_apply_func(strategy.indicator_func, **strategy.default_dict))
 
     def generate_signals(self, params, param_product = False): 
-        p = self.price_data.to_numpy()
-
         res = self.custom_indicator.run(
             self.price_data,
             param_product = param_product,

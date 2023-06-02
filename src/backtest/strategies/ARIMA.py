@@ -11,7 +11,7 @@ class ARIMAStrat:
         'input_names':['close'],
         'param_names':['p', 'd', 'q', 'ema_window', 'forecast_window'],
         'output_names':['entries', 'exits']
-    }
+    } 
 
     optimize_dict = {
         'p': [2],
@@ -39,9 +39,7 @@ class ARIMAStrat:
             ewm = True
         ).ma.values
     
-        for i in range(len(close)):
-            print('(p = {}, d = {}, q = {}, ema = {}, forecast_window = {}) {} / {}'.format(p, d, q, ema_window, forecast_window, i + 1, len(close)))
-            
+        for i in range(len(close)):            
             if i < 24 * 7:
                 entries.append(False)
                 exits.append(False)
@@ -77,5 +75,3 @@ class ARIMAStrat:
             exits.append(exit_signal)
 
         return entries, exits
-
-print(.000000000000000000000000001)
