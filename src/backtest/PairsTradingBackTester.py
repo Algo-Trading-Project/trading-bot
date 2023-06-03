@@ -1,754 +1,335 @@
+#################################
+# ADDING PACKAGE TO PYTHON PATH #
+#################################
+import sys
+import os
+sys.path.append(os.getcwd())
+
+#################################
+#         MISC IMPORTS          #
+#################################
+import warnings
+from statsmodels.tools.sm_exceptions import ConvergenceWarning
+
+warnings.simplefilter('ignore', ConvergenceWarning)
+warnings.simplefilter('ignore', UserWarning)
+warnings.simplefilter('ignore', RuntimeWarning)
+
+import time
+import redshift_connector
 import pandas as pd
+pd.options.mode.chained_assignment = None
+
 import numpy as np
-import matplotlib.pyplot as plt
+import json
 import itertools
+import statsmodels.api as sm
 
-from statsmodels.regression.rolling import RollingOLS
 from statsmodels.tools import add_constant
-from backtesting.lib import crossover, cross
-from datetime import timedelta
+from statsmodels.tsa.stattools import adfuller
+###############################################
+#      TRADING STRATEGIES / BACKTESTING       #
+###############################################
+from core.PairsTradingBackTest import PairsTradingBacktest
 
-class PairsTradingBacktester:
-    # BACKTESTING PARAMETERS
-
-    # Window size to calculate the rolling z score
-    # of the price spread
-    z_window = 96
-
-    # Window size to calculate the rollling hedge ratios 
-    hedge_ratio_window = 168
-
-    # Value of price spread rolling z score to initiate 
-    # a buy
-    z_score_upper_thresh = 2
-
-    # Value of price spread rolling z score to initiate 
-    # a sell
-    z_score_lower_thresh = -2.5
+class PairsTradingBackTester:
 
     def __init__(self, 
-                 symbol_id_1, 
-                 symbol_id_2, 
-                 start_date, 
-                 end_date, 
-                 initial_capital = 10_000, 
-                 pct_capital_per_trade = 0.1,
-                 comission = 0.01):
-        """
-        symbol_id_1 - Token we're shorting in the backtest
-
-        symbol_id_2 - Token we're longing in the backtest
-
-        start_date - Start date of the backtest
-
-        end_date - End date of the backtest
+                 optimize_dict,
+                 optimization_metric = 'Sortino Ratio',
+                 backtest_params = {'init_cash':10_000, 'fees':0.01}
+                 ):
         
-        initial_captial - Starting capital of the backtest
-        
-        pct_capital_per_trade - Percent of available capital to allocate to each trade
-        
-        comission - Percentage deducted from each buy and sell order made
-        """
+        self.optimize_dict = optimize_dict
+        self.optimization_metric = optimization_metric
+        self.backtest_params = backtest_params
 
-        self.symbol_id_1 = symbol_id_1
-        self.symbol_id_2 = symbol_id_2
-
-        self.start_date = pd.to_datetime(start_date)
-        self.end_date = pd.to_datetime(end_date)
-        
-        self.initial_capital = initial_capital
-        self.pct_capital_per_trade = pct_capital_per_trade
-        self.comission = comission
-
-        # Fetch data required for backtest
-        merge, pivot = self.get_data()
-
-        self.data = merge
-        self.pivot = pivot
-
-        # Backtest initialized w/ no position
-        self.position = 0
-
-        # Number of units long in our current position
-        self.curr_position_long_units = 0
-
-        # Number of units short in our current position
-        self.curr_position_short_units = 0
-
-        # Trades executed throughout the backtest
-        self.trades = pd.DataFrame(columns = ['entry_date', 'exit_date', self.symbol_id_2, self.symbol_id_1])
-
-        #  Long and short positions at each timestep
-        self.positions = None
-
-        # PnL in dollars at each timestep
-        self.pnl = None
-
-        # Equity at each timestep
-        self.equity = None
-
-        # Percent returns at each timestep
-        self.returns = None
-
-        # Performance metrics for backtest
-        self.performance_metrics = None
-
-    ################################# HELPER METHODS #################################
-
-    def __convert_to_usd(self, df, eth):
-        if 'ETH_USD' in df.columns[0]:
-            return df
-        
-        m = df.merge(eth, on = 'time_period_end', how = 'inner')
-        m[df.columns[0]] = m[df.columns[0]] * m['ETH_USD_COINBASE']
-        return m[df.columns[0]].to_frame()
+    def serialize_json_data(obj):
+        if isinstance(obj, pd.Timedelta):
+            return obj.total_seconds()
+        elif isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
     
-    def __rolling_hedge_ratios(self):
-        return RollingOLS(
-            endog = self.data[self.symbol_id_2].to_frame(),
-            exog = add_constant(self.data[self.symbol_id_1].to_frame()),
-            window = self.hedge_ratio_window
-        ).fit().params[self.symbol_id_1]
-    
-    def __rolling_spread(self):
-        return self.data[self.symbol_id_2].values - self.data['rolling_hedge_ratio'].values * self.data[self.symbol_id_1].values
-    
-    def __rolling_spread_z_score(self):
-        rolling_spread = self.data['rolling_spread']
-        return (rolling_spread - rolling_spread.rolling(window = self.z_window).mean()) / rolling_spread.rolling(window = self.z_window).std()
-    
-    def __generate_entry_signals(self):
-        entry_signals = []
-        for i in range(len(self.data)):
-            if i == 0:
-                entry_signals.append(0)
-                continue
+    ############################################ HELPER FUNCTIONS ############################################
+
+    def __get_data(self, symbol_id_1, symbol_id_2):
+        base_1, quote_1, exchange_id_1 = symbol_id_1.split('_')
+        base_2, quote_2, exchange_id_2 = symbol_id_2.split('_')
+        
+        with redshift_connector.connect(
+            host = 'project-poseidon.cpsnf8brapsd.us-west-2.redshift.amazonaws.com',
+            database = 'token_price',
+            user = 'administrator',
+            password = 'Free2play2'
+        ) as conn:
+            with conn.cursor() as cursor:
+                query = """
+                WITH symbol_id_1 AS (
+                    SELECT 
+                        time_period_end,
+                        price_close
+                    FROM token_price.eth.stg_price_data_1h
+                    WHERE
+                        asset_id_base = '{}' AND
+                        asset_id_quote = '{}' AND
+                        exchange_id = '{}'
+                ), symbol_id_2 AS (
+                    SELECT 
+                        time_period_end,
+                        price_close
+                    FROM token_price.eth.stg_price_data_1h
+                    WHERE
+                        asset_id_base = '{}' AND
+                        asset_id_quote = '{}' AND
+                        exchange_id = '{}'
+                )
                 
-            if (not crossover(self.data.loc[:self.data.index[i], 'rolling_spread_z_score'], self.z_score_lower_thresh) and
-                cross(self.data.loc[:self.data.index[i], 'rolling_spread_z_score'], self.z_score_lower_thresh)):
-                entry_signals.append(1)
-            else:
-                entry_signals.append(0)
+                SELECT
+                    s1.time_period_end,
+                    s1.price_close AS "{}",
+                    s2.price_close AS "{}"
+                FROM symbol_id_1 s1 INNER JOIN symbol_id_2 s2
+                        ON s1.time_period_end = s2.time_period_end
+                ORDER BY s1.time_period_end 
+                """.format(
+                    base_1, quote_1, exchange_id_1,
+                    base_2, quote_2, exchange_id_2,
+                    symbol_id_1, symbol_id_2
+                )
+        
+                cursor.execute(query)
+                tuples = cursor.fetchall()
+        
+                # Return queried data as a DataFrame
+                df = pd.DataFrame(tuples, columns = ['time_period_end', symbol_id_1, symbol_id_2]).set_index('time_period_end')
+                df = df.astype(float)
 
-        return entry_signals
+                return df
+            
+    def __is_cointegrated(self, symbol_id_1, symbol_id_2, p_val_thresh = 0.05):                    
+        data = self.__get_data(
+            symbol_id_1 = symbol_id_1,
+            symbol_id_2 = symbol_id_2
+        )  
 
-    def __generate_exit_signals(self):
-        exit_signals = []
-        for i in range(len(self.data)):
-            if i == 0:
-                exit_signals.append(0)
-                continue
+        correlation = np.corrcoef(data[symbol_id_1], data[symbol_id_2])[0][1]
+
+        if correlation < 0.8 or len(data) == 0:
+            return False, {}
+                    
+        X = data[symbol_id_1]
+        X = add_constant(X)
+        
+        Y = data[symbol_id_2]
+        Y = add_constant(Y)
                 
-            if crossover(self.data.loc[:self.data.index[i], 'rolling_spread_z_score'], self.z_score_upper_thresh):
-                exit_signals.append(1)
-            else:
-                exit_signals.append(0)
-
-        return exit_signals
-    
-    def __close_trade(self, positions, i):
-        # Set long and short position amount for current timestamp to 0
-        # to simulate closing the trade
-        positions.loc[self.data.index[i], self.symbol_id_2] = 0
-        positions.loc[self.data.index[i], self.symbol_id_1] = 0
+        ols1 = sm.OLS(Y[symbol_id_2], X).fit()
+        ols2 = sm.OLS(X[symbol_id_1], Y).fit()
         
-        # Set the exit date of the current trade to the current timestamp
-        self.trades.loc[len(self.trades) - 1,'exit_date'] = self.data.index[i]
-
-        # Indicate we're no longer in a trade
-        self.position = 0
+        best_ols = min([ols1, ols2], key = lambda x: adfuller(x.resid)[1])
+        best_p_val = adfuller(best_ols.resid)[1]
         
-        # Calculate pnl and pnl % from trade
-
-        # Entry and exit dates of most current trade
-        start = self.trades.loc[len(self.trades) - 1,'entry_date']
-        end = self.trades.loc[len(self.trades) - 1,'exit_date']
-
-        # Calculate the PnL from the long position
-        start_value_long = self.data.loc[start, self.symbol_id_2] * positions.loc[start, self.symbol_id_2]
-        end_value_long = self.data.loc[end, self.symbol_id_2] * positions.loc[start, self.symbol_id_2]
-        long_pnl = end_value_long - start_value_long
-
-        # Calculate the PnL from the short position
-        start_value_short = self.data.loc[start, self.symbol_id_1] * positions.loc[start, self.symbol_id_1]
-        end_value_short = self.data.loc[end, self.symbol_id_1] * positions.loc[start, self.symbol_id_1]
-        short_pnl = start_value_short - end_value_short
-
-        # Calculate the PnL from the entire trade 
-        trade_pnl = long_pnl + short_pnl
-        total_investment = start_value_long + start_value_short
-        trade_pnl_pct = trade_pnl / total_investment
-        
-        # Set the PnL and PnL % of the current trade
-        self.trades.loc[len(self.trades) - 1, 'pnl_pct'] = trade_pnl_pct
-        self.trades.loc[len(self.trades) - 1, 'pnl'] = trade_pnl
-        
-        return end_value_long + end_value_short
-
-    def __generate_positions(self):
-        # Long and short positions throughout backtest
-        positions = pd.DataFrame(index = self.data.index, columns = [self.symbol_id_2, self.symbol_id_1])
-        
-        # Tracking available capital throughout backtest
-        curr_capital = self.initial_capital
-        
-        # Iterate through each timestamp of dataset
-        for i in range(len(self.data)):  
-
-            # Retrieve entry and exit signals at current timestamp          
-            entry_signal = self.data.loc[self.data.index[i], 'entry_signals']
-            exit_signal = self.data.loc[self.data.index[i], 'exit_signals']
-
-            # If not in a trade at current timestamp
-            if not self.position:
-
-                # If entry signal is received
-                if entry_signal: 
-                    
-                    # If on the last timestamp then don't open a trade
-                    if i == len(self.data) - 1:
-                        continue
-                        
-                    # If rolling hedge ratio is negative then don't open a trade
-                    if self.data.loc[self.data.index[i], 'rolling_hedge_ratio'] <= 0:
-                        continue
-                    
-                    # Amount of dollars to allocate to the long position
-                    long_allocation = (1 - self.comission) * curr_capital * self.pct_capital_per_trade / 2
-                    
-                    # Number of units of token2 to long
-                    units_long = long_allocation / self.data.loc[self.data.index[i], self.symbol_id_2]
-                    
-                    # Amount of dollars to allocate to the short position
-                    short_allocation = (1 - self.comission) * curr_capital * self.pct_capital_per_trade / 2
-
-                    # Number of units of token1 to short
-                    units_short = short_allocation / self.data.loc[self.data.index[i], self.symbol_id_1]
-
-                    # Set long and short position amounts for current timestamp
-                    positions.loc[self.data.index[i], self.symbol_id_2] = units_long
-                    positions.loc[self.data.index[i], self.symbol_id_1] = units_short
-                    
-                    curr_capital -= (long_allocation + short_allocation)
-                    
-                    # Initialize a new trade and append it to the trades DataFrame
-                    new_trade = {
-                        'entry_date':self.data.index[i],
-                        'exit_date':np.nan,
-                         self.symbol_id_2:units_long,
-                         self.symbol_id_1:units_short,
-                        'pnl':np.nan,
-                        'pnl_pct':np.nan
-                    }
-    
-                    new_trade = pd.DataFrame(new_trade, index = [0])
-                    self.trades = pd.concat([self.trades, new_trade], ignore_index = True)
-                    
-                    # Track number of units in current long and short position
-                    self.curr_position_long_units = units_long
-                    self.curr_position_short_units = units_short
-                    
-                    # Indicate we're in a trade now
-                    self.position = 1
-
-                # If exit signal is received
-                else:
-
-                    # Set long and short position amounts for current timestamp to 0
-                    # since we're not in a trade
-                    positions.loc[self.data.index[i], self.symbol_id_2] = 0
-                    positions.loc[self.data.index[i], self.symbol_id_1] = 0
-
-            # If in a trade at current timestamp
-            else:
-
-                # If exit signal is received
-                if exit_signal:
-
-                    # Close the current trade
-                    end_trade_amount = self.__close_trade(positions = positions, i = i)
-                    curr_capital += end_trade_amount
-
-                # If entry signal is received
-                else:
-                    # Set long and short position amounts for current timestamp to
-                    # the amounts in the current trade since we haven't exited the
-                    # current trade yet
-                    positions.loc[self.data.index[i], self.symbol_id_2] = self.curr_position_long_units
-                    positions.loc[self.data.index[i], self.symbol_id_1] = self.curr_position_short_units
+        if best_ols == ols1 and best_p_val <= p_val_thresh:
+            coint_dict = {
+                'X':symbol_id_1,
+                'Y':symbol_id_2
+            }
+            return True, coint_dict
             
-            # If the backtest reaches the final timestamp and the current trade hasn't
-            # been exited yet 
-            if i == len(self.data) - 1 and len(self.trades) > 0 and type(self.trades.loc[len(self.trades) - 1, 'exit_date']) == type(np.nan):
+        elif best_ols == ols2 and best_p_val <= p_val_thresh:
+            coint_dict = {
+                'X':symbol_id_2,
+                'Y':symbol_id_1
+            }
+            return True, coint_dict
 
-                # Close the current trade
-                end_trade_amount = self.__close_trade(positions = positions, i = i)
-                curr_capital += end_trade_amount
+        else:
+            return False, {}
 
-        return positions
-    
-    def __generate_pnl(self):
-        pnl_data = pd.DataFrame(index = self.data.index, columns = ['pnl']).fillna(0)
-        
-        for index, trade in self.trades.iterrows():
-            entry_date = trade['entry_date']
-            exit_date = trade['exit_date']
-            
-            units_long = trade[self.symbol_id_2]
-            units_short = trade[self.symbol_id_1]
-            
-            trade_period = self.data.loc[entry_date:exit_date].copy()
-            
-            trade_period['long_pnl'] = trade_period[self.symbol_id_2].diff() * units_long
-            trade_period['short_pnl'] = -trade_period[self.symbol_id_1].diff() * units_short
-            trade_period['total_pnl'] = trade_period['long_pnl'] + trade_period['short_pnl']
+    ########################################## HELPER FUNCTIONS END ##########################################
 
-            for date in trade_period.index:
-                pnl_data.loc[date, 'pnl'] = trade_period.loc[date, 'total_pnl']
-                
-        return pnl_data
-
-    def __generate_equity_curve(self):
-        return (self.initial_capital + self.pnl.cumsum()).rename({'pnl':'equity'}, axis = 1)
-    
-    def __generate_returns(self):
-        return (self.equity / self.initial_capital).rename({'equity':'return'}, axis = 1)
-                
-    ################################# HELPER METHODS #################################
-    
-    def get_data(self):
-        cols = [
-            'price_open', 'price_high', 'price_low', 
-            'price_close', 'asset_id_base', 'asset_id_quote', 'exchange_id'
-        ]
-
-        df = pd.read_csv(
-            '/Users/louisspencer/Desktop/Trading-Bot/src/backtest/backtest_data/price_data_1hr.csv', 
-            index_col='time_period_end'
-        )[cols]
-        
-        df.index = pd.to_datetime(df.index)
-
-        df['symbol_id'] = df.asset_id_base + '_' + df.asset_id_quote + '_' + df.exchange_id
-
-        pivot = df.pivot_table(
-            index = 'time_period_end',
-            columns = 'symbol_id', 
-            values = ['price_open', 'price_high', 'price_low', 'price_close']
+    def backtest(self, symbol_id_1, symbol_id_2, training_data, testing_data):
+        is_backtest = PairsTradingBacktest(
+            price_data = training_data,
+            symbol_id_1 = symbol_id_1,
+            symbol_id_2 = symbol_id_2
         )
 
-        eth = pivot['price_close']['ETH_USD_COINBASE'].dropna()
-        X = self.__convert_to_usd(pivot['price_close'][self.symbol_id_1].dropna().to_frame(), eth)
-        Y = self.__convert_to_usd(pivot['price_close'][self.symbol_id_2].dropna().to_frame(), eth)
-        merge = X.merge(Y, on = 'time_period_end', how = 'inner')
-        merge = merge[(merge.index >= self.start_date) & (merge.index <= self.end_date)]
-        
-        return merge, pivot
-    
-    def calculate_performance_metrics(self):
-        ########################### HELPER FUNCTIONS ####################################
-        def exposure_time(duration):
-            exposure = timedelta(days = 0, hours = 0)
-
-            for i in range(len(self.trades)):
-                entry_date = pd.to_datetime(self.trades.loc[i, 'entry_date'])
-                exit_date = pd.to_datetime(self.trades.loc[i, 'exit_date'])
-                trade_duration = exit_date - entry_date
-                exposure += trade_duration
-            
-            return round(exposure / duration * 100, 2)
-
-        def buy_and_hold_return():
-            token1_start_value = self.data.loc[self.data.index[0], self.symbol_id_1]
-            token1_end_value = self.data.loc[self.data.index[-1], self.symbol_id_1]
-            buy_and_hold_return_token_1 = round((token1_end_value - token1_start_value) / token1_start_value * 100, 2)
-            
-            token2_start_value = self.data.loc[self.data.index[0], self.symbol_id_2]
-            token2_end_value = self.data.loc[self.data.index[-1], self.symbol_id_2]
-            buy_and_hold_return_token_2 = round((token2_end_value - token2_start_value) / token2_start_value * 100, 2)
-
-            return max([buy_and_hold_return_token_1, buy_and_hold_return_token_2])
-        
-        def sharpe_ratio():
-            returns = self.equity.equity.pct_change()
-            mean_returns = returns.mean()
-            std_returns = returns.std()
-            
-            try:
-                return np.sqrt(8760) * mean_returns / std_returns 
-            except:
-                return np.nan
-            
-        def sortino_ratio():
-            returns = self.equity.pct_change()
-            negative_returns = returns[returns['equity'] < 0]
-            
-            mean_returns = returns.mean()
-            std_negative_returns = negative_returns.std()
-            
-            try:
-                return np.sqrt(8760) * mean_returns / std_negative_returns 
-            except:
-                return np.nan
-            
-        def calmar_ratio():
-            num_years = len(self.data) / 8760
-            cum_ret_final = (1 + self.equity.equity.pct_change()).prod().squeeze()
-            annual_returns = cum_ret_final ** (1 / num_years) - 1
-            
-            try:
-                return annual_returns / abs(max_drawdown() / 100)
-            except:
-                return np.nan
-
-        def cagr_over_avg_drawdown():
-            num_years = len(self.data) / 8760
-            cum_ret_final = (1 + self.equity.equity.pct_change()).prod().squeeze()
-            annual_returns = cum_ret_final ** (1 / num_years) - 1
-            
-            try:
-                return annual_returns / abs(avg_drawdown() / 100)
-            except:
-                return np.nan
-
-        def profit_factor():
-            if len(self.trades) == 0:
-                return np.nan
-            
-            gross_profit = self.trades[self.trades['pnl'] > 0]['pnl'].sum()
-            gross_loss = abs(self.trades[self.trades['pnl'] < 0]['pnl'].sum())
-            
-            return gross_profit / gross_loss
-        
-        def max_drawdown():
-            rolling_max_equity = self.equity.cummax()
-            drawdown = (self.equity / rolling_max_equity) - 1
-            max_dd = drawdown.min()
-            return round(max_dd * 100, 2)
-        
-        def avg_drawdown():
-            rolling_max_equity = self.equity.cummax()
-            drawdown = (self.equity / rolling_max_equity) - 1
-            avg_dd = drawdown.mean()
-            return round(avg_dd * 100, 2)
-        
-        def max_drawdown_duration():
-            dates = pd.Series([pd.to_datetime(self.start_date)])
-            
-            diff = self.equity.cummax().diff().fillna(0)
-            diff = diff[diff['equity'] != 0]
-
-            for date in diff.index:
-                date = pd.to_datetime(date)
-                dates = pd.concat([dates, pd.Series(date)], ignore_index = True)
-
-            return dates.diff().max()
-        
-        def avg_drawdown_duration():
-            dates = pd.Series([pd.to_datetime(self.start_date)])
-            
-            diff = self.equity.cummax().diff().fillna(0)
-            diff = diff[diff['equity'] != 0]
-
-            for date in diff.index:
-                date = pd.to_datetime(date)
-                dates = pd.concat([dates, pd.Series(date)], ignore_index = True)
-
-            return dates.diff().mean()
-
-        def win_rate():
-            if len(self.trades) == 0:
-                return np.nan
-            
-            num_winning_trades = len(self.trades[self.trades['pnl_pct'] > 0])
-            num_trades_total = len(self.trades)
-
-            return round(num_winning_trades / num_trades_total * 100, 2)
-        
-        def best_trade():
-            if len(self.trades) == 0:
-                return np.nan
-            
-            return round(self.trades['pnl_pct'].max() * 100, 2)
-            
-        def worst_trade():
-            if len(self.trades) == 0:
-                return np.nan
-            
-            return round(self.trades['pnl_pct'].min() * 100, 2)
-        
-        def avg_trade():
-            if len(self.trades) == 0:
-                return np.nan
-            
-            return round(self.trades['pnl_pct'].mean() * 100, 2)
-        
-        def max_trade_duration():
-            if len(self.trades) == 0:
-                return np.nan
-            
-            return (pd.to_datetime(self.trades['exit_date']) - pd.to_datetime(self.trades['entry_date'])).max()            
-            
-        def avg_trade_duration():
-            if len(self.trades) == 0:
-                return np.nan
-            
-            return (pd.to_datetime(self.trades['exit_date']) - pd.to_datetime(self.trades['entry_date'])).mean()            
-        ################################################################################
-                
-        start = self.start_date
-        end = self.end_date
-        duration = pd.to_datetime(end) - pd.to_datetime(start)
-        
-        metrics_dict = {
-            'Start':start,
-            'End':end, 
-            'Duration':duration, 
-            'Exposure Time [%]': exposure_time(duration),
-            'Equity Final [$]':self.equity.dropna().iloc[-1]['equity'],
-            'Equity Peak [$]':self.equity['equity'].max(),
-            'Return [%]':round((self.returns.dropna().iloc[-1]['return'] - 1) * 100, 2),
-            'Buy & Hold Return [%]':buy_and_hold_return(),
-            'Sharpe Ratio':sharpe_ratio(), 
-            'Sortino Ratio':sortino_ratio(),
-            'Calmar Ratio':calmar_ratio(),
-            'CAGR / Avg. Drawdown':cagr_over_avg_drawdown(),
-            'Profit Factor':profit_factor(),
-            'Max. Drawdown [%]':max_drawdown(),
-            'Avg. Drawdown [%]':avg_drawdown(),
-            'Max. Drawdown Duration':max_drawdown_duration(), 
-            'Avg. Drawdown Duration':avg_drawdown_duration(),
-            '# Trades':len(self.trades), 
-            'Win Rate [%]':win_rate(), 
-            'Best Trade [%]':best_trade(),
-            'Worst Trade [%]':worst_trade(), 
-            'Avg. Trade [%]':avg_trade(),
-            'Max. Trade Duration':max_trade_duration(),
-            'Avg. Trade Duration':avg_trade_duration()
-        }
-
-        return pd.DataFrame(metrics_dict).reset_index()[metrics_dict.keys()]
-
-    def visualize_results(self):
-        fig, (a0, a1, a2) = plt.subplots(nrows = 3, ncols = 1, figsize = (16, 10), gridspec_kw={'height_ratios': [0.4, 0.4, 0.6]})
-        fig.subplots_adjust(hspace=.5)
-        
-        # Plot % returns curve
-        plt.subplot(3,1,1)
-        
-        (self.equity.rename({'equity':''}, axis = 1) / self.initial_capital).plot(ax = a0, grid = True, title = 'Return [%]')
-        
-        a0.get_legend().remove()
-        plt.xlabel('')
-
-        # Plot PnL % for all trades taken
-        plt.subplot(3,1,2)
-        
-        trade_pnl_pct = pd.DataFrame(index = self.data.index, columns = ['pnl_pct']).fillna(0)
-        trade_marker_colors = pd.DataFrame(index = self.data.index, columns = ['color']).fillna('green')
-        alphas = pd.DataFrame(index = self.data.index, columns = ['alpha']).fillna(0)
-        
-        for i in range(len(self.trades)):
-            exit_date = self.trades.loc[i, 'exit_date']
-            pnl_pct = self.trades.loc[i, 'pnl_pct']
-
-            trade_pnl_pct.loc[exit_date, 'pnl_pct'] = pnl_pct * 100
-            alphas.loc[exit_date, 'alpha'] = 1
-
-            if pnl_pct > 0:
-                trade_marker_colors.loc[exit_date, 'color'] = 'green'
-            else:
-                trade_marker_colors.loc[exit_date, 'color'] = 'red'
-
-        trade_pnl_pct.reset_index().plot(
-            ax = a1,
-            kind = 'scatter', 
-            x = 'time_period_end', 
-            y = 'pnl_pct',
-            title = 'Profit / Loss [%]',
-            marker = '^', 
-            c = trade_marker_colors.color.values, 
-            s = 100,
-            alpha = alphas.alpha.values,
-            grid = True
+        optimal_params, is_backtest_results = is_backtest.optimize_parameters(
+            optimize_dict = self.optimize_dict,
+            performance_metric = 'CAGR / Avg. Drawdown',
+            minimize = False
         )
-        
-        plt.ylabel('')
-        plt.xlabel('')
 
-        # Plot normalized price data of the two tokens used
-        plt.subplot(3,1,3)
-        
-        prices = self.data[[self.symbol_id_2, self.symbol_id_1]]
-        prices = (prices - prices.min()) / (prices.max() - prices.min())
+        # Evaluate optimized trading strategy on unseen data
 
-        title = '{} vs. {} (Normalized)'.format(self.symbol_id_2, self.symbol_id_1)
+        oos_backtest = PairsTradingBacktest(
+            price_data = testing_data,
+            symbol_id_1 = symbol_id_1,
+            symbol_id_2 = symbol_id_2
+        )
 
-        prices.plot(ax = a2, grid = True, title = title, xlabel = '')
+        oos_backtest.z_window = optimal_params['z_window']
+        oos_backtest.hedge_ratio_window = optimal_params['hedge_ratio_window']
+        oos_backtest.z_score_upper_thresh = optimal_params['z_score_upper_thresh']
+        oos_backtest.z_score_lower_thresh = optimal_params['z_score_lower_thresh']
+
+        oos_backtest_results = oos_backtest.backtest()
+
+        # Upload backtest
+        with redshift_connector.connect(
+            host = 'project-poseidon.cpsnf8brapsd.us-west-2.redshift.amazonaws.com',
+            database = 'trading_bot',
+            user = 'administrator',
+            password = 'Free2play2'
+        ) as conn:
+            with conn.cursor() as cursor:
+                # Query to insert backtest results into Redshift 
+                query = """
+                INSERT INTO trading_bot.eth.pairs_trading_backtest_results VALUES 
+                (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """
+                str_is_backtest_results = json.dumps(is_backtest_results, default = PairsTradingBackTester.serialize_json_data)
+                str_is_backtest_results = str_is_backtest_results.replace('NaN', 'null').replace('Infinity', 'null')
+
+                str_oos_backtest_results = json.dumps(oos_backtest_results, default = PairsTradingBackTester.serialize_json_data)
+                str_oos_backtest_results = str_oos_backtest_results.replace('NaN', 'null').replace('Infinity', 'null')
+
+                # Execute query on Redshift
+                params = (symbol_id_1, symbol_id_2, training_data.index[0], training_data.index[-1], 
+                          str_is_backtest_results, testing_data.index[0], testing_data.index[-1],
+                          str_oos_backtest_results, json.dumps(optimal_params, default = PairsTradingBackTester.serialize_json_data),
+                          self.optimization_metric, json.dumps(self.backtest_params, default = PairsTradingBackTester.serialize_json_data)
+                          )
                 
-    def optimize_parameters(self, optimize_dict, performance_metric = 'Equity Final [$]', minimize = False):
-        """
-        Optimize strategy over every combination of parameters given in
+                cursor.execute(query, params)
+                cursor.close()
+
+            conn.commit()
+    
+    def walk_forward_optimization(self, symbol_id_1, symbol_id_2,
+                                  in_sample_size, out_of_sample_size):
         
-        optimize_dict and sets the class strategy parameters to the values that
-        
-        maximize/minimize the requested performance metric over the given backtesting period.        
-        """
-        
-        lists = []
-        parameter_combinations = []
-        valid_combinations = []
-
-        best_comb_so_far = None
-        best_metric_so_far = 1000000000000 if minimize else -1000000000000
-        
-        for key in optimize_dict.keys():
-            lists.append(optimize_dict[key])
-
-        parameter_combinations = list(itertools.product(*lists))
-        
-        for comb in parameter_combinations:
-            if comb[0] > comb[1]:
-                continue
-            
-            valid_combinations.append(comb)
-        
-        for i in range(len(valid_combinations)):
-            
-            if valid_combinations[i][0] > valid_combinations[i][1]:
-                continue
-            
-            print('{}/{}'.format(i + 1, len(valid_combinations)))            
-            
-            self.z_window = valid_combinations[i][0]
-            self.hedge_ratio_window = valid_combinations[i][1]
-            self.z_score_upper_thresh = valid_combinations[i][2]
-            self.z_score_lower_thresh = valid_combinations[i][3]
-                        
-            self.backtest()
-
-            backtest_result_metric = float(self.performance_metrics[performance_metric][0])
-
-            if not minimize and backtest_result_metric > best_metric_so_far:
-                best_comb_so_far = valid_combinations[i]
-                best_metric_so_far = backtest_result_metric
-
-            elif minimize and backtest_result_metric < best_metric_so_far:
-                best_comb_so_far = valid_combinations[i]
-                best_metric_so_far = backtest_result_metric
-
-        self.z_window = best_comb_so_far[0]
-        self.hedge_ratio_window = best_comb_so_far[1]
-        self.z_score_upper_thresh = best_comb_so_far[2]
-        self.z_score_lower_thresh = best_comb_so_far[3]
-        
-        self.backtest()
-        
-    def backtest(self):        
-        # Calculate rolling hedge ratios at each timestep
-        self.data['rolling_hedge_ratio'] = self.__rolling_hedge_ratios()
-        
-        # Calculate rolling spread at each timestep
-        self.data['rolling_spread'] = self.__rolling_spread()
-        
-        # Calculate rolling spread z score at each timestep
-        self.data['rolling_spread_z_score'] = self.__rolling_spread_z_score()
-
-        # Calculate entry signals at each timestep
-        self.data['entry_signals'] = self.__generate_entry_signals()
-
-        # Calculate exit signals at each timestep
-        self.data['exit_signals'] = self.__generate_exit_signals()
-        
-        # Reset trades DataFrame to make sure it's empty
-        self.trades = pd.DataFrame(columns = ['entry_date', 'exit_date', self.symbol_id_2, self.symbol_id_1])
-        
-        # Calculate long and short positions at each timestep
-        self.positions = self.__generate_positions()
-
-        # Calculate PnL in dollars at each timestep
-        self.pnl = self.__generate_pnl()
-
-        # Calculate equity at each timestep
-        self.equity = self.__generate_equity_curve()
-
-        # Calculate % returns at each timestep
-        self.returns = self.__generate_returns()
-
-        # Calculate performance metrics for backtest
-        self.performance_metrics = self.calculate_performance_metrics()
-
-    def walk_forward_optimization(self, in_sample_size, out_of_sample_size, optimize_dict, performance_metric_to_optimize, minimize = False):
         # Walk-forward analysis
         start = 0
-        results = []
-        equity_curves = []
-        trades = []
-        initial_capital = self.initial_capital
 
-        eth = self.pivot['price_close']['ETH_USD_COINBASE'].dropna()
-        X = self.__convert_to_usd(self.pivot['price_close'][self.symbol_id_1].dropna().to_frame(), eth)
-        Y = self.__convert_to_usd(self.pivot['price_close'][self.symbol_id_2].dropna().to_frame(), eth)
-        backtest_data = X.merge(Y, on = 'time_period_end', how = 'inner')
-        backtest_data = backtest_data[(backtest_data.index >= self.start_date) & (backtest_data.index <= self.end_date)]
+        # Fetch revelant price data for backtest
+        backtest_data = self.__get_data(
+            symbol_id_1 = symbol_id_1,
+            symbol_id_2 = symbol_id_2
+        )
 
         while start + in_sample_size + out_of_sample_size <= len(backtest_data):
-            
+            print()
+            print('Progress: {} / {} days...'.format(int(start / 24), int(len(backtest_data) / 24)))
+            print()
+
             if len(backtest_data.iloc[start:]) - (in_sample_size + out_of_sample_size) < out_of_sample_size:
-                in_sample_data = backtest_data.iloc[start:start + in_sample_size].copy()
-                out_of_sample_data = backtest_data.iloc[start + in_sample_size:].copy()
+                in_sample_data = backtest_data.iloc[start:start + in_sample_size]
+                out_of_sample_data = backtest_data.iloc[start + in_sample_size:]
             else:
-                in_sample_data = backtest_data.iloc[start:start + in_sample_size].copy()
-                out_of_sample_data = backtest_data.iloc[start + in_sample_size:start + in_sample_size + out_of_sample_size].copy()
-            
-            print('In sample date range: {} - {}'.format(in_sample_data.index[0], in_sample_data.index[-1]))
-            print('Out of sample date range: {} - {}'.format(out_of_sample_data.index[0], out_of_sample_data.index[-1]))
-            
-            self.data = in_sample_data
-
-            self.optimize_parameters(
-                optimize_dict,
-                performance_metric = performance_metric_to_optimize,
-                minimize = minimize
-            )  
-
-            self.data = out_of_sample_data
-
-            self.backtest()
-
-            results.append(self.performance_metrics)
-            equity_curves.append(self.equity)
-            trades.append(self.trades)
-            
-            # Set the initial capital for the next out-of-sample backtest
-            ending_equity = self.equity['equity'].iloc[-1]
-            self.initial_capital = ending_equity
+                in_sample_data = backtest_data.iloc[start:start + in_sample_size]
+                out_of_sample_data = backtest_data.iloc[start + in_sample_size:start + in_sample_size + out_of_sample_size]
+                        
+            self.backtest(
+                symbol_id_1 = symbol_id_1,
+                symbol_id_2 = symbol_id_2,
+                training_data = in_sample_data,
+                testing_data = out_of_sample_data
+            )
             
             start += out_of_sample_size
-                        
-        self.initial_capital = initial_capital
-        
-        # Concatenate the equity curves        
-        self.equity = pd.concat(equity_curves)
-        self.trades = pd.concat(trades).reset_index()
-        self.returns = (self.equity / self.initial_capital).rename({'equity':'return'}, axis = 1)
-        
-        self.data = backtest_data
-        self.start_date = self.data.index[in_sample_size]
-        self.data = self.data.iloc[in_sample_size:]
-        
-        self.performance_metrics = self.calculate_performance_metrics()
+                                                        
+    def execute(self):
+        # Run a walk-forward optimization on each pair/strategy combination
 
-        return equity_curves, results
+        with redshift_connector.connect(
+            host = 'project-poseidon.cpsnf8brapsd.us-west-2.redshift.amazonaws.com',
+            database = 'token_price',
+            user = 'administrator',
+            password = 'Free2play2'
+        ) as conn:
+            with conn.cursor() as cursor:
+                # Get all unique pairs in Redshift w/ atleast 1 year's worth of
+                # hourly price data
+                query = """
+                WITH num_days_data AS (
+                    SELECT 
+                        asset_id_base,
+                        asset_id_quote,
+                        exchange_id,
+                        COUNT(*) / 24.0 AS num_days_data
+                    FROM token_price.eth.stg_price_data_1h
+                    GROUP BY asset_id_base, asset_id_quote, exchange_id
+                ), 
+                ordered_pairs_by_data_size AS (
+                    SELECT
+                        *,
+                        ROW_NUMBER() OVER (PARTITION BY asset_id_base, asset_id_quote 
+                                           ORDER BY num_days_data DESC) AS pos
+                    FROM num_days_data
+                )
 
-# Example usage
-p = PairsTradingBacktester(
-    symbol_id_1 = 'ETH_USD_COINBASE',
-    symbol_id_2 = 'AAVE_ETH_BINANCE',
-    start_date = '2020-09-01',
-    end_date = '2022-09-01',
-    pct_capital_per_trade = 1,
-    initial_capital = 10_000,
-    comission = 0.01
-)
+                SELECT 
+                    asset_id_base,
+                    asset_id_quote,
+                    exchange_id
+                FROM ordered_pairs_by_data_size
+                WHERE 
+                    pos = 1 AND
+                    num_days_data >= 365
+                ORDER BY asset_id_base, asset_id_quote, exchange_id
+                """
 
+                # Execute query on Redshift and return result
+                cursor.execute(query)
+                tuples = cursor.fetchall()
+                
+                # Turn queried data into a DataFrame
+                df = pd.DataFrame(tuples, columns = ['asset_id_base', 'asset_id_quote', 'exchange_id'])
+                df['symbol_id'] = df['asset_id_base'] + '_' + df['asset_id_quote'] + '_' + df['exchange_id']
+        
+        combs = list(itertools.combinations(df['symbol_id'].values, 2))
+
+        for i in range(len(combs)):
+            symbol_id_1, symbol_id_2 = combs[i][0], combs[i][1]
+
+            is_cointegrated, x_y_dict = self.__is_cointegrated(
+                symbol_id_1 = symbol_id_1,
+                symbol_id_2 = symbol_id_2,
+                p_val_thresh = 0.05
+            )
+
+            if is_cointegrated:
+                print()
+                print('({} / {}) Now backtesting pairs {} / {}'.format(i + 1, len(combs), symbol_id_1, symbol_id_2))
+                print()
+
+                self.walk_forward_optimization(
+                    symbol_id_1 = x_y_dict['X'],
+                    symbol_id_2 = x_y_dict['Y'],
+                    in_sample_size = 24 * 30 * 4,
+                    out_of_sample_size = 24 * 30 * 4 
+                )
+
+if __name__ == '__main__': 
+    optimize_dict = {
+        'z_window':[6, 12, 24, 24*7, 24 * 14, 24 * 30],
+        'hedge_ratio_window':[6, 12, 24, 24*7, 24 * 14, 24 * 30],
+        'z_thresh_upper':[1, 1.5, 2],
+        'z_thresh_lower':[-1, -1.5, -2]
+    }
+
+    b = PairsTradingBackTester(
+        optimize_dict = optimize_dict,
+        optimization_metric = 'CAGR / Avg. Drawdown'
+    )
+
+    backtest_start = time.time()
+    b.execute()
+    backtest_end = time.time()
+
+    print()
+    print('Total Time Elapsed: {} mins'.format(round(abs(backtest_end - backtest_start) / 60.0, 2)))
