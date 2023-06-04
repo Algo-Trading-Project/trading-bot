@@ -159,7 +159,7 @@ class PairsTradingBackTester:
 
         optimal_params, is_backtest_results = is_backtest.optimize_parameters(
             optimize_dict = self.optimize_dict,
-            performance_metric = 'CAGR / Avg. Drawdown',
+            performance_metric = self.optimization_metric,
             minimize = False
         )
 
@@ -318,13 +318,13 @@ if __name__ == '__main__':
     optimize_dict = {
         'z_window':[6, 12, 24, 24*7, 24 * 14, 24 * 30],
         'hedge_ratio_window':[6, 12, 24, 24*7, 24 * 14, 24 * 30],
-        'z_thresh_upper':[1, 1.5, 2],
+        'z_thresh_upper':[0, 1, 1.5, 2],
         'z_thresh_lower':[-1, -1.5, -2]
     }
 
     b = PairsTradingBackTester(
         optimize_dict = optimize_dict,
-        optimization_metric = 'CAGR / Avg. Drawdown'
+        optimization_metric = 'cagr_over_avg_drawdown'
     )
 
     backtest_start = time.time()
