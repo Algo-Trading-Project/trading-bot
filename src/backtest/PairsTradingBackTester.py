@@ -108,15 +108,15 @@ class PairsTradingBackTester:
 
                 return df
             
-    def __is_cointegrated(self, symbol_id_1, symbol_id_2, p_val_thresh = 0.05):                    
+    def __is_cointegrated(self, symbol_id_1, symbol_id_2, p_val_thresh = 0.05, correlation_thresh = 0.8):                    
         data = self.__get_data(
             symbol_id_1 = symbol_id_1,
             symbol_id_2 = symbol_id_2
         )  
 
-        correlation = np.corrcoef(data[symbol_id_1], data[symbol_id_2])[0][1]
+        correlation = np.corrcoef(data[symbol_id_1].values, data[symbol_id_2].values)[0][1]
 
-        if correlation < 0.8 or len(data) == 0:
+        if correlation < correlation_thresh:
             return False, {}
                     
         X = data[symbol_id_1]
@@ -254,70 +254,71 @@ class PairsTradingBackTester:
             with conn.cursor() as cursor:
                 # Get all unique pairs in Redshift w/ atleast 1 year's worth of
                 # hourly price data
-                query = """
-                WITH num_days_data AS (
-                    SELECT 
+                
+                top_100_tokens_by_volume_query = """
+                WITH last_month AS (
+                    SELECT  
                         asset_id_base,
                         asset_id_quote,
                         exchange_id,
-                        COUNT(*) / 24.0 AS num_days_data
-                    FROM token_price.eth.stg_price_data_1h
-                    GROUP BY asset_id_base, asset_id_quote, exchange_id
-                ), 
-                ordered_pairs_by_data_size AS (
-                    SELECT
-                        *,
-                        ROW_NUMBER() OVER (PARTITION BY asset_id_base, asset_id_quote 
-                                           ORDER BY num_days_data DESC) AS pos
-                    FROM num_days_data
+                        MAX(time_period_start) - INTERVAL '30 DAYS' AS start_date
+                    FROM token_price.eth.stg_price_data_1h o
+                    GROUP BY         
+                        asset_id_base,
+                        asset_id_quote,
+                        exchange_id
                 )
 
                 SELECT 
-                    asset_id_base,
-                    asset_id_quote,
-                    exchange_id
-                FROM ordered_pairs_by_data_size
-                WHERE 
-                    pos = 1 AND
-                    num_days_data >= 365
-                ORDER BY asset_id_base, asset_id_quote, exchange_id
+                    o.asset_id_base,
+                    o.asset_id_quote,
+                    o.exchange_id
+                FROM token_price.eth.stg_price_data_1h o INNER JOIN last_month l
+                    ON o.asset_id_base = l.asset_id_base AND
+                        o.asset_id_quote = l.asset_id_quote AND
+                        o.exchange_id = l.exchange_id
+                WHERE
+                    o.asset_id_base != 'ETH' AND
+                    time_period_start >= start_date
+                GROUP BY o.asset_id_base, o.asset_id_quote, o.exchange_id
+                ORDER BY AVG(volume_traded / (1 / price_close)) * 24 DESC
+                LIMIT 100
                 """
 
-                # Execute query on Redshift and return result
-                cursor.execute(query)
+                cursor.execute(top_100_tokens_by_volume_query)
                 tuples = cursor.fetchall()
                 
-                # Turn queried data into a DataFrame
-                df = pd.DataFrame(tuples, columns = ['asset_id_base', 'asset_id_quote', 'exchange_id'])
-                df['symbol_id'] = df['asset_id_base'] + '_' + df['asset_id_quote'] + '_' + df['exchange_id']
-        
-        combs = list(itertools.combinations(df['symbol_id'].values, 2))
+                token_df = pd.DataFrame(tuples, columns = ['asset_id_base', 'asset_id_quote', 'exchange_id'])
+                token_df['symbol_id'] = token_df['asset_id_base'] + '_' + token_df['asset_id_quote'] + '_' + token_df['exchange_id']
+               
+                combs = list(itertools.combinations(token_df['symbol_id'].values, 2))
 
-        for i in range(len(combs)):
-            symbol_id_1, symbol_id_2 = combs[i][0], combs[i][1]
+                for i in range(len(combs)):
+                    symbol_id_1, symbol_id_2 = combs[i][0], combs[i][1]
+                        
+                    is_cointegrated, x_y_dict = self.__is_cointegrated(
+                        symbol_id_1 = symbol_id_1,
+                        symbol_id_2 = symbol_id_2,
+                        p_val_thresh = 0.05,
+                        correlation_thresh = 0.9
+                    )
 
-            is_cointegrated, x_y_dict = self.__is_cointegrated(
-                symbol_id_1 = symbol_id_1,
-                symbol_id_2 = symbol_id_2,
-                p_val_thresh = 0.05
-            )
+                    if is_cointegrated:
+                        print()
+                        print('({} / {}) Now backtesting pairs {} / {}'.format(i + 1, len(combs), symbol_id_1, symbol_id_2))
+                        print()
 
-            if is_cointegrated:
-                print()
-                print('({} / {}) Now backtesting pairs {} / {}'.format(i + 1, len(combs), symbol_id_1, symbol_id_2))
-                print()
-
-                self.walk_forward_optimization(
-                    symbol_id_1 = x_y_dict['X'],
-                    symbol_id_2 = x_y_dict['Y'],
-                    in_sample_size = 24 * 30 * 4,
-                    out_of_sample_size = 24 * 30 * 4 
-                )
-
+                        self.walk_forward_optimization(
+                            symbol_id_1 = x_y_dict['X'],
+                            symbol_id_2 = x_y_dict['Y'],
+                            in_sample_size = 24 * 30 * 4,
+                            out_of_sample_size = 24 * 30 * 4 
+                        )
+                    
 if __name__ == '__main__': 
     optimize_dict = {
-        'z_window':[6, 12, 24, 24*7, 24 * 14, 24 * 30],
-        'hedge_ratio_window':[6, 12, 24, 24*7, 24 * 14, 24 * 30],
+        'z_window':[24, 24*7, 24 * 30, 24 * 60],
+        'hedge_ratio_window':[24, 24*7, 24 * 30, 24 * 60],
         'z_thresh_upper':[0, 1, 1.5, 2],
         'z_thresh_lower':[-1, -1.5, -2]
     }
