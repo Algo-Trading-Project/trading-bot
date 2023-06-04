@@ -5,7 +5,6 @@ import itertools
 
 from statsmodels.regression.rolling import RollingOLS
 from statsmodels.tools import add_constant
-from backtesting.lib import crossover, cross
 from datetime import timedelta
 
 class PairsTradingBacktest:
@@ -94,8 +93,8 @@ class PairsTradingBacktest:
 
     def __rolling_hedge_ratios(self):
         return RollingOLS(
-            endog = self.data[self.symbol_id_2].to_frame(),
-            exog = add_constant(self.data[self.symbol_id_1].to_frame()),
+            endog = self.data[self.symbol_id_2],
+            exog = add_constant(self.data[self.symbol_id_1]),
             window = self.hedge_ratio_window
         ).fit().params[self.symbol_id_1]
     
@@ -103,48 +102,51 @@ class PairsTradingBacktest:
         return self.data[self.symbol_id_2].values - self.data['rolling_hedge_ratio'].values * self.data[self.symbol_id_1].values
     
     def __rolling_spread_z_score(self):
-        rolling_spread = self.data['rolling_spread']
-        return (rolling_spread - rolling_spread.rolling(window = self.z_window).mean()) / rolling_spread.rolling(window = self.z_window).std()
+        def rolling_window(a, window):
+            shape = a.shape[:-1] + (a.shape[-1] - window + 1, window)
+            strides = a.strides + (a.strides[-1],)
+            return np.lib.stride_tricks.as_strided(a, shape=shape, strides=strides)
+        
+        rolling_spread = self.data['rolling_spread'].values
+        rolling_spread_window = rolling_window(rolling_spread, self.z_window)
+
+        rolling_mean = np.mean(rolling_spread_window, axis = -1)
+        rolling_std = np.std(rolling_spread_window, axis = -1)
+        
+        len_diff = abs(len(rolling_spread) - len(rolling_mean))
+        for _ in np.arange(len_diff):
+            rolling_mean = np.insert(rolling_mean, 0, np.nan)
+            rolling_std = np.insert(rolling_std, 0, np.nan)
+
+        z = (rolling_spread - rolling_mean) / rolling_std
+
+        return z
     
-    def __generate_entry_signals(self):
-        entry_signals = []
-        for i in range(len(self.data)):
-            if i == 0:
-                entry_signals.append(0)
-                continue
+    def __generate_trading_signals(self):
+        rolling_spread_z_score = self.data['rolling_spread_z_score'].values
+        rolling_spread_z_score_prev = self.data['rolling_spread_z_score'].shift(1).values
+        
+        entry_signals = np.where(
+            (rolling_spread_z_score_prev > self.z_score_lower_thresh) & (rolling_spread_z_score < self.z_score_lower_thresh),
+            1,
+            0
+        )
+        exit_signals = np.where(
+            (rolling_spread_z_score_prev < self.z_score_upper_thresh) & (rolling_spread_z_score > self.z_score_lower_thresh),
+            1,
+            0
+        )
 
-            relevant_data = self.data.loc[self.data.index[i - 1]:self.data.index[i], 'rolling_spread_z_score']
-                
-            if (not crossover(relevant_data, self.z_score_lower_thresh) and
-                    cross(relevant_data, self.z_score_lower_thresh)):
-                entry_signals.append(1)
-            else:
-                entry_signals.append(0)
-
-        return entry_signals
-
-    def __generate_exit_signals(self):
-        exit_signals = []
-        for i in range(len(self.data)):
-            if i == 0:
-                exit_signals.append(0)
-                continue
-                
-            if crossover(self.data.loc[self.data.index[i - 1]:self.data.index[i], 'rolling_spread_z_score'], self.z_score_upper_thresh):
-                exit_signals.append(1)
-            else:
-                exit_signals.append(0)
-
-        return exit_signals
+        return entry_signals, exit_signals
     
     def __close_trade(self, positions, i):
         # Set long and short position amount for current timestamp to 0
         # to simulate closing the trade
-        positions.loc[self.data.index[i], self.symbol_id_2] = 0
-        positions.loc[self.data.index[i], self.symbol_id_1] = 0
+        positions.at[self.data.index[i], self.symbol_id_2] = 0
+        positions.at[self.data.index[i], self.symbol_id_1] = 0
         
         # Set the exit date of the current trade to the current timestamp
-        self.trades.loc[len(self.trades) - 1,'exit_date'] = self.data.index[i]
+        self.trades.at[len(self.trades) - 1,'exit_date'] = self.data.index[i]
 
         # Indicate we're no longer in a trade
         self.position = 0
@@ -152,17 +154,17 @@ class PairsTradingBacktest:
         # Calculate pnl and pnl % from trade
 
         # Entry and exit dates of most current trade
-        start = self.trades.loc[len(self.trades) - 1,'entry_date']
-        end = self.trades.loc[len(self.trades) - 1,'exit_date']
+        start = self.trades.at[len(self.trades) - 1,'entry_date']
+        end = self.trades.at[len(self.trades) - 1,'exit_date']
 
         # Calculate the PnL from the long position
-        start_value_long = self.data.loc[start, self.symbol_id_2] * positions.loc[start, self.symbol_id_2]
-        end_value_long = self.data.loc[end, self.symbol_id_2] * positions.loc[start, self.symbol_id_2]
+        start_value_long = self.data.at[start, self.symbol_id_2] * positions.at[start, self.symbol_id_2]
+        end_value_long = self.data.at[end, self.symbol_id_2] * positions.at[start, self.symbol_id_2]
         long_pnl = (end_value_long - start_value_long) * (1 - self.comission)
 
         # Calculate the PnL from the short position
-        start_value_short = self.data.loc[start, self.symbol_id_1] * positions.loc[start, self.symbol_id_1]
-        end_value_short = self.data.loc[end, self.symbol_id_1] * positions.loc[start, self.symbol_id_1]
+        start_value_short = self.data.at[start, self.symbol_id_1] * positions.at[start, self.symbol_id_1]
+        end_value_short = self.data.at[end, self.symbol_id_1] * positions.at[start, self.symbol_id_1]
         short_pnl = (start_value_short - end_value_short) * (1 - self.comission)
 
         # Calculate the PnL from the entire trade 
@@ -171,8 +173,8 @@ class PairsTradingBacktest:
         trade_pnl_pct = trade_pnl / total_investment
         
         # Set the PnL and PnL % of the current trade
-        self.trades.loc[len(self.trades) - 1, 'pnl_pct'] = trade_pnl_pct
-        self.trades.loc[len(self.trades) - 1, 'pnl'] = trade_pnl
+        self.trades.at[len(self.trades) - 1, 'pnl_pct'] = trade_pnl_pct
+        self.trades.at[len(self.trades) - 1, 'pnl'] = trade_pnl
         
         return end_value_long + end_value_short
 
@@ -182,13 +184,13 @@ class PairsTradingBacktest:
         
         # Tracking available capital throughout backtest
         curr_capital = self.initial_capital
-        
+                
         # Iterate through each timestamp of dataset
-        for i in range(len(self.data)):  
-
+        i = 0
+        for row in self.data.to_dict(orient = 'records'):  
             # Retrieve entry and exit signals at current timestamp          
-            entry_signal = self.data.loc[self.data.index[i], 'entry_signals']
-            exit_signal = self.data.loc[self.data.index[i], 'exit_signals']
+            entry_signal = row['entry_signals']
+            exit_signal = row['exit_signals']
 
             # If not in a trade at current timestamp
             if not self.position:
@@ -201,24 +203,25 @@ class PairsTradingBacktest:
                         continue
                         
                     # If rolling hedge ratio is negative then don't open a trade
-                    if self.data.loc[self.data.index[i], 'rolling_hedge_ratio'] <= 0:
+                    if row['rolling_hedge_ratio'] <= 0:
+                        i += 1
                         continue
                     
                     # Amount of dollars to allocate to the long position
                     long_allocation = (1 - self.comission) * curr_capital * self.pct_capital_per_trade / 2
                     
                     # Number of units of symbol_id_2 to long
-                    units_long = long_allocation / self.data.loc[self.data.index[i], self.symbol_id_2]
+                    units_long = long_allocation / row[self.symbol_id_2]
                     
                     # Amount of dollars to allocate to the short position
                     short_allocation = (1 - self.comission) * curr_capital * self.pct_capital_per_trade / 2
 
                     # Number of units of symbol_id_1 to short
-                    units_short = short_allocation / self.data.loc[self.data.index[i], self.symbol_id_1]
+                    units_short = short_allocation / row[self.symbol_id_1]
 
                     # Set long and short position amounts for current timestamp
-                    positions.loc[self.data.index[i], self.symbol_id_2] = units_long
-                    positions.loc[self.data.index[i], self.symbol_id_1] = units_short
+                    positions.at[self.data.index[i], self.symbol_id_2] = units_long
+                    positions.at[self.data.index[i], self.symbol_id_1] = units_short
                     
                     curr_capital -= (long_allocation + short_allocation)
                     
@@ -247,8 +250,8 @@ class PairsTradingBacktest:
 
                     # Set long and short position amounts for current timestamp to 0
                     # since we're not in a trade
-                    positions.loc[self.data.index[i], self.symbol_id_2] = 0
-                    positions.loc[self.data.index[i], self.symbol_id_1] = 0
+                    positions.at[self.data.index[i], self.symbol_id_2] = 0
+                    positions.at[self.data.index[i], self.symbol_id_1] = 0
 
             # If in a trade at current timestamp
             else:
@@ -266,23 +269,25 @@ class PairsTradingBacktest:
                     # Set long and short position amounts for current timestamp to
                     # the amounts in the current trade since we haven't exited the
                     # current trade yet
-                    positions.loc[self.data.index[i], self.symbol_id_2] = self.curr_position_long_units
-                    positions.loc[self.data.index[i], self.symbol_id_1] = self.curr_position_short_units
+                    positions.at[self.data.index[i], self.symbol_id_2] = self.curr_position_long_units
+                    positions.at[self.data.index[i], self.symbol_id_1] = self.curr_position_short_units
             
             # If the backtest reaches the final timestamp and the current trade hasn't
             # been exited yet 
-            if i == len(self.data) - 1 and len(self.trades) > 0 and type(self.trades.loc[len(self.trades) - 1, 'exit_date']) == type(np.nan):
+            if i == len(self.data) - 1 and len(self.trades) > 0 and type(self.trades.at[len(self.trades) - 1, 'exit_date']) == type(np.nan):
 
                 # Close the current trade
                 end_trade_amount = self.__close_trade(positions = positions, i = i)
                 curr_capital += end_trade_amount
+
+            i += 1
 
         return positions
                 
     def __generate_pnl(self):
         pnl_data = pd.DataFrame(index = self.data.index, columns = ['pnl']).fillna(0)
         
-        for index, trade in self.trades.iterrows():
+        for trade in self.trades.to_dict(orient = 'records'):
             entry_date = trade['entry_date']
             exit_date = trade['exit_date']
             
@@ -296,7 +301,7 @@ class PairsTradingBacktest:
             trade_period['total_pnl'] = trade_period['long_pnl'] + trade_period['short_pnl']
 
             for date in trade_period.index:
-                pnl_data.loc[date, 'pnl'] = trade_period.loc[date, 'total_pnl']
+                pnl_data.at[date, 'pnl'] = trade_period.at[date, 'total_pnl']
                 
         return pnl_data
 
@@ -312,20 +317,20 @@ class PairsTradingBacktest:
             exposure = timedelta(days = 0, hours = 0)
 
             for i in range(len(self.trades)):
-                entry_date = pd.to_datetime(self.trades.loc[i, 'entry_date'])
-                exit_date = pd.to_datetime(self.trades.loc[i, 'exit_date'])
+                entry_date = pd.to_datetime(self.trades.at[i, 'entry_date'])
+                exit_date = pd.to_datetime(self.trades.at[i, 'exit_date'])
                 trade_duration = exit_date - entry_date
                 exposure += trade_duration
             
             return round(exposure / duration * 100, 2)
 
         def buy_and_hold_return():
-            token1_start_value = self.data.loc[self.data.index[0], self.symbol_id_1]
-            token1_end_value = self.data.loc[self.data.index[-1], self.symbol_id_1]
+            token1_start_value = self.data.at[self.data.index[0], self.symbol_id_1]
+            token1_end_value = self.data.at[self.data.index[-1], self.symbol_id_1]
             buy_and_hold_return_token_1 = round((token1_end_value - token1_start_value) / token1_start_value * 100, 2)
             
-            token2_start_value = self.data.loc[self.data.index[0], self.symbol_id_2]
-            token2_end_value = self.data.loc[self.data.index[-1], self.symbol_id_2]
+            token2_start_value = self.data.at[self.data.index[0], self.symbol_id_2]
+            token2_end_value = self.data.at[self.data.index[-1], self.symbol_id_2]
             buy_and_hold_return_token_2 = round((token2_end_value - token2_start_value) / token2_start_value * 100, 2)
 
             return max([buy_and_hold_return_token_1, buy_and_hold_return_token_2])
@@ -510,16 +515,16 @@ class PairsTradingBacktest:
         alphas = pd.DataFrame(index = self.data.index, columns = ['alpha']).fillna(0)
         
         for i in range(len(self.trades)):
-            exit_date = self.trades.loc[i, 'exit_date']
-            pnl_pct = self.trades.loc[i, 'pnl_pct']
+            exit_date = self.trades.at[i, 'exit_date']
+            pnl_pct = self.trades.at[i, 'pnl_pct']
 
-            trade_pnl_pct.loc[exit_date, 'pnl_pct'] = pnl_pct * 100
-            alphas.loc[exit_date, 'alpha'] = 1
+            trade_pnl_pct.at[exit_date, 'pnl_pct'] = pnl_pct * 100
+            alphas.at[exit_date, 'alpha'] = 1
 
             if pnl_pct > 0:
-                trade_marker_colors.loc[exit_date, 'color'] = 'green'
+                trade_marker_colors.at[exit_date, 'color'] = 'green'
             else:
-                trade_marker_colors.loc[exit_date, 'color'] = 'red'
+                trade_marker_colors.at[exit_date, 'color'] = 'red'
 
         trade_pnl_pct.reset_index().plot(
             ax = a1,
@@ -610,11 +615,11 @@ class PairsTradingBacktest:
         # Calculate rolling spread z score at each timestep
         self.data['rolling_spread_z_score'] = self.__rolling_spread_z_score()
 
-        # Calculate entry signals at each timestep
-        self.data['entry_signals'] = self.__generate_entry_signals()
+        # Calculate entry and exit signals at each timestep
+        entry_signals, exit_signals = self.__generate_trading_signals()
 
-        # Calculate exit signals at each timestep
-        self.data['exit_signals'] = self.__generate_exit_signals()
+        self.data['entry_signals'] = entry_signals
+        self.data['exit_signals'] = exit_signals
         
         # Reset trades DataFrame to make sure it's empty
         self.trades = pd.DataFrame(columns = ['entry_date', 'exit_date', self.symbol_id_2, self.symbol_id_1])
@@ -635,3 +640,4 @@ class PairsTradingBacktest:
         self.performance_metrics = self.__calculate_performance_metrics()  
 
         return self.performance_metrics.to_dict(orient = 'records')[0]
+    
