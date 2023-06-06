@@ -49,6 +49,10 @@ class PairsTradingBackTester:
             return int(obj)
         elif isinstance(obj, np.floating):
             return float(obj)
+        
+    def numpy_combinations(x):
+        idx = np.stack(np.triu_indices(len(x), k=1), axis=-1)
+        return x[idx]
     
     ############################################ HELPER FUNCTIONS ############################################
 
@@ -199,7 +203,7 @@ class PairsTradingBackTester:
                 params = (symbol_id_1, symbol_id_2, training_data.index[0], training_data.index[-1], 
                           str_is_backtest_results, testing_data.index[0], testing_data.index[-1],
                           str_oos_backtest_results, json.dumps(optimal_params, default = PairsTradingBackTester.serialize_json_data),
-                          self.optimization_metric, json.dumps(self.backtest_params, default = PairsTradingBackTester.serialize_json_data)
+                          self.optimization_metric, json.dumps(oos_backtest.backtest_params, default = PairsTradingBackTester.serialize_json_data)
                           )
                 
                 cursor.execute(query, params)
@@ -282,14 +286,13 @@ class PairsTradingBackTester:
                 ORDER BY AVG(volume_traded / (1 / price_close)) * 24 DESC
                 LIMIT 100
                 """
-
                 cursor.execute(top_100_tokens_by_volume_query)
                 tuples = cursor.fetchall()
                 
                 token_df = pd.DataFrame(tuples, columns = ['asset_id_base', 'asset_id_quote', 'exchange_id'])
                 token_df['symbol_id'] = token_df['asset_id_base'] + '_' + token_df['asset_id_quote'] + '_' + token_df['exchange_id']
                
-                combs = list(itertools.combinations(token_df['symbol_id'].values, 2))
+                combs = PairsTradingBackTester.numpy_combinations(token_df['symbol_id'].to_numpy())
 
                 for i in range(len(combs)):
                     symbol_id_1, symbol_id_2 = combs[i][0], combs[i][1]
@@ -300,6 +303,9 @@ class PairsTradingBackTester:
                         p_val_thresh = 0.05,
                         correlation_thresh = 0.9
                     )
+
+                    print('({}/{}) ({}, {}) is cointegrated: {}'.format(i + 1, len(combs), symbol_id_1, symbol_id_2, is_cointegrated))
+                    print()
 
                     if is_cointegrated:
                         print()
@@ -317,7 +323,7 @@ if __name__ == '__main__':
     optimize_dict = {
         'z_window':[24, 24*7, 24 * 30, 24 * 60],
         'hedge_ratio_window':[24, 24*7, 24 * 30, 24 * 60],
-        'z_thresh_upper':[0, 1, 1.5, 2],
+        'z_thresh_upper':[1, 1.5, 2],
         'z_thresh_lower':[-1, -1.5, -2]
     }
 
@@ -325,6 +331,9 @@ if __name__ == '__main__':
         optimize_dict = optimize_dict,
         optimization_metric = 'cagr_over_avg_drawdown'
     )
+
+    print('Starting')
+    print()
 
     backtest_start = time.time()
     b.execute()
