@@ -41,7 +41,6 @@ class PairsTradingBackTester:
         
         self.optimize_dict = optimize_dict
         self.optimization_metric = optimization_metric
-        self.backtest_params = backtest_params
 
     def serialize_json_data(obj):
         if isinstance(obj, pd.Timedelta):
