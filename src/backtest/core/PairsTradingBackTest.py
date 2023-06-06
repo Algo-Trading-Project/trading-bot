@@ -31,7 +31,10 @@ class PairsTradingBacktest:
                  symbol_id_2,
                  backtest_params = {
                     'initial_capital':10_000, 'pct_capital_per_trade': 1,
-                    'comission': 0.01, 'tp': 0.1
+                    'comission': 0.01,
+                    'sl': 0.05,
+                    'tp':0.1,
+                    'max_slippage':0.02
                     }
                 ):
         """
@@ -41,12 +44,8 @@ class PairsTradingBacktest:
         symbol_id_1 - Token we're shorting in the backtest
 
         symbol_id_2 - Token we're longing in the backtest
-        
-        initial_captial - Starting capital of the backtest
-        
-        pct_capital_per_trade - Percent of available capital to allocate to each trade
-        
-        comission - Percentage deducted from each buy and sell order made
+
+        backtest_params - Dictionary of hyperparameters for the current backtest
         """
 
         self.symbol_id_1 = symbol_id_1
@@ -54,10 +53,8 @@ class PairsTradingBacktest:
 
         self.start_date = pd.to_datetime(price_data.index[0])
         self.end_date = pd.to_datetime(price_data.index[-1])
-        
-        self.initial_capital = backtest_params['initial_capital']
-        self.pct_capital_per_trade = backtest_params['pct_capital_per_trade']
-        self.comission = backtest_params['comission']
+
+        self.backtest_params = backtest_params
 
         # Fetch data required for backtest
         self.data = price_data
@@ -158,14 +155,16 @@ class PairsTradingBacktest:
         end = self.trades.at[len(self.trades) - 1,'exit_date']
 
         # Calculate the PnL from the long position
-        start_value_long = self.data.at[start, self.symbol_id_2] * positions.at[start, self.symbol_id_2]
-        end_value_long = self.data.at[end, self.symbol_id_2] * positions.at[start, self.symbol_id_2]
-        long_pnl = (end_value_long - start_value_long) * (1 - self.comission)
+        slippage = self.backtest_params['max_slippage']
+
+        start_value_long = self.data.at[start, self.symbol_id_2] * (1 + slippage) * positions.at[start, self.symbol_id_2]
+        end_value_long = self.data.at[end, self.symbol_id_2] * (1 - slippage) * positions.at[start, self.symbol_id_2]
+        long_pnl = (end_value_long - start_value_long) * (1 - self.backtest_params['comission'])
 
         # Calculate the PnL from the short position
-        start_value_short = self.data.at[start, self.symbol_id_1] * positions.at[start, self.symbol_id_1]
-        end_value_short = self.data.at[end, self.symbol_id_1] * positions.at[start, self.symbol_id_1]
-        short_pnl = (start_value_short - end_value_short) * (1 - self.comission)
+        start_value_short = self.data.at[start, self.symbol_id_1] * (1 - slippage) * positions.at[start, self.symbol_id_1]
+        end_value_short = self.data.at[end, self.symbol_id_1] * (1 + slippage) * positions.at[start, self.symbol_id_1]
+        short_pnl = (start_value_short - end_value_short) * (1 - self.backtest_params['comission'])
 
         # Calculate the PnL from the entire trade 
         trade_pnl = long_pnl + short_pnl
@@ -183,7 +182,7 @@ class PairsTradingBacktest:
         positions = pd.DataFrame(index = self.data.index, columns = [self.symbol_id_2, self.symbol_id_1])
         
         # Tracking available capital throughout backtest
-        curr_capital = self.initial_capital
+        curr_capital = self.backtest_params['initial_capital']
                 
         # Iterate through each timestamp of dataset
         i = 0
@@ -206,18 +205,22 @@ class PairsTradingBacktest:
                     if row['rolling_hedge_ratio'] <= 0:
                         i += 1
                         continue
+
+                    pct_capital_per_trade = self.backtest_params['pct_capital_per_trade']
+                    comission = self.backtest_params['comission']
+                    max_slippage = self.backtest_params['max_slippage']
                     
                     # Amount of dollars to allocate to the long position
-                    long_allocation = (1 - self.comission) * curr_capital * self.pct_capital_per_trade / 2
+                    long_allocation = (1 - comission) * curr_capital * pct_capital_per_trade / 2
                     
                     # Number of units of symbol_id_2 to long
-                    units_long = long_allocation / row[self.symbol_id_2]
+                    units_long = long_allocation / (row[self.symbol_id_2] * (1 + max_slippage))
                     
                     # Amount of dollars to allocate to the short position
-                    short_allocation = (1 - self.comission) * curr_capital * self.pct_capital_per_trade / 2
+                    short_allocation = (1 - comission) * curr_capital * pct_capital_per_trade / 2
 
                     # Number of units of symbol_id_1 to short
-                    units_short = short_allocation / row[self.symbol_id_1]
+                    units_short = short_allocation / (row[self.symbol_id_1] * (1 - max_slippage))
 
                     # Set long and short position amounts for current timestamp
                     positions.at[self.data.index[i], self.symbol_id_2] = units_long
@@ -306,10 +309,10 @@ class PairsTradingBacktest:
         return pnl_data
 
     def __generate_equity_curve(self):
-        return (self.initial_capital + self.pnl.cumsum()).rename({'pnl':'equity'}, axis = 1)
+        return (self.backtest_params['initial_capital'] + self.pnl.cumsum()).rename({'pnl':'equity'}, axis = 1)
     
     def __generate_returns(self):
-        return (self.equity / self.initial_capital).rename({'equity':'return'}, axis = 1)
+        return (self.equity / self.backtest_params['initial_capital']).rename({'equity':'return'}, axis = 1)
 
     def __calculate_performance_metrics(self):
         ########################### HELPER FUNCTIONS ####################################
@@ -502,7 +505,7 @@ class PairsTradingBacktest:
         # Plot % returns curve
         plt.subplot(3,1,1)
         
-        (self.equity.rename({'equity':''}, axis = 1) / self.initial_capital).plot(ax = a0, grid = True, title = 'Return [%]')
+        (self.equity.rename({'equity':''}, axis = 1) / self.backtest_params['initial_capital']).plot(ax = a0, grid = True, title = 'Return [%]')
         
         a0.get_legend().remove()
         plt.xlabel('')
@@ -575,7 +578,8 @@ class PairsTradingBacktest:
         for i in range(len(parameter_combinations)):
             
             print('{}/{}'.format(i + 1, len(parameter_combinations)), end = '\r', flush = True)            
-            
+            print()
+
             self.z_window = parameter_combinations[i][0]
             self.hedge_ratio_window = parameter_combinations[i][1]
             self.z_score_upper_thresh = parameter_combinations[i][2]

@@ -36,8 +36,7 @@ class PairsTradingBackTester:
 
     def __init__(self, 
                  optimize_dict,
-                 optimization_metric = 'Sortino Ratio',
-                 backtest_params = {'init_cash':10_000, 'fees':0.01}
+                 optimization_metric = 'Sortino Ratio'
                  ):
         
         self.optimize_dict = optimize_dict
@@ -223,7 +222,7 @@ class PairsTradingBackTester:
 
         while start + in_sample_size + out_of_sample_size <= len(backtest_data):
             print()
-            print('Progress: {} / {} days...'.format(int(start / 24), int(len(backtest_data) / 24)))
+            print('Backtesting on days: {} - {} / {}'.format(int(start / 24), int((start + in_sample_size + out_of_sample_size) / 24), int(len(backtest_data) / 24)))
             print()
 
             if len(backtest_data.iloc[start:]) - (in_sample_size + out_of_sample_size) < out_of_sample_size:
