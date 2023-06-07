@@ -284,7 +284,7 @@ class PairsTradingBackTester:
                     time_period_start >= start_date
                 GROUP BY o.asset_id_base, o.asset_id_quote, o.exchange_id
                 ORDER BY AVG(volume_traded / (1 / price_close)) * 24 DESC
-                LIMIT 100
+                LIMIT 50
                 """
                 cursor.execute(top_100_tokens_by_volume_query)
                 tuples = cursor.fetchall()
@@ -329,7 +329,7 @@ if __name__ == '__main__':
 
     b = PairsTradingBackTester(
         optimize_dict = optimize_dict,
-        optimization_metric = 'cagr_over_avg_drawdown'
+        optimization_metric = 'sortino_ratio'
     )
 
     print('Starting')

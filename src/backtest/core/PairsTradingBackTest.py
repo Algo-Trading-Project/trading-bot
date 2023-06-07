@@ -34,7 +34,7 @@ class PairsTradingBacktest:
                     'comission': 0.01,
                     'sl': 0.05,
                     'tp':0.1,
-                    'max_slippage':0.02
+                    'max_slippage':0.005
                     }
                 ):
         """
@@ -77,9 +77,6 @@ class PairsTradingBacktest:
 
         # Equity at each timestep
         self.equity = None
-
-        # Percent returns at each timestep
-        self.returns = None
 
         # Performance metrics for backtest
         self.performance_metrics = None
@@ -259,7 +256,7 @@ class PairsTradingBacktest:
                 # If long or short entry signal is received
                 if entry_signal == 1 or entry_signal == -1: 
         
-                    # If on the last timestamp or if rolling hedge ratio is negative 
+                    # If we're on the last timestamp or if rolling hedge ratio is negative 
                     # then don't open a trade
                     if (i == len(self.data) - 1) or (row['rolling_hedge_ratio'] <= 0):
                         i += 1
@@ -283,12 +280,12 @@ class PairsTradingBacktest:
 
             # If in a trade at current timestamp
             else:
+                is_long = self.trades.at[len(self.trades) - 1, 'is_long']
 
-                # If long or short exit signal is received
-                if exit_signal == 1 or exit_signal == -1:
-
+                # If curr trade is long and we get a long exit or curr trade is short and we get a short exit
+                if (is_long and exit_signal == 1) or (not is_long and exit_signal == -1):
+                    
                     # Close the current trade
-                    is_long = exit_signal == 1
                     end_trade_amount = self.__exit_trade(
                         positions = positions,
                         i = i,
@@ -297,10 +294,9 @@ class PairsTradingBacktest:
 
                     # Add money from closing position back into our available capital
                     self.curr_capital += end_trade_amount
-
-                # If entry signal is received
+                                
+                # Otherwise 
                 else:
-
                     # Set long and short position amounts for current timestamp to
                     # the amounts in the current trade since we haven't exited the
                     # current trade yet
@@ -337,10 +333,10 @@ class PairsTradingBacktest:
             
             trade_period = self.data.loc[entry_date:exit_date].copy()
             
-            trade_period.at[entry_date, long_symbol] = self.data.at[entry_date, long_symbol] * (1 + max_slippage)
-            trade_period.at[exit_date, long_symbol] = self.data.at[exit_date, long_symbol] * (1 - max_slippage)
-            trade_period.at[entry_date, short_symbol] = self.data.at[entry_date, short_symbol] * (1 - max_slippage)
-            trade_period.at[exit_date, short_symbol] = self.data.at[exit_date, short_symbol] * (1 + max_slippage)
+            trade_period.at[entry_date, long_symbol] = trade_period.at[entry_date, long_symbol] * (1 + max_slippage)
+            trade_period.at[exit_date, long_symbol] = trade_period.at[exit_date, long_symbol] * (1 - max_slippage)
+            trade_period.at[entry_date, short_symbol] = trade_period.at[entry_date, short_symbol] * (1 - max_slippage)
+            trade_period.at[exit_date, short_symbol] = trade_period.at[exit_date, short_symbol] * (1 + max_slippage)
             
             trade_period['long_pnl'] = trade_period[long_symbol].diff() * units_long
             trade_period['short_pnl'] = -trade_period[short_symbol].diff() * units_short
@@ -354,9 +350,6 @@ class PairsTradingBacktest:
     def __generate_equity_curve(self):
         return (self.backtest_params['initial_capital'] + self.pnl.cumsum()).rename({'pnl':'equity'}, axis = 1)
     
-    def __generate_returns(self):
-        return (self.equity / self.backtest_params['initial_capital']).rename({'equity':'return'}, axis = 1)
-
     def __calculate_performance_metrics(self):
         ########################### HELPER FUNCTIONS ####################################
         def exposure_pct(duration):
@@ -512,10 +505,7 @@ class PairsTradingBacktest:
         end = self.end_date
         duration = pd.to_datetime(end) - pd.to_datetime(start)
 
-        if len(self.returns.dropna()) == 0:
-            return_pct = np.nan
-        else:
-            return_pct = round((self.returns.dropna().iloc[-1]['return'] - 1) * 100, 2)
+        return_pct = ((self.equity['equity'].iloc[-1] - self.equity['equity'].iloc[0]) / self.equity['equity'].iloc[0]) * 100
         
         metrics_dict = {
             'duration':duration, 
@@ -683,9 +673,6 @@ class PairsTradingBacktest:
 
         # Calculate equity at each timestep
         self.equity = self.__generate_equity_curve()
-
-        # Calculate % returns at each timestep
-        self.returns = self.__generate_returns()
 
         # Calculate performance metrics for backtest
         self.performance_metrics = self.__calculate_performance_metrics()  
