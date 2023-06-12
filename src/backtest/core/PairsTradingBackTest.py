@@ -6,6 +6,7 @@ import itertools
 from statsmodels.regression.rolling import RollingOLS
 from statsmodels.tools import add_constant
 from datetime import timedelta
+from numba import njit, prange
 
 class PairsTradingBacktest:
     # BACKTESTING PARAMETERS
@@ -18,11 +19,11 @@ class PairsTradingBacktest:
     hedge_ratio_window = 168
 
     # Value of price spread rolling z score to initiate 
-    # an exit when crossed above
+    # an entry/exit when crossed above
     z_score_upper_thresh = 2
 
     # Value of price spread rolling z score to initiate 
-    # an entry when crossed below
+    # an entry/exit when crossed below
     z_score_lower_thresh = -2.5
 
     def __init__(self, 
@@ -30,11 +31,11 @@ class PairsTradingBacktest:
                  symbol_id_1,
                  symbol_id_2,
                  backtest_params = {
-                    'initial_capital':10_000, 'pct_capital_per_trade': 1,
-                    'comission': 0.01,
-                    'sl': 0.05,
-                    'tp':0.1,
-                    'max_slippage':0.005
+                    'initial_capital':10_000, 'pct_capital_per_trade': 0.95,
+                    'comission': 0.005,
+                    'sl': float('-inf'),
+                    'tp':float('inf'),
+                    'max_slippage':0.00
                     }
                 ):
         """
@@ -77,80 +78,95 @@ class PairsTradingBacktest:
 
         # Equity at each timestep
         self.equity = None
-
-        # Performance metrics for backtest
-        self.performance_metrics = None
         
     ################################# HELPER METHODS #################################
+    @njit(parallel = True)
+    def __rolling_hedge_ratios_numba(y, x, window):
+        n = len(y)
+        hedge_ratios = np.full(n, np.nan)  # Initialize an array to store hedge ratios
+        
+        for i in prange(window - 1, n):
+            Y = y[i - window + 1 : i + 1]
+            X = x[i - window + 1 : i + 1]
 
+            # Adding a constant to X
+            X = np.vstack((X, np.ones(len(X)))).T
+            
+            # Least square solution
+            result = np.linalg.lstsq(X, Y)[0]
+            
+            hedge_ratios[i] = result[0]  # Coefficient of x
+            
+        return hedge_ratios
+    
     def __rolling_hedge_ratios(self):
-        return RollingOLS(
-            endog = self.data[self.symbol_id_2],
-            exog = add_constant(self.data[self.symbol_id_1]),
+        return PairsTradingBacktest.__rolling_hedge_ratios_numba(
+            y = self.data[self.symbol_id_2].values, 
+            x = self.data[self.symbol_id_1].values,
             window = self.hedge_ratio_window
-        ).fit().params[self.symbol_id_1]
+        )
     
-    def __rolling_spread(self):
-        return self.data[self.symbol_id_2].values - self.data['rolling_hedge_ratio'].values * self.data[self.symbol_id_1].values
-    
+    @njit(parallel = True)
+    def rolling_z_score(data, window):
+        z_scores = np.empty(len(data))
+        z_scores[:window] = np.nan  # first `window` values have no preceding window
+
+        for i in prange(window, len(data)):
+            mean_i = np.mean(data[i-window:i])
+            std_i = np.std(data[i-window:i])
+            z_scores[i] = (data[i] - mean_i) / std_i if std_i > 0 else 0.0  # avoid division by zero
+
+        return z_scores
+        
     def __rolling_spread_z_score(self):
-        def rolling_window(a, window):
-            shape = a.shape[:-1] + (a.shape[-1] - window + 1, window)
-            strides = a.strides + (a.strides[-1],)
-            return np.lib.stride_tricks.as_strided(a, shape=shape, strides=strides)
-        
-        rolling_spread = self.data['rolling_spread'].values
-        rolling_spread_window = rolling_window(rolling_spread, self.z_window)
-
-        rolling_mean = np.mean(rolling_spread_window, axis = -1)
-        rolling_std = np.std(rolling_spread_window, axis = -1)
-        
-        len_diff = abs(len(rolling_spread) - len(rolling_mean))
-        for _ in np.arange(len_diff):
-            rolling_mean = np.insert(rolling_mean, 0, np.nan)
-            rolling_std = np.insert(rolling_std, 0, np.nan)
-
-        z = (rolling_spread - rolling_mean) / rolling_std
-
-        return z
+        return PairsTradingBacktest.rolling_z_score(
+            data = self.data['rolling_hedge_ratio'].values,
+            window = self.hedge_ratio_window
+        )
     
+    @njit(parallel = True)
+    def generate_trading_signals(z, z_prev, zl, zu):
+        en = np.where(
+            ((z_prev > zl) & (z < zl)),
+            1,
+            0
+        )
+
+        en = np.where(
+            ((z_prev < zu) & (z > zu)),
+            -1,
+            en
+        )
+
+        ex = np.where(
+            ((z_prev < zu) & (z > zu)),
+            1,
+            0
+        )
+
+        ex = np.where(
+            ((z_prev > zl) & (z < zl)),
+            -1,
+            ex
+        )
+        
+        return en, ex
+
     def __generate_trading_signals(self):
         rolling_spread_z_score = self.data['rolling_spread_z_score'].values
         rolling_spread_z_score_prev = self.data['rolling_spread_z_score'].shift(1).values
-        
-        # Long Entry
-        entry_signals = np.where(
-            (rolling_spread_z_score_prev > self.z_score_lower_thresh) & (rolling_spread_z_score < self.z_score_lower_thresh),
-            1,
-            0
-        )
 
-        # Short Entry
-        entry_signals = np.where(
-            (rolling_spread_z_score_prev < self.z_score_upper_thresh) & (rolling_spread_z_score > self.z_score_upper_thresh),
-            -1,
-            entry_signals
+        return PairsTradingBacktest.generate_trading_signals(
+            z = rolling_spread_z_score,
+            z_prev = rolling_spread_z_score_prev,
+            zl = self.z_score_lower_thresh,
+            zu = self.z_score_upper_thresh
         )
-
-        # Long Exit
-        exit_signals = np.where(
-            (rolling_spread_z_score_prev < self.z_score_upper_thresh) & (rolling_spread_z_score > self.z_score_upper_thresh),
-            1,
-            0
-        )
-
-        # Short Exit
-        exit_signals = np.where(
-            (rolling_spread_z_score_prev > self.z_score_lower_thresh) & (rolling_spread_z_score < self.z_score_lower_thresh),
-            -1,
-            exit_signals
-        )
-
-        return entry_signals, exit_signals
-    
+            
     def __exit_trade(self, positions, i, is_long):
         long_symbol = self.symbol_id_2 if is_long else self.symbol_id_1
         short_symbol = self.symbol_id_1 if is_long else self.symbol_id_2
+        comission = self.backtest_params['comission']
 
         # Set long and short position amount for current timestamp to 0
         # to simulate closing the trade
@@ -174,12 +190,12 @@ class PairsTradingBacktest:
 
         start_value_long = self.data.at[start, long_symbol] * (1 + slippage) * positions.at[start, long_symbol]
         end_value_long = self.data.at[end, long_symbol] * (1 - slippage) * positions.at[start, long_symbol]
-        long_pnl = (end_value_long - start_value_long) * (1 - self.backtest_params['comission'])
+        long_pnl = (end_value_long - start_value_long) * (1 - comission)
 
         # Calculate the PnL from the short position
         start_value_short = self.data.at[start, short_symbol] * (1 - slippage) * positions.at[start, short_symbol]
         end_value_short = self.data.at[end, short_symbol] * (1 + slippage) * positions.at[start, short_symbol]
-        short_pnl = (start_value_short - end_value_short) * (1 - self.backtest_params['comission'])
+        short_pnl = (start_value_short - end_value_short) * (1 - comission)
 
         # Calculate the PnL from the entire trade 
         trade_pnl = long_pnl + short_pnl
@@ -189,9 +205,10 @@ class PairsTradingBacktest:
         # Set the PnL and PnL % of the current trade
         self.trades.at[len(self.trades) - 1, 'pnl_pct'] = trade_pnl_pct
         self.trades.at[len(self.trades) - 1, 'pnl'] = trade_pnl
-        
-        return end_value_long + end_value_short
-    
+
+        self.curr_capital -= (end_value_short * (1 + comission))
+        self.curr_capital += (end_value_long * (1 - comission))
+            
     def __enter_trade(self, row, positions, i, is_long = True):
         pct_capital_per_trade = self.backtest_params['pct_capital_per_trade']
         comission = self.backtest_params['comission']
@@ -199,43 +216,72 @@ class PairsTradingBacktest:
         
         long_symbol = self.symbol_id_2 if is_long else self.symbol_id_1
         short_symbol = self.symbol_id_1 if is_long else self.symbol_id_2
-
-        # Amount of dollars to allocate to the long position
-        long_allocation = (1 - comission) * self.curr_capital * pct_capital_per_trade / 2
         
-        # Number of units of symbol_id_2 to long
-        units_long = long_allocation / (row[long_symbol] * (1 + max_slippage))
-        
-        # Amount of dollars to allocate to the short position
-        short_allocation = (1 - comission) * self.curr_capital * pct_capital_per_trade / 2
+        h = row['rolling_hedge_ratio']
+        p1 = self.data.at[self.data.index[i], short_symbol]
+        p2 = self.data.at[self.data.index[i], long_symbol]
+        c = self.curr_capital * pct_capital_per_trade
 
-        # Number of units of symbol_id_1 to short
-        units_short = short_allocation / (row[short_symbol] * (1 - max_slippage))
+        if is_long:
+            n1 = (c / (h * p1 + p2)) * h
+            n2 = c / (h * p1 + p2)
 
-        self.curr_capital -= (long_allocation + short_allocation)
+            long_allocation = n2 * p2
+            short_allocation = n1 * p1
 
-        # Set long and short position amounts for current timestamp
-        positions.at[self.data.index[i], long_symbol] = units_long
-        positions.at[self.data.index[i], short_symbol] = units_short
+            # Set long and short position amounts for current timestamp
+            positions.at[self.data.index[i], long_symbol] = n2
+            positions.at[self.data.index[i], short_symbol] = n1
+            
+            # Initialize a new trade and append it to the trades DataFrame
+            new_trade = {
+                'entry_date':self.data.index[i],
+                'exit_date':np.nan,
+                long_symbol:n2,
+                short_symbol:n1,
+                'pnl':np.nan,
+                'pnl_pct':np.nan,
+                'is_long':is_long
+            }
+
+            new_trade = pd.DataFrame(new_trade, index = [0])
+            self.trades = pd.concat([self.trades, new_trade], ignore_index = True)
+            
+            # Track number of units in current long and short position
+            self.curr_position_long_units = n2
+            self.curr_position_short_units = n1
+        else:
+            n1 = c / (h * p1 + p2)
+            n2 = (c / (h * p1 + p2)) * h
+
+            long_allocation = n1 * p2
+            short_allocation = n2 * p1
+            
+            # Set long and short position amounts for current timestamp
+            positions.at[self.data.index[i], long_symbol] = n1
+            positions.at[self.data.index[i], short_symbol] = n2
+            
+            # Initialize a new trade and append it to the trades DataFrame
+            new_trade = {
+                'entry_date':self.data.index[i],
+                'exit_date':np.nan,
+                long_symbol:n1,
+                short_symbol:n2,
+                'pnl':np.nan,
+                'pnl_pct':np.nan,
+                'is_long':is_long
+            }
+
+            new_trade = pd.DataFrame(new_trade, index = [0])
+            self.trades = pd.concat([self.trades, new_trade], ignore_index = True)
+            
+            # Track number of units in current long and short position
+            self.curr_position_long_units = n1
+            self.curr_position_short_units = n2
+
+        self.curr_capital -= (long_allocation * (1 + comission))
+        self.curr_capital += (short_allocation * (1 - comission))
                 
-        # Initialize a new trade and append it to the trades DataFrame
-        new_trade = {
-            'entry_date':self.data.index[i],
-            'exit_date':np.nan,
-            long_symbol:units_long,
-            short_symbol:units_short,
-            'pnl':np.nan,
-            'pnl_pct':np.nan,
-            'is_long':is_long
-        }
-
-        new_trade = pd.DataFrame(new_trade, index = [0])
-        self.trades = pd.concat([self.trades, new_trade], ignore_index = True)
-        
-        # Track number of units in current long and short position
-        self.curr_position_long_units = units_long
-        self.curr_position_short_units = units_short
-        
         # Indicate we're in a trade now
         self.position = 1
 
@@ -245,7 +291,10 @@ class PairsTradingBacktest:
 
         # Iterate through each timestamp of dataset
         i = 0
-        for row in self.data.to_dict(orient = 'records'):  
+        for row in self.data.to_dict(orient = 'records'): 
+            if self.curr_capital < 0:
+                return
+             
             # Retrieve entry and exit signals at current timestamp          
             entry_signal = row['entry_signals']
             exit_signal = row['exit_signals']
@@ -253,8 +302,8 @@ class PairsTradingBacktest:
             # If not in a trade at current timestamp
             if not self.position:
 
-                # If long or short entry signal is received
-                if entry_signal == 1 or entry_signal == -1: 
+                # If long or short entry signal is received and we have capital remaining
+                if (entry_signal == 1 or entry_signal == -1): 
         
                     # If we're on the last timestamp or if rolling hedge ratio is negative 
                     # then don't open a trade
@@ -280,20 +329,45 @@ class PairsTradingBacktest:
 
             # If in a trade at current timestamp
             else:
-                is_long = self.trades.at[len(self.trades) - 1, 'is_long']
+                is_long = self.trades.at[len(self.trades) - 1, 'is_long'] 
+                long_symbol = self.symbol_id_2 if is_long else self.symbol_id_1
+                short_symbol = self.symbol_id_1 if is_long else self.symbol_id_2
+                comission = self.backtest_params['comission']
 
-                # If curr trade is long and we get a long exit or curr trade is short and we get a short exit
-                if (is_long and exit_signal == 1) or (not is_long and exit_signal == -1):
-                    
-                    # Close the current trade
-                    end_trade_amount = self.__exit_trade(
+                # Entry and exit dates of most current trade
+                start = self.trades.at[len(self.trades) - 1,'entry_date']
+                curr_date = self.data.index[i]
+
+                start_value_long = self.data.at[start, long_symbol] * positions.at[start, long_symbol]
+                curr_value_long = self.data.at[curr_date, long_symbol] * positions.at[start, long_symbol]
+                long_pnl = (curr_value_long - start_value_long) * (1 - comission)
+
+                # Calculate the PnL from the short position
+                start_value_short = self.data.at[start, short_symbol] * positions.at[start, short_symbol]
+                curr_value_short = self.data.at[curr_date, short_symbol] * positions.at[start, short_symbol]
+                short_pnl = (start_value_short - curr_value_short) * (1 - comission)
+
+                # Calculate the PnL from the entire trade 
+                trade_pnl = long_pnl + short_pnl
+                total_investment = start_value_long + start_value_short
+                trade_pnl_pct = trade_pnl / total_investment
+
+                if trade_pnl_pct <= -self.backtest_params['sl'] or trade_pnl_pct >= self.backtest_params['tp']:
+                    self.__exit_trade(
                         positions = positions,
                         i = i,
                         is_long = is_long
                     )
-
-                    # Add money from closing position back into our available capital
-                    self.curr_capital += end_trade_amount
+                
+                # If curr trade is long and we get a long exit or curr trade is short and we get a short exit
+                if (is_long and exit_signal == 1) or (not is_long and exit_signal == -1):
+                    
+                    # Close the current trade
+                    self.__exit_trade(
+                        positions = positions,
+                        i = i,
+                        is_long = is_long
+                    )
                                 
                 # Otherwise 
                 else:
@@ -311,9 +385,12 @@ class PairsTradingBacktest:
             # been exited yet 
             if i == len(self.data) - 1 and len(self.trades) > 0 and type(self.trades.at[len(self.trades) - 1, 'exit_date']) == type(np.nan):
 
-                # Reverse the trade and remove it from the trades DataFrame
-                self.trades = self.trades.drop([len(self.trades) - 1])
-                self.position = 0
+                # Close the trade
+                self.__exit_trade(
+                    positions = positions,
+                    i = i,
+                    is_long = is_long
+                )
 
             i += 1
                 
@@ -361,7 +438,10 @@ class PairsTradingBacktest:
                 trade_duration = exit_date - entry_date
                 exposure += trade_duration
             
-            return round(exposure / duration * 100, 2)
+            try:
+                return round(exposure / duration * 100, 2)
+            except:
+                return np.nan
 
         def buy_and_hold_return():
             token1_start_value = self.data.at[self.data.index[0], self.symbol_id_1]
@@ -378,7 +458,7 @@ class PairsTradingBacktest:
             returns = self.equity.equity.pct_change()
             mean_returns = returns.mean()
             std_returns = returns.std()
-            
+
             try:
                 return np.sqrt(8760) * mean_returns / std_returns 
             except:
@@ -423,7 +503,10 @@ class PairsTradingBacktest:
             gross_profit = self.trades[self.trades['pnl'] > 0]['pnl'].sum()
             gross_loss = self.trades[self.trades['pnl'] < 0]['pnl'].abs().sum()
             
-            return gross_profit / gross_loss
+            try:
+                return gross_profit / gross_loss
+            except:
+                return np.nan
         
         def max_drawdown():
             rolling_max_equity = self.equity.cummax()
@@ -468,7 +551,10 @@ class PairsTradingBacktest:
             num_winning_trades = len(self.trades[self.trades['pnl_pct'] > 0])
             num_trades_total = len(self.trades)
 
-            return round(num_winning_trades / num_trades_total * 100, 2)
+            try:
+                return round(num_winning_trades / num_trades_total * 100, 2)
+            except:
+                return np.nan
         
         def best_trade():
             if len(self.trades) == 0:
@@ -510,7 +596,7 @@ class PairsTradingBacktest:
         metrics_dict = {
             'duration':duration, 
             'exposure_pct': exposure_pct(duration),
-            'equity_final':self.equity.dropna().iloc[-1]['equity'],
+            'equity_final':self.equity.iloc[-1]['equity'],
             'equity_peak':self.equity['equity'].max(),
             'return_pct':return_pct,
             'buy_and_hold_return_pct':buy_and_hold_return(),
@@ -605,8 +691,8 @@ class PairsTradingBacktest:
         lists = []
         parameter_combinations = []
 
-        best_comb_so_far = None
-        best_metric_so_far = 1000000000000 if minimize else -1000000000000
+        best_comb_so_far = [self.z_window, self.hedge_ratio_window, self.z_score_upper_thresh, self.z_score_lower_thresh]
+        best_metric_so_far = float('inf') if minimize else float('-inf')
         
         for key in optimize_dict.keys():
             lists.append(optimize_dict[key])
@@ -644,15 +730,12 @@ class PairsTradingBacktest:
         optimal_params = {'z_window': self.z_window, 'hedge_ratio_window': self.hedge_ratio_window,
                           'z_score_upper_thresh': self.z_score_upper_thresh, 'z_score_lower_thresh': self.z_score_lower_thresh}
         
-        return optimal_params, self.performance_metrics.to_dict(orient = 'records')[0]
+        return optimal_params
         
     def backtest(self):        
         # Calculate rolling hedge ratios at each timestep
         self.data['rolling_hedge_ratio'] = self.__rolling_hedge_ratios()
-        
-        # Calculate rolling spread at each timestep
-        self.data['rolling_spread'] = self.__rolling_spread()
-        
+                
         # Calculate rolling spread z score at each timestep
         self.data['rolling_spread_z_score'] = self.__rolling_spread_z_score()
 
@@ -680,5 +763,5 @@ class PairsTradingBacktest:
         # Reset position variable back to default state for subsequent backtests
         self.position = 0
 
-        return self.performance_metrics.to_dict(orient = 'records')[0]
-    
+        # Reset curr_capital variable back to initial value for subsequent backtests
+        self.curr_capital = self.backtest_params['initial_capital']

@@ -45,7 +45,7 @@ class PairsTradingBackTester:
 
     def serialize_json_data(obj):
         if isinstance(obj, pd.Timedelta):
-            return obj.total_seconds()
+            return obj.total_seconds() / float(60 * 60 * 24)
         elif isinstance(obj, np.integer):
             return int(obj)
         elif isinstance(obj, np.floating):
@@ -60,7 +60,7 @@ class PairsTradingBackTester:
     def __get_data(self, symbol_id_1, symbol_id_2):
         base_1, quote_1, exchange_id_1 = symbol_id_1.split('_')
         base_2, quote_2, exchange_id_2 = symbol_id_2.split('_')
-        
+                
         with redshift_connector.connect(
             host = 'project-poseidon.cpsnf8brapsd.us-west-2.redshift.amazonaws.com',
             database = 'token_price',
@@ -91,10 +91,15 @@ class PairsTradingBackTester:
                 
                 SELECT
                     s1.time_period_end,
-                    s1.price_close AS "{}",
-                    s2.price_close AS "{}"
+                    s1.price_close / (1 / s3.price_close) AS "{}",
+                    s2.price_close / (1 / s3.price_close) AS "{}"
                 FROM symbol_id_1 s1 INNER JOIN symbol_id_2 s2
                         ON s1.time_period_end = s2.time_period_end
+                     INNER JOIN token_price.eth.stg_price_data_1h s3
+                        ON s1.time_period_end = s3.time_period_end AND
+                           s3.asset_id_base = 'ETH' AND
+                           s3.asset_id_quote = 'USD' AND
+                           s3.exchange_id = 'BITFINEX'
                 ORDER BY s1.time_period_end 
                 """.format(
                     base_1, quote_1, exchange_id_1,
@@ -240,6 +245,7 @@ class PairsTradingBackTester:
             return round(avg_dd * 100, 2)
         
         def max_drawdown_duration(equity):
+            equity = equity.dropna()
             dates = pd.Series([pd.to_datetime(equity.index[0])])
             
             diff = equity.cummax().diff().fillna(0)
@@ -252,6 +258,7 @@ class PairsTradingBackTester:
             return dates.diff().max()
         
         def avg_drawdown_duration(equity):
+            equity = equity.dropna()
             dates = pd.Series([pd.to_datetime(equity.index[0])])
             
             diff = equity.cummax().diff().fillna(0)
@@ -311,91 +318,65 @@ class PairsTradingBackTester:
         
         metrics_dict = {
             'duration':duration, 
-            'exposure_time': exposure_time(duration, oos_trades),
-            'equity_final':oos_equity_curve.dropna().iloc[-1]['equity'],
-            'equity_peak':oos_equity_curve['equity'].max(),
+            'exposure_pct': round(exposure_time(duration, oos_trades), 2),
+            'equity_final':round(oos_equity_curve.dropna().iloc[-1]['equity'], 2),
+            'equity_peak':round(oos_equity_curve['equity'].max(), 2),
             'return_pct':round(return_pct * 100, 2),
-            'buy_and_hold_return_pct':buy_and_hold_return(oos_price_data),
-            'sharpe_ratio':sharpe_ratio(oos_equity_curve), 
-            'sortino_ratio':sortino_ratio(oos_equity_curve),
-            'calmar_ratio':calmar_ratio(oos_equity_curve),
-            'cagr_over_avg_drawdown':cagr_over_avg_drawdown(oos_equity_curve),
-            'profit_factor':profit_factor(oos_trades),
-            'max_dd_pct':max_drawdown(oos_equity_curve),
-            'avg_dd_pct':avg_drawdown(oos_equity_curve),
+            'buy_and_hold_return_pct':round(buy_and_hold_return(oos_price_data), 2),
+            'sharpe_ratio':round(sharpe_ratio(oos_equity_curve), 2), 
+            'sortino_ratio':round(sortino_ratio(oos_equity_curve), 2),
+            'calmar_ratio':round(calmar_ratio(oos_equity_curve), 2),
+            'cagr_over_avg_drawdown':round(cagr_over_avg_drawdown(oos_equity_curve), 2),
+            'profit_factor':round(profit_factor(oos_trades), 2),
+            'max_dd_pct':round(max_drawdown(oos_equity_curve), 2),
+            'avg_dd_pct':round(avg_drawdown(oos_equity_curve), 2),
             'max_dd_duration':max_drawdown_duration(oos_equity_curve), 
             'avg_dd_duration':avg_drawdown_duration(oos_equity_curve),
             'num_trades':len(oos_trades), 
-            'win_rate_pct':win_rate(oos_trades), 
-            'best_trade_pct':best_trade(oos_trades),
-            'worst_trade_pct':worst_trade(oos_trades), 
-            'avg_trade_pct':avg_trade(oos_trades),
+            'win_rate_pct':round(win_rate(oos_trades), 2), 
+            'best_trade_pct':round(best_trade(oos_trades), 2),
+            'worst_trade_pct':round(worst_trade(oos_trades), 2), 
+            'avg_trade_pct':round(avg_trade(oos_trades), 2),
             'max_trade_duration':max_trade_duration(oos_trades),
-            'avg_trade_duration':avg_trade_duration(oos_trades)
+            'avg_trade_duration':avg_trade_duration(oos_trades),
         }
 
         return pd.DataFrame(metrics_dict).reset_index()
 
     ########################################## HELPER FUNCTIONS END ##########################################
 
-    def backtest(self, symbol_id_1, symbol_id_2, training_data, testing_data):
+    def backtest(self, symbol_id_1, symbol_id_2, training_data, testing_data, starting_equity):
         is_backtest = PairsTradingBacktest(
             price_data = training_data,
             symbol_id_1 = symbol_id_1,
             symbol_id_2 = symbol_id_2
         )
 
-        optimal_params, is_backtest_results = is_backtest.optimize_parameters(
+        is_backtest.backtest_params['initial_capital'] = starting_equity
+        is_backtest.curr_capital = starting_equity
+
+        optimal_params = is_backtest.optimize_parameters(
             optimize_dict = self.optimize_dict,
             performance_metric = self.optimization_metric,
             minimize = False
         )
 
         # Evaluate optimized trading strategy on unseen data
-
         oos_backtest = PairsTradingBacktest(
             price_data = testing_data,
             symbol_id_1 = symbol_id_1,
             symbol_id_2 = symbol_id_2
         )
+       
+        oos_backtest.backtest_params['initial_capital'] = starting_equity
+        oos_backtest.curr_capital = starting_equity
 
         oos_backtest.z_window = optimal_params['z_window']
         oos_backtest.hedge_ratio_window = optimal_params['hedge_ratio_window']
         oos_backtest.z_score_upper_thresh = optimal_params['z_score_upper_thresh']
         oos_backtest.z_score_lower_thresh = optimal_params['z_score_lower_thresh']
 
-        oos_backtest_results = oos_backtest.backtest()
-
-        # Upload backtest
-        with redshift_connector.connect(
-            host = 'project-poseidon.cpsnf8brapsd.us-west-2.redshift.amazonaws.com',
-            database = 'trading_bot',
-            user = 'administrator',
-            password = 'Free2play2'
-        ) as conn:
-            with conn.cursor() as cursor:
-                # Query to insert backtest results into Redshift 
-                query = """
-                INSERT INTO trading_bot.eth.pairs_trading_backtest_results VALUES 
-                (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """
-                str_is_backtest_results = json.dumps(is_backtest_results, default = PairsTradingBackTester.serialize_json_data)
-                str_is_backtest_results = str_is_backtest_results.replace('NaN', 'null').replace('Infinity', 'null')
-
-                str_oos_backtest_results = json.dumps(oos_backtest_results, default = PairsTradingBackTester.serialize_json_data)
-                str_oos_backtest_results = str_oos_backtest_results.replace('NaN', 'null').replace('Infinity', 'null')
-
-                # Execute query on Redshift
-                params = (symbol_id_1, symbol_id_2, training_data.index[0], training_data.index[-1], 
-                          str_is_backtest_results, testing_data.index[0], testing_data.index[-1],
-                          str_oos_backtest_results, json.dumps(optimal_params, default = PairsTradingBackTester.serialize_json_data),
-                          self.optimization_metric, json.dumps(oos_backtest.backtest_params, default = PairsTradingBackTester.serialize_json_data)
-                          )
-                
-                cursor.execute(query, params)
-                cursor.close()
-
-            conn.commit()
+        oos_backtest.backtest()
         
         return oos_backtest.equity, oos_backtest.trades
     
@@ -415,10 +396,12 @@ class PairsTradingBackTester:
         trades = []
         price_data = []
 
+        starting_equity = 10_000
+
         while start + in_sample_size + out_of_sample_size <= len(backtest_data):
             print()
             print('Backtesting on days: {} - {} / {}'.format(int(start / 24), int((start + in_sample_size + out_of_sample_size) / 24), int(len(backtest_data) / 24)))
-            print()
+            print('Starting equity: {}'.format(starting_equity))
 
             if len(backtest_data.iloc[start:]) - (in_sample_size + out_of_sample_size) < out_of_sample_size:
                 in_sample_data = backtest_data.iloc[start:start + in_sample_size]
@@ -431,8 +414,13 @@ class PairsTradingBackTester:
                 symbol_id_1 = symbol_id_1,
                 symbol_id_2 = symbol_id_2,
                 training_data = in_sample_data,
-                testing_data = out_of_sample_data
+                testing_data = out_of_sample_data,
+                starting_equity = starting_equity
             )
+            print('num trades: {}, avg trade: {}, min trade: {}, max trade: {}'.format(len(oos_trades), oos_trades['pnl_pct'].mean(), oos_trades['pnl_pct'].min(), oos_trades['pnl_pct'].max()))
+            print('total return: {}'.format((oos_trades['pnl_pct'] + 1).prod()))
+
+            starting_equity *= (1 + oos_trades['pnl_pct']).prod()
             
             equity_curves.append(oos_equity_curve)
             trades.append(oos_trades)
@@ -441,7 +429,9 @@ class PairsTradingBackTester:
             start += out_of_sample_size
 
         equity_curves = pd.concat(equity_curves).sort_index()
-        trades = pd.concat(trades, ignore_index = True).sort_index()
+        equity_curves.to_csv('./oos_equity_curve.csv')
+        
+        trades = pd.concat(trades, ignore_index = True)
         price_data = pd.concat(price_data).sort_index()
 
         return equity_curves, trades, price_data
@@ -510,6 +500,7 @@ class PairsTradingBackTester:
                     print()
 
                     if is_cointegrated:
+
                         print()
                         print('({} / {}) Now backtesting pairs {} / {}'.format(i + 1, len(combs), symbol_id_1, symbol_id_2))
                         print()
@@ -517,10 +508,10 @@ class PairsTradingBackTester:
                         oos_equity_curve, oos_trades, oos_price_data = self.walk_forward_optimization(
                             symbol_id_1 = x_y_dict['X'],
                             symbol_id_2 = x_y_dict['Y'],
-                            in_sample_size = 24 * 30 * 6,
-                            out_of_sample_size = 24 * 30 * 3 
+                            in_sample_size = 24 * 30 * 3,
+                            out_of_sample_size = 24 * 30 * 3  
                         )
-
+                        
                         performance_metrics = self.__calculate_performance_metrics(
                             oos_equity_curve, 
                             oos_trades, 
@@ -528,7 +519,7 @@ class PairsTradingBackTester:
                         ).to_dict(orient = 'records')[0]
                         
                         performance_metrics = json.dumps(performance_metrics, default = PairsTradingBackTester.serialize_json_data)
-                        performance_metrics = performance_metrics.replace('NaN', 'null')
+                        performance_metrics = performance_metrics.replace('NaN', 'null').replace('Infinity', 'null')
 
                         with redshift_connector.connect(
                             host = 'project-poseidon.cpsnf8brapsd.us-west-2.redshift.amazonaws.com',
@@ -540,7 +531,7 @@ class PairsTradingBackTester:
                                 # Query to insert backtest results into Redshift 
                                 query = """
                                 INSERT INTO eth.pairs_trading_backtest_results VALUES
-                                (%s, %s, %s, %s, %s, %s, %s, %s)
+                                (%s, %s, %s, %s, %s, %s)
                                 """
 
                                 # Execute query on Redshift
@@ -553,17 +544,18 @@ class PairsTradingBackTester:
                             conn.commit()
 if __name__ == '__main__': 
     optimize_dict = {
-        'z_window':[24, 24*7, 24 * 30, 24 * 60],
-        'hedge_ratio_window':[24, 24*7, 24 * 30, 24 * 60],
-        'z_thresh_upper':[1, 1.5, 2],
-        'z_thresh_lower':[-1, -1.5, -2]
+        'z_window':[12, 24, 24 * 7, 24 * 30],
+        'hedge_ratio_window':[12, 24, 24 * 7, 24 * 30],
+        'z_thresh_upper':[0, 0.5, 1, 2],
+        'z_thresh_lower':[-0.5, -1, -2]
     }
 
     b = PairsTradingBackTester(
         optimize_dict = optimize_dict,
-        optimization_metric = 'sortino_ratio'
+        optimization_metric = 'sharpe_ratio'
     )
 
+    print()
     print('Starting')
     print()
 
