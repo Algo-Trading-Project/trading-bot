@@ -141,7 +141,7 @@ def __enter_trade_numba(positions, data, dates, trades, curr_capital, pct_capita
     return positions, trades, curr_capital, curr_position_long_units, curr_position_short_units
 
 @njit            
-def generate_positions_numba(positions, data, dates, trades, position, curr_capital, pct_capital_per_trade, commission, slippage, sl, tp):
+def generate_positions_numba(positions, data,  entry_signals, exit_signals, rolling_hedge_ratios, dates, trades, position, curr_capital, pct_capital_per_trade, commission, slippage, sl, tp):
     cp_long = 0
     cp_short = 0
 
@@ -170,8 +170,8 @@ def generate_positions_numba(positions, data, dates, trades, position, curr_capi
                 return trades, curr_capital
         
         # Retrieve entry and exit signals at current timestamp          
-        entry_signal = data[i][4]
-        exit_signal = data[i][5]
+        entry_signal = entry_signals[i]
+        exit_signal = exit_signals[i]
 
         # If not in a trade at current timestamp
         if not position:
@@ -181,7 +181,7 @@ def generate_positions_numba(positions, data, dates, trades, position, curr_capi
                 
                 # If we're on the last timestamp or if rolling hedge ratio is negative 
                 # then don't open a trade
-                if (i == len(data) - 1) or (data[i][2] <= 0):
+                if (i == len(data) - 1) or (rolling_hedge_ratios[i] <= 0):
                     continue
                     
                 is_long = entry_signal == 1
@@ -196,7 +196,7 @@ def generate_positions_numba(positions, data, dates, trades, position, curr_capi
                     slippage = slippage,
                     is_long = is_long,
                     i = i,
-                    h = data[i][2]
+                    h = rolling_hedge_ratios[i]
                 )
                 
                 cp_long = curr_position_long_units
@@ -331,19 +331,21 @@ def rolling_hedge_ratios_numba(y, x, window):
     return hedge_ratios
 
 @njit(parallel = True)
-def rolling_z_score(data, window):
-    z_scores = np.empty(len(data))
+def rolling_spread_z_score_numba(rolling_hedge_ratios, y, x, window):
+    z_scores = np.empty(len(rolling_hedge_ratios))
     z_scores[:window] = np.nan  # first `window` values have no preceding window
 
-    for i in prange(window, len(data)):
-        mean_i = np.mean(data[i-window:i])
-        std_i = np.std(data[i-window:i])
-        z_scores[i] = (data[i] - mean_i) / std_i if std_i > 0 else 0.0  # avoid division by zero
+    spread = y - rolling_hedge_ratios * x
+
+    for i in prange(window, len(spread)):
+        mean_i = np.mean(spread[i-window:i])
+        std_i = np.std(spread[i-window:i])
+        z_scores[i] = (spread[i] - mean_i) / std_i if std_i > 0 else np.nan # avoid division by zero
 
     return z_scores
 
 @njit(parallel = True)
-def generate_trading_signals(z, z_prev, zl, zu):
+def generate_trading_signals_numba(z, z_prev, zl, zu):
     en = np.where(
         ((z_prev > zl) & (z < zl)),
         1,

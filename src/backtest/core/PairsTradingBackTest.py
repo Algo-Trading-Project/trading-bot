@@ -87,16 +87,18 @@ class PairsTradingBacktest:
         )
             
     def __rolling_spread_z_score(self):
-        return rolling_z_score(
-            data = self.data['rolling_hedge_ratio'].values,
-            window = self.hedge_ratio_window
+        return rolling_spread_z_score_numba(
+            rolling_hedge_ratios = self.data['rolling_hedge_ratios'].values,
+            y = self.data[self.symbol_id_2].values,
+            x = self.data[self.symbol_id_1].values,
+            window = self.z_window
         )
     
     def __generate_trading_signals(self):
         rolling_spread_z_score = self.data['rolling_spread_z_score'].values
         rolling_spread_z_score_prev = self.data['rolling_spread_z_score'].shift(1).values
 
-        return generate_trading_signals(
+        return generate_trading_signals_numba(
             z = rolling_spread_z_score,
             z_prev = rolling_spread_z_score_prev,
             zl = self.z_score_lower_thresh,
@@ -464,7 +466,7 @@ class PairsTradingBacktest:
                           'z_score_upper_thresh': self.z_score_upper_thresh, 'z_score_lower_thresh': self.z_score_lower_thresh}
         
         return optimal_params
-        
+    
     def backtest(self):        
         # Calculate rolling hedge ratios at each timestep
         self.data['rolling_hedge_ratio'] = self.__rolling_hedge_ratios()
