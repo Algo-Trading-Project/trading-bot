@@ -417,8 +417,8 @@ class PairsTradingBackTester:
                 testing_data = out_of_sample_data,
                 starting_equity = starting_equity
             )
-            print('num trades: {}, avg trade: {}, min trade: {}, max trade: {}'.format(len(oos_trades), oos_trades['pnl_pct'].mean(), oos_trades['pnl_pct'].min(), oos_trades['pnl_pct'].max()))
-            print('total return: {}'.format((oos_trades['pnl_pct'] + 1).prod()))
+            print('num trades: {}, avg trade: {}'.format(len(oos_trades), round(oos_trades['pnl_pct'].mean(), 5)))
+            print('total return: {}'.format(round((oos_trades['pnl_pct'] + 1).prod(), 2)))
 
             starting_equity *= (1 + oos_trades['pnl_pct']).prod()
             
