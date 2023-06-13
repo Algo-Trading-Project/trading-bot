@@ -249,7 +249,7 @@ class PairsTradingBacktest:
             # Initialize a new trade and append it to the trades DataFrame
             new_trade = np.array([
                 dates[i],
-                np.nan,
+                -1,
                 i,
                 np.nan,
                 n2,
@@ -278,7 +278,7 @@ class PairsTradingBacktest:
             # Initialize a new trade and append it to the trades DataFrame
             new_trade = np.array([
                 dates[i],
-                np.nan,
+                -1,
                 i,
                 np.nan,
                 n2,
@@ -305,12 +305,32 @@ class PairsTradingBacktest:
 
         for i in range(len(data)):
             if curr_capital < 0:
-                return
+                
+                if trades[-1][1] == -1:
+
+                    # Close the current trade
+                    positions, trades, curr_capital = PairsTradingBacktest.__exit_trade_numba(
+                        positions = positions,
+                        data = data,
+                        dates = dates,
+                        trades = trades,
+                        i = i,
+                        is_long = is_long,
+                        commission = commission,
+                        slippage = slippage,
+                        curr_capital = curr_capital
+                    )
+
+                    position = 0
+
+                    return trades, curr_capital
+                else:
+                    return trades, curr_capital
             
             # Retrieve entry and exit signals at current timestamp          
             entry_signal = data[i][4]
             exit_signal = data[i][5]
-            
+
             # If not in a trade at current timestamp
             if not position:
                 

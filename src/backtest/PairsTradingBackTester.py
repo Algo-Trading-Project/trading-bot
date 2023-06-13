@@ -429,7 +429,6 @@ class PairsTradingBackTester:
             start += out_of_sample_size
 
         equity_curves = pd.concat(equity_curves).sort_index()
-        equity_curves.to_csv('./oos_equity_curve.csv')
         
         trades = pd.concat(trades, ignore_index = True)
         price_data = pd.concat(price_data).sort_index()
