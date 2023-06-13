@@ -71,7 +71,7 @@ class PairsTradingBacktest:
         self.curr_position_short_units = 0
 
         # Trades executed throughout the backtest
-        self.trades = pd.DataFrame(columns = ['entry_date', 'exit_date', self.symbol_id_2, self.symbol_id_1, 'pnl', 'pnl_pct', 'is_long'])
+        self.trades = pd.DataFrame(columns = ['entry_date', 'exit_date', 'entry_i', 'exit_i', self.symbol_id_2, self.symbol_id_1, 'pnl', 'pnl_pct', 'is_long'])
 
         # PnL in dollars at each timestep
         self.pnl = None
@@ -162,40 +162,46 @@ class PairsTradingBacktest:
             zl = self.z_score_lower_thresh,
             zu = self.z_score_upper_thresh
         )
-            
-    def __exit_trade(self, positions, i, is_long):
-        long_symbol = self.symbol_id_2 if is_long else self.symbol_id_1
-        short_symbol = self.symbol_id_1 if is_long else self.symbol_id_2
-        comission = self.backtest_params['comission']
+    
+    @njit
+    def __exit_trade_numba(positions, data, dates, trades, i, is_long, commission, slippage, curr_capital):
+        if is_long:
+            long_symbol_index_pos = 0
+            long_symbol_index_data = 1
 
+            short_symbol_index_pos = 1
+            short_symbol_index_data = 0
+        else:
+            long_symbol_index_pos = 1
+            long_symbol_index_data = 0
+            
+            short_symbol_index_pos = 0
+            short_symbol_index_data = 1
+            
         # Set long and short position amount for current timestamp to 0
         # to simulate closing the trade
-        positions.at[self.data.index[i], long_symbol] = 0
-        positions.at[self.data.index[i], short_symbol] = 0
-        
-        # Set the exit date of the current trade to the current timestamp
-        self.trades.at[len(self.trades) - 1,'exit_date'] = self.data.index[i]
+        positions[i][long_symbol_index_pos] = 0
+        positions[i][short_symbol_index_pos] = 0
 
-        # Indicate we're no longer in a trade
-        self.position = 0
+        # Set the exit date of the current trade to the current timestamp
+        trades[-1][1] = dates[i]
+        trades[-1][3] = i
         
         # Calculate pnl and pnl % from trade
 
         # Entry and exit dates of most current trade
-        start = self.trades.at[len(self.trades) - 1,'entry_date']
-        end = self.trades.at[len(self.trades) - 1,'exit_date']
+        start = int(trades[-1][2])
+        end = int(trades[-1][3])
 
         # Calculate the PnL from the long position
-        slippage = self.backtest_params['max_slippage']
-
-        start_value_long = self.data.at[start, long_symbol] * (1 + slippage) * positions.at[start, long_symbol]
-        end_value_long = self.data.at[end, long_symbol] * (1 - slippage) * positions.at[start, long_symbol]
-        long_pnl = (end_value_long - start_value_long) * (1 - comission)
+        start_value_long = data[start][long_symbol_index_data] * (1 + slippage) * positions[start][long_symbol_index_pos]
+        end_value_long = data[end][long_symbol_index_data] * (1 - slippage) * positions[start][long_symbol_index_pos]
+        long_pnl = (end_value_long - start_value_long) * (1 - commission)
 
         # Calculate the PnL from the short position
-        start_value_short = self.data.at[start, short_symbol] * (1 - slippage) * positions.at[start, short_symbol]
-        end_value_short = self.data.at[end, short_symbol] * (1 + slippage) * positions.at[start, short_symbol]
-        short_pnl = (start_value_short - end_value_short) * (1 - comission)
+        start_value_short = data[start][short_symbol_index_data] * (1 - slippage) * positions[start][short_symbol_index_pos]
+        end_value_short = data[end][short_symbol_index_data] * (1 + slippage) * positions[start][short_symbol_index_pos]
+        short_pnl = (start_value_short - end_value_short) * (1 - commission)
 
         # Calculate the PnL from the entire trade 
         trade_pnl = long_pnl + short_pnl
@@ -203,24 +209,31 @@ class PairsTradingBacktest:
         trade_pnl_pct = trade_pnl / total_investment
         
         # Set the PnL and PnL % of the current trade
-        self.trades.at[len(self.trades) - 1, 'pnl_pct'] = trade_pnl_pct
-        self.trades.at[len(self.trades) - 1, 'pnl'] = trade_pnl
+        trades[-1][7] = trade_pnl_pct
+        trades[-1][6] = trade_pnl
 
-        self.curr_capital -= (end_value_short * (1 + comission))
-        self.curr_capital += (end_value_long * (1 - comission))
+        curr_capital -= (end_value_short * (1 + commission))
+        curr_capital += (end_value_long * (1 - commission))
+
+        return positions, trades, curr_capital
+    
+    def __enter_trade_numba(positions, data, dates, trades, curr_capital, pct_capital_per_trade, commission, slippage, is_long, i, h):
+        if is_long:
+            long_symbol_index_pos = 0
+            long_symbol_index_data = 1
+
+            short_symbol_index_pos = 1
+            short_symbol_index_data = 0
+        else:
+            long_symbol_index_pos = 1
+            long_symbol_index_data = 0
             
-    def __enter_trade(self, row, positions, i, is_long = True):
-        pct_capital_per_trade = self.backtest_params['pct_capital_per_trade']
-        comission = self.backtest_params['comission']
-        max_slippage = self.backtest_params['max_slippage']
-        
-        long_symbol = self.symbol_id_2 if is_long else self.symbol_id_1
-        short_symbol = self.symbol_id_1 if is_long else self.symbol_id_2
-        
-        h = row['rolling_hedge_ratio']
-        p1 = self.data.at[self.data.index[i], short_symbol]
-        p2 = self.data.at[self.data.index[i], long_symbol]
-        c = self.curr_capital * pct_capital_per_trade
+            short_symbol_index_pos = 0
+            short_symbol_index_data = 1
+
+        p1 = data[i][short_symbol_index_data]
+        p2 = data[i][long_symbol_index_data]
+        c = curr_capital * pct_capital_per_trade
 
         if is_long:
             n1 = (c / (h * p1 + p2)) * h
@@ -228,28 +241,29 @@ class PairsTradingBacktest:
 
             long_allocation = n2 * p2
             short_allocation = n1 * p1
-
+            
             # Set long and short position amounts for current timestamp
-            positions.at[self.data.index[i], long_symbol] = n2
-            positions.at[self.data.index[i], short_symbol] = n1
+            positions[i][long_symbol_index_pos] = n2
+            positions[i][short_symbol_index_pos] = n1
             
             # Initialize a new trade and append it to the trades DataFrame
-            new_trade = {
-                'entry_date':self.data.index[i],
-                'exit_date':np.nan,
-                long_symbol:n2,
-                short_symbol:n1,
-                'pnl':np.nan,
-                'pnl_pct':np.nan,
-                'is_long':is_long
-            }
+            new_trade = np.array([
+                dates[i],
+                np.nan,
+                i,
+                np.nan,
+                n2,
+                n1,
+                np.nan,
+                np.nan,
+                is_long
+            ])
 
-            new_trade = pd.DataFrame(new_trade, index = [0])
-            self.trades = pd.concat([self.trades, new_trade], ignore_index = True)
+            trades = np.vstack((trades, new_trade))
             
             # Track number of units in current long and short position
-            self.curr_position_long_units = n2
-            self.curr_position_short_units = n1
+            curr_position_long_units = n2
+            curr_position_short_units = n1
         else:
             n1 = c / (h * p1 + p2)
             n2 = (c / (h * p1 + p2)) * h
@@ -258,141 +272,206 @@ class PairsTradingBacktest:
             short_allocation = n2 * p1
             
             # Set long and short position amounts for current timestamp
-            positions.at[self.data.index[i], long_symbol] = n1
-            positions.at[self.data.index[i], short_symbol] = n2
+            positions[i][long_symbol_index_pos] = n1
+            positions[i][short_symbol_index_pos] = n2
             
             # Initialize a new trade and append it to the trades DataFrame
-            new_trade = {
-                'entry_date':self.data.index[i],
-                'exit_date':np.nan,
-                long_symbol:n1,
-                short_symbol:n2,
-                'pnl':np.nan,
-                'pnl_pct':np.nan,
-                'is_long':is_long
-            }
+            new_trade = np.array([
+                dates[i],
+                np.nan,
+                i,
+                np.nan,
+                n2,
+                n1,
+                np.nan,
+                np.nan,
+                is_long
+            ])
 
-            new_trade = pd.DataFrame(new_trade, index = [0])
-            self.trades = pd.concat([self.trades, new_trade], ignore_index = True)
+            trades = np.vstack((trades, new_trade))
             
             # Track number of units in current long and short position
-            self.curr_position_long_units = n1
-            self.curr_position_short_units = n2
+            curr_position_long_units = n1
+            curr_position_short_units = n2
+        
+        curr_capital -= (long_allocation * (1 + commission))
+        curr_capital += (short_allocation * (1 - commission))
 
-        self.curr_capital -= (long_allocation * (1 + comission))
-        self.curr_capital += (short_allocation * (1 - comission))
-                
-        # Indicate we're in a trade now
-        self.position = 1
+        return positions, trades, curr_capital, curr_position_long_units, curr_position_short_units
+                                
+    def __generate_positions_numba(positions, data, dates, trades, position, curr_capital, pct_capital_per_trade, commission, slippage, sl, tp):
+        cp_long = 0
+        cp_short = 0
 
-    def __generate_positions(self):
-        # Long and short positions throughout backtest
-        positions = pd.DataFrame(index = self.data.index, columns = [self.symbol_id_2, self.symbol_id_1])
-
-        # Iterate through each timestamp of dataset
-        i = 0
-        for row in self.data.to_dict(orient = 'records'): 
-            if self.curr_capital < 0:
+        for i in range(len(data)):
+            if curr_capital < 0:
                 return
-             
+            
             # Retrieve entry and exit signals at current timestamp          
-            entry_signal = row['entry_signals']
-            exit_signal = row['exit_signals']
-
+            entry_signal = data[i][4]
+            exit_signal = data[i][5]
+            
             # If not in a trade at current timestamp
-            if not self.position:
-
+            if not position:
+                
                 # If long or short entry signal is received and we have capital remaining
                 if (entry_signal == 1 or entry_signal == -1): 
-        
+                    
                     # If we're on the last timestamp or if rolling hedge ratio is negative 
                     # then don't open a trade
-                    if (i == len(self.data) - 1) or (row['rolling_hedge_ratio'] <= 0):
-                        i += 1
+                    if (i == len(data) - 1) or (data[i][2] <= 0):
                         continue
                         
                     is_long = entry_signal == 1
-                    self.__enter_trade(
-                        row = row, 
+                    positions, trades, curr_capital, curr_position_long_units, curr_position_short_units = PairsTradingBacktest.__enter_trade_numba(
                         positions = positions,
+                        data = data,
+                        dates = dates,
+                        trades = trades,
+                        curr_capital = curr_capital,
+                        pct_capital_per_trade = pct_capital_per_trade,
+                        commission = commission,
+                        slippage = slippage,
+                        is_long = is_long,
                         i = i,
-                        is_long = is_long
+                        h = data[i][2]
                     )
+                    
+                    cp_long = curr_position_long_units
+                    cp_short = curr_position_short_units
+                    
+                    position = 1
 
                 # If no entry signal is received
                 else:
 
                     # Set long and short position amounts for current timestamp to 0
                     # since we're not in a trade
-                    positions.at[self.data.index[i], self.symbol_id_2] = 0
-                    positions.at[self.data.index[i], self.symbol_id_1] = 0
+                    positions[i][0] = 0
+                    positions[i][1] = 0
 
             # If in a trade at current timestamp
             else:
-                is_long = self.trades.at[len(self.trades) - 1, 'is_long'] 
-                long_symbol = self.symbol_id_2 if is_long else self.symbol_id_1
-                short_symbol = self.symbol_id_1 if is_long else self.symbol_id_2
-                comission = self.backtest_params['comission']
+                is_long = trades[-1][-1]
+                if is_long:
+                    long_symbol_index_pos = 0
+                    long_symbol_index_data = 1
+
+                    short_symbol_index_pos = 1
+                    short_symbol_index_data = 0
+                else:
+                    long_symbol_index_pos = 1
+                    long_symbol_index_data = 0
+                    
+                    short_symbol_index_pos = 0
+                    short_symbol_index_data = 1
 
                 # Entry and exit dates of most current trade
-                start = self.trades.at[len(self.trades) - 1,'entry_date']
-                curr_date = self.data.index[i]
+                start = int(trades[-1][2])
+                curr_date = i
 
-                start_value_long = self.data.at[start, long_symbol] * positions.at[start, long_symbol]
-                curr_value_long = self.data.at[curr_date, long_symbol] * positions.at[start, long_symbol]
-                long_pnl = (curr_value_long - start_value_long) * (1 - comission)
+                start_value_long = data[start][long_symbol_index_data] * positions[start][long_symbol_index_pos]
+                curr_value_long = data[curr_date][long_symbol_index_data] * positions[start][long_symbol_index_pos]
+                long_pnl = (curr_value_long - start_value_long) * (1 - commission)
 
                 # Calculate the PnL from the short position
-                start_value_short = self.data.at[start, short_symbol] * positions.at[start, short_symbol]
-                curr_value_short = self.data.at[curr_date, short_symbol] * positions.at[start, short_symbol]
-                short_pnl = (start_value_short - curr_value_short) * (1 - comission)
+                start_value_short = data[start][short_symbol_index_data] * positions[start][short_symbol_index_pos]
+                curr_value_short = data[curr_date][short_symbol_index_data] * positions[start][short_symbol_index_pos]
+                short_pnl = (start_value_short - curr_value_short) * (1 - commission)
 
                 # Calculate the PnL from the entire trade 
                 trade_pnl = long_pnl + short_pnl
                 total_investment = start_value_long + start_value_short
                 trade_pnl_pct = trade_pnl / total_investment
 
-                if trade_pnl_pct <= -self.backtest_params['sl'] or trade_pnl_pct >= self.backtest_params['tp']:
-                    self.__exit_trade(
+                if (trade_pnl_pct <= -sl) or (trade_pnl_pct >= tp):
+                    
+                    # Close the current trade
+                    positions, trades, curr_capital = PairsTradingBacktest.__exit_trade_numba(
                         positions = positions,
+                        data = data,
+                        dates = dates,
+                        trades = trades,
                         i = i,
-                        is_long = is_long
+                        is_long = is_long,
+                        commission = commission,
+                        slippage = slippage,
+                        curr_capital = curr_capital
                     )
-                
+
+                    position = 0
+
                 # If curr trade is long and we get a long exit or curr trade is short and we get a short exit
                 if (is_long and exit_signal == 1) or (not is_long and exit_signal == -1):
                     
                     # Close the current trade
-                    self.__exit_trade(
+                    positions, trades, curr_capital = PairsTradingBacktest.__exit_trade_numba(
                         positions = positions,
+                        data = data,
+                        dates = dates,
+                        trades = trades,
                         i = i,
-                        is_long = is_long
+                        is_long = is_long,
+                        commission = commission,
+                        slippage = slippage,
+                        curr_capital = curr_capital
                     )
-                                
+
+                    position = 0
+
                 # Otherwise 
                 else:
                     # Set long and short position amounts for current timestamp to
                     # the amounts in the current trade since we haven't exited the
                     # current trade yet
-                    is_long = self.trades.at[len(self.trades) - 1, 'is_long']
-                    long_symbol = self.symbol_id_2 if is_long else self.symbol_id_1
-                    short_symbol = self.symbol_id_1 if is_long else self.symbol_id_2
 
-                    positions.at[self.data.index[i], long_symbol] = self.curr_position_long_units
-                    positions.at[self.data.index[i], short_symbol] = self.curr_position_short_units
-            
+                    positions[i][long_symbol_index_pos] = cp_long
+                    positions[i][short_symbol_index_pos] = cp_short
+
             # If the backtest reaches the final timestamp and the current trade hasn't
             # been exited yet 
-            if i == len(self.data) - 1 and len(self.trades) > 0 and type(self.trades.at[len(self.trades) - 1, 'exit_date']) == type(np.nan):
+            if i == len(data) - 1 and len(trades) > 0 and type(trades[-1][1]) == type(np.nan):
 
-                # Close the trade
-                self.__exit_trade(
+                # Close the current trade
+                positions, trades, curr_capital = PairsTradingBacktest.__exit_trade_numba(
                     positions = positions,
+                    data = data,
+                    dates = dates,
+                    trades = trades,
                     i = i,
-                    is_long = is_long
+                    is_long = is_long,
+                    commission = commission,
+                    slippage = slippage,
+                    curr_capital = curr_capital
                 )
 
-            i += 1
+                position = 0
+
+        return trades, curr_capital
+
+    def __generate_positions(self):
+        # Long and short positions throughout backtest
+        positions = pd.DataFrame(index = self.data.index, columns = [self.symbol_id_2, self.symbol_id_1]).fillna(0)
+        
+        trades, curr_capital = PairsTradingBacktest.__generate_positions_numba(
+            positions = positions.values.astype(float),
+            data = self.data.values.astype(float),
+            dates = self.data.index.values.astype(float),
+            trades = self.trades.values.astype(float),
+            position = self.position,
+            curr_capital = self.curr_capital,
+            pct_capital_per_trade = self.backtest_params['pct_capital_per_trade'],
+            commission = self.backtest_params['comission'],
+            slippage = self.backtest_params['max_slippage'],
+            sl = self.backtest_params['sl'],
+            tp = self.backtest_params['tp']
+        ) 
+
+        self.trades = pd.DataFrame(data = trades, columns = self.trades.columns)
+        self.trades['entry_date'] = pd.to_datetime(self.trades['entry_date'])
+        self.trades['exit_date'] = pd.to_datetime(self.trades['exit_date'])
+        
+        self.curr_capital = curr_capital
                 
     def __generate_pnl(self):
         pnl_data = pd.DataFrame(index = self.data.index, columns = ['pnl']).fillna(0)
@@ -746,7 +825,7 @@ class PairsTradingBacktest:
         self.data['exit_signals'] = exit_signals
         
         # Reset trades DataFrame to make sure it's empty
-        self.trades = pd.DataFrame(columns = ['entry_date', 'exit_date', self.symbol_id_2, self.symbol_id_1, 'pnl', 'pnl_pct', 'is_long'])
+        self.trades = pd.DataFrame(columns = ['entry_date', 'exit_date', 'entry_i', 'exit_i', self.symbol_id_2, self.symbol_id_1, 'pnl', 'pnl_pct', 'is_long'])
         
         # Calculate long and short positions at each timestep
         self.__generate_positions()

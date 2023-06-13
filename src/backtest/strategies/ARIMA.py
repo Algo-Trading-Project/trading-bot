@@ -54,7 +54,7 @@ class ARIMAStrat:
                 continue
             
             model = ARIMA(
-                close[i - 24 * 7: i + 1], 
+                close[i - 24 * 30: i + 1], 
                 order = (p, d, q), 
                 enforce_stationarity = False, 
                 enforce_invertibility = False,
@@ -69,13 +69,13 @@ class ARIMAStrat:
             upper_bound = conf_int[-1][-1]
 
             entry_signal = (
-                ((close[i][0] < ema2[i][0]) or (ema1[i][0] > ema2[i][0])) and
-                (((upper_bound - close[i][0]) / close[i][0] >= .005) or (upper_bound - ema2[i][0]) > 0)
+                (close[i - 1][0] < ema[i - 1][0]) and
+                (close[i][0] > ema[i][0]) and
+                ((upper_bound - close[i][0]) / close[i][0] >= .005)
             )
-
             exit_signal = (
-                ((close[i][0] > ema2[i][0]) or (ema1[i][0] < ema2[i][0])) and 
-                ((close[i][0] - lower_bound) / close[i][0] >= .005) or (upper_bound - ema2[i-1][0]) > 0 
+                (close[i - 1][0] > ema[i - 1][0]) and
+                (close[i][0] < ema[i][0])
             )
 
             entries.append(entry_signal)
