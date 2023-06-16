@@ -88,7 +88,7 @@ class PairsTradingBacktest:
             
     def __rolling_spread_z_score(self):
         return rolling_spread_z_score_numba(
-            rolling_hedge_ratios = self.data['rolling_hedge_ratios'].values,
+            rolling_hedge_ratios = self.data['rolling_hedge_ratio'].values,
             y = self.data[self.symbol_id_2].values,
             x = self.data[self.symbol_id_1].values,
             window = self.z_window
@@ -157,7 +157,7 @@ class PairsTradingBacktest:
             for date in trade_period.index:
                 pnl_data.at[date, 'pnl'] = trade_period.at[date, 'total_pnl']
                 
-        return pnl_data
+        return pnl_data.fillna(0)
 
     def __generate_equity_curve(self):
         return (self.backtest_params['initial_capital'] + self.pnl.cumsum()).rename({'pnl':'equity'}, axis = 1)
@@ -499,4 +499,5 @@ class PairsTradingBacktest:
         self.position = 0
 
         # Reset curr_capital variable back to initial value for subsequent backtests
+
         self.curr_capital = self.backtest_params['initial_capital']
