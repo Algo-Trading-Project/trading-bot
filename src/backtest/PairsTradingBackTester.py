@@ -45,7 +45,7 @@ class PairsTradingBackTester:
 
     def serialize_json_data(obj):
         if isinstance(obj, pd.Timedelta):
-            return obj.total_seconds() / float(60 * 60 * 24)
+            return round(obj.total_seconds() / float(60 * 60 * 24), 2)
         elif isinstance(obj, np.integer):
             return int(obj)
         elif isinstance(obj, np.floating):
@@ -307,7 +307,7 @@ class PairsTradingBackTester:
             if len(trades) == 0:
                 return np.nan
             
-            return (pd.to_datetime(trades['exit_date']) - pd.to_datetime(trades['entry_date'])).mean()            
+            return (pd.to_datetime(trades['exit_date']) - pd.to_datetime(trades['entry_date'])).mean()           
         #################################### HELPER FUNCTIONS END ####################################
                 
         start = oos_price_data.index[0]
@@ -417,11 +417,75 @@ class PairsTradingBackTester:
                 testing_data = out_of_sample_data,
                 starting_equity = starting_equity
             )
-            print('num trades: {}, avg trade: {}'.format(len(oos_trades), round(oos_trades['pnl_pct'].mean(), 5)))
-            print('total return: {}'.format(round((oos_trades['pnl_pct'] + 1).prod(), 2)))
 
-            starting_equity *= (1 + oos_trades['pnl_pct']).prod()
+            tr = 1 + ((oos_equity_curve['equity'].iloc[-1] - oos_equity_curve['equity'].iloc[0]) / oos_equity_curve['equity'].iloc[0])
+
+            print('num trades: {}, avg trade: {}'.format(len(oos_trades), round(oos_trades['pnl_pct'].mean(), 5)))
+            print('total return: {}'.format(tr))
+
+            starting_equity = oos_equity_curve['equity'].iloc[-1]
+
+            oos_trades['entry_date'] = oos_trades['entry_date'].astype(str)
+            oos_trades['exit_date'] = oos_trades['exit_date'].astype(str)
+            oos_trades_dict = oos_trades.to_dict(orient = 'records')
+
+            insert_str = ''
+
+            for trade in oos_trades_dict:
+                pnl = float(str(trade['pnl'])[:38])
+                pnl_pct = float(str(trade['pnl_pct'])[:38])
+
+                insert_str += """('{}', '{}', '{}', '{}', {}, {}, {}, {}, '{}'), """.format(
+                    trade['entry_date'], 
+                    trade['exit_date'], 
+                    symbol_id_1, 
+                    symbol_id_2,
+                    pnl, 
+                    pnl_pct, 
+                    trade[symbol_id_1], 
+                    trade[symbol_id_2], 
+                    str(int(trade['is_long']))
+                )
+
+            insert_str = insert_str[:-2]
+
+            insert_str_2 = ''
+
+            for i in range(len(oos_equity_curve)):
+                date = oos_equity_curve.index[i]
+                equity = oos_equity_curve['equity'].iloc[i]
+
+                insert_str_2 += """('{}', '{}', '{}', {}), """.format(symbol_id_1, symbol_id_2, date, equity)
             
+            insert_str_2 = insert_str_2[:-2]
+
+            with redshift_connector.connect(
+                host = 'project-poseidon.cpsnf8brapsd.us-west-2.redshift.amazonaws.com',
+                database = 'trading_bot',
+                user = 'administrator',
+                password = 'Free2play2'
+            ) as conn:
+                with conn.cursor() as cursor:
+                    # Query to insert backtest results into Redshift 
+                    if len(oos_trades) > 0:
+                        query = """
+                        INSERT INTO eth.pair_trading_backtest_trades VALUES {}
+                        """.format(insert_str)
+                        
+                        # Execute query on Redshift
+                        cursor.execute(query)
+
+                    query = """
+                    INSERT INTO eth.pair_trading_backtest_equity_curves VALUES {}
+                    """.format(insert_str_2)
+
+                    # Execute query on Redshift
+                    cursor.execute(query)
+
+                    cursor.close()
+
+                conn.commit()
+
             equity_curves.append(oos_equity_curve)
             trades.append(oos_trades)
             price_data.append(out_of_sample_data)
@@ -486,22 +550,22 @@ class PairsTradingBackTester:
                 combs = PairsTradingBackTester.numpy_combinations(token_df['symbol_id'].to_numpy())
 
                 for i in range(len(combs)):
-                    symbol_id_1, symbol_id_2 = combs[i][0], combs[i][1]
+                    p1, p2 = combs[i][0], combs[i][1]
                         
                     is_cointegrated, x_y_dict = self.__is_cointegrated(
-                        symbol_id_1 = symbol_id_1,
-                        symbol_id_2 = symbol_id_2,
+                        symbol_id_1 = p1,
+                        symbol_id_2 = p2,
                         p_val_thresh = 0.05,
                         correlation_thresh = 0.8
                     )
 
-                    print('({}/{}) ({}, {}) is cointegrated: {}'.format(i + 1, len(combs), symbol_id_1, symbol_id_2, is_cointegrated))
+                    print('({}/{}) ({}, {}) is cointegrated: {}'.format(i + 1, len(combs), p1, p2, is_cointegrated))
                     print()
 
                     if is_cointegrated:
 
                         print()
-                        print('({} / {}) Now backtesting pairs {} / {}'.format(i + 1, len(combs), symbol_id_1, symbol_id_2))
+                        print('({} / {}) Now backtesting pairs {} / {}'.format(i + 1, len(combs), x_y_dict['X'], x_y_dict['Y']))
                         print()
 
                         oos_equity_curve, oos_trades, oos_price_data = self.walk_forward_optimization(
@@ -510,7 +574,7 @@ class PairsTradingBackTester:
                             in_sample_size = 24 * 30 * 3,
                             out_of_sample_size = 24 * 30 * 3  
                         )
-                        
+
                         performance_metrics = self.__calculate_performance_metrics(
                             oos_equity_curve, 
                             oos_trades, 
@@ -534,8 +598,8 @@ class PairsTradingBackTester:
                                 """
 
                                 # Execute query on Redshift
-                                params = (symbol_id_1, symbol_id_2, oos_price_data.index[0],
-                                          oos_price_data.index[-1], performance_metrics, self.optimization_metric)
+                                params = (x_y_dict['X'], x_y_dict['Y'], oos_price_data.index[0],
+                                          oos_price_data.index[-1], performance_metrics,  self.optimization_metric)
                                 
                                 cursor.execute(query, params)
                                 cursor.close()
