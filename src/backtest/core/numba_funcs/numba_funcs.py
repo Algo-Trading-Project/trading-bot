@@ -34,13 +34,14 @@ def __exit_trade_numba(positions, data, dates, trades, i, is_long, commission, s
     # Calculate the PnL from the long position
     start_value_long = data[start][long_symbol_index_data] * (1 + slippage) * positions[start][long_symbol_index_pos]
     end_value_long = data[end][long_symbol_index_data] * (1 - slippage) * positions[start][long_symbol_index_pos]
-    long_pnl = (end_value_long - start_value_long)
+    close_long_fee = end_value_long * commission
+    long_pnl = (end_value_long - start_value_long) - close_long_fee
 
     # Calculate the PnL from the short position
     start_value_short = data[start][short_symbol_index_data] * (1 - slippage) * positions[start][short_symbol_index_pos]
     end_value_short = data[end][short_symbol_index_data] * (1 + slippage) * positions[start][short_symbol_index_pos]
     short_pnl = (start_value_short - end_value_short)
-
+    
     # Calculate the PnL from the entire trade 
     trade_pnl = long_pnl + short_pnl
     total_investment = start_value_long + start_value_short
@@ -50,9 +51,9 @@ def __exit_trade_numba(positions, data, dates, trades, i, is_long, commission, s
     trades[-1][7] = trade_pnl_pct
     trades[-1][6] = trade_pnl
 
-    curr_capital -= (end_value_short * (1 + commission))
-    curr_capital += (end_value_long * (1 - commission))
-
+    curr_capital -= (end_value_short * (commission))
+    # curr_capital += (end_value_long * (1 - commission))
+    
     return positions, trades, curr_capital
 
 @njit
@@ -75,12 +76,12 @@ def __enter_trade_numba(positions, data, dates, trades, curr_capital, pct_capita
     c = curr_capital * pct_capital_per_trade
 
     if is_long:
-        n1 = (c / (h * p1 + p2)) * h
+        n1 = (c / (h * p1 + p2)) * h * (1 - commission)
         n2 = c / (h * p1 + p2)
 
         long_allocation = n2 * p2
         short_allocation = n1 * p1
-        
+
         # Set long and short position amounts for current timestamp
         positions[i][long_symbol_index_pos] = n2
         positions[i][short_symbol_index_pos] = n1
@@ -91,8 +92,8 @@ def __enter_trade_numba(positions, data, dates, trades, curr_capital, pct_capita
             -1,
             i,
             np.nan,
-            n2, # bnb_eth
-            n1, # trx_eth
+            n2,
+            n1,
             np.nan,
             np.nan,
             is_long
@@ -106,7 +107,7 @@ def __enter_trade_numba(positions, data, dates, trades, curr_capital, pct_capita
         curr_position_short_units = n1
     else:
         n1 = c / (h * p1 + p2)
-        n2 = (c / (h * p1 + p2)) * h
+        n2 = (c / (h * p1 + p2)) * h * (1 - commission)
 
         long_allocation = n1 * p2
         short_allocation = n2 * p1
@@ -121,8 +122,8 @@ def __enter_trade_numba(positions, data, dates, trades, curr_capital, pct_capita
             -1,
             i,
             np.nan,
-            n2, # bnb_eth
-            n1, #  trx_eth
+            n2,
+            n1,
             np.nan,
             np.nan,
             is_long
@@ -135,8 +136,8 @@ def __enter_trade_numba(positions, data, dates, trades, curr_capital, pct_capita
         curr_position_long_units = n1
         curr_position_short_units = n2
     
-    curr_capital -= (long_allocation * (1 + commission))
-    curr_capital += (short_allocation * (1 - commission))
+    curr_capital -= (long_allocation * (commission))
+    # curr_capital += (short_allocation * (1 - commission))
 
     return positions, trades, curr_capital, curr_position_long_units, curr_position_short_units
 
@@ -144,6 +145,8 @@ def __enter_trade_numba(positions, data, dates, trades, curr_capital, pct_capita
 def generate_positions_numba(positions, data, dates, trades, position, curr_capital, pct_capital_per_trade, commission, slippage, sl, tp):
     cp_long = 0
     cp_short = 0
+
+    curr_capital_arr = np.array([[float(curr_capital)]])
 
     for i in range(len(data)):
         if curr_capital < 0:
@@ -164,11 +167,15 @@ def generate_positions_numba(positions, data, dates, trades, position, curr_capi
                 )
 
                 position = 0
+                c = np.array([float(curr_capital)]).reshape((1,1))
+                curr_capital_arr = np.vstack((curr_capital_arr, c))
 
-                return trades, curr_capital
+                return trades, curr_capital_arr
             else:
+                c = np.array([float(curr_capital)]).reshape((1,1))
+                curr_capital_arr = np.vstack((curr_capital_arr, c))
 
-                return trades, curr_capital
+                return trades, curr_capital_arr
                     
         # Retrieve entry and exit signals at current timestamp          
         entry_signal = data[i][4]
@@ -183,6 +190,8 @@ def generate_positions_numba(positions, data, dates, trades, position, curr_capi
                 # If we're on the last timestamp or if rolling hedge ratio is negative 
                 # then don't open a trade
                 if (i == len(data) - 1) or (data[i][2] < 0):
+                    c = np.array([float(curr_capital)]).reshape((1,1))
+                    curr_capital_arr = np.vstack((curr_capital_arr, c))
                     continue
                     
                 is_long = entry_signal == 1
@@ -266,7 +275,6 @@ def generate_positions_numba(positions, data, dates, trades, position, curr_capi
 
             # If curr trade is long and we get a long exit or curr trade is short and we get a short exit
             if (is_long and exit_signal == 1) or (not is_long and exit_signal == -1):
-                
                 # Close the current trade
                 positions, trades, curr_capital = __exit_trade_numba(
                     positions = positions,
@@ -310,7 +318,10 @@ def generate_positions_numba(positions, data, dates, trades, position, curr_capi
 
             position = 0
 
-    return trades, curr_capital
+        c = np.array([float(curr_capital)]).reshape((1,1))
+        curr_capital_arr = np.vstack((curr_capital_arr, c))
+
+    return trades, curr_capital_arr[:-1]
 
 @njit(parallel = True)
 def rolling_hedge_ratios_numba(y, x, window):

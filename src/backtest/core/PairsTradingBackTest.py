@@ -28,10 +28,12 @@ class PairsTradingBacktest:
                  price_data,
                  symbol_id_1,
                  symbol_id_2,
+                 start_i,
+                 end_i,
                  backtest_params = {
                     'initial_capital':10_000, 'pct_capital_per_trade': 0.95,
                     'comission': 0.005,
-                    'sl': float('-inf'),
+                    'sl': float('inf'),
                     'tp':float('inf'),
                     'max_slippage':0.00
                     }
@@ -50,14 +52,19 @@ class PairsTradingBacktest:
         self.symbol_id_1 = symbol_id_1
         self.symbol_id_2 = symbol_id_2
 
+        self.start_i = start_i
+        self.end_i = end_i
+
         self.start_date = pd.to_datetime(price_data.index[0])
         self.end_date = pd.to_datetime(price_data.index[-1])
 
         self.backtest_params = backtest_params
-        self.curr_capital = self.backtest_params['initial_capital']
+        self.curr_capital_arr = None
 
         # Fetch data required for backtest
         self.data = price_data
+
+        self.backtest_data = self.data.iloc[self.start_i:self.end_i]
         
         # Backtest initialized w/ no position
         self.position = 0
@@ -80,23 +87,30 @@ class PairsTradingBacktest:
     ################################# HELPER METHODS #################################
         
     def __rolling_hedge_ratios(self):
-        return rolling_hedge_ratios_numba(
-            y = self.data[self.symbol_id_2].values, 
-            x = self.data[self.symbol_id_1].values,
+        start = max(0, self.start_i - self.hedge_ratio_window)
+
+        h = rolling_hedge_ratios_numba(
+            y = self.data.iloc[start:self.end_i][self.symbol_id_2].values, 
+            x = self.data.iloc[start:self.end_i][self.symbol_id_1].values,
             window = self.hedge_ratio_window
         )
+
+        if start == 0:
+            return h
+        else:
+            return h[self.hedge_ratio_window:]
             
     def __rolling_spread_z_score(self):
         return rolling_spread_z_score_numba(
-            rolling_hedge_ratios = self.data['rolling_hedge_ratio'].values,
-            y = self.data[self.symbol_id_2].values,
-            x = self.data[self.symbol_id_1].values,
+            rolling_hedge_ratios = self.backtest_data['rolling_hedge_ratio'].values,
+            y = self.backtest_data[self.symbol_id_2].values,
+            x = self.backtest_data[self.symbol_id_1].values,
             window = self.z_window
         )
     
     def __generate_trading_signals(self):
-        rolling_spread_z_score = self.data['rolling_spread_z_score'].values
-        rolling_spread_z_score_prev = self.data['rolling_spread_z_score'].shift(1).values
+        rolling_spread_z_score = self.backtest_data['rolling_spread_z_score'].values
+        rolling_spread_z_score_prev = self.backtest_data['rolling_spread_z_score'].shift(1).values
 
         return generate_trading_signals_numba(
             z = rolling_spread_z_score,
@@ -107,15 +121,15 @@ class PairsTradingBacktest:
         
     def __generate_positions(self):
         # Long and short positions throughout backtest
-        positions = pd.DataFrame(index = self.data.index, columns = [self.symbol_id_2, self.symbol_id_1]).fillna(0)
+        positions = pd.DataFrame(index = self.backtest_data.index, columns = [self.symbol_id_2, self.symbol_id_1]).fillna(0)
         
-        trades, curr_capital = generate_positions_numba(
+        trades, curr_capital_arr = generate_positions_numba(
             positions = positions.values.astype(float),
-            data = self.data.values.astype(float),
-            dates = self.data.index.values.astype(float),
+            data = self.backtest_data.values.astype(float),
+            dates = self.backtest_data.index.values.astype(float),
             trades = self.trades.values.astype(float),
             position = self.position,
-            curr_capital = self.curr_capital,
+            curr_capital = self.backtest_params['initial_capital'],
             pct_capital_per_trade = self.backtest_params['pct_capital_per_trade'],
             commission = self.backtest_params['comission'],
             slippage = self.backtest_params['max_slippage'],
@@ -123,14 +137,22 @@ class PairsTradingBacktest:
             tp = self.backtest_params['tp']
         ) 
 
+        len_diff = abs(len(curr_capital_arr) - len(self.backtest_data))
+
+        for _ in range(len_diff):
+            curr_capital_arr = np.append(curr_capital_arr, np.nan)
+
         self.trades = pd.DataFrame(data = trades, columns = self.trades.columns)
         self.trades['entry_date'] = pd.to_datetime(self.trades['entry_date'])
         self.trades['exit_date'] = pd.to_datetime(self.trades['exit_date'])
         
-        self.curr_capital = curr_capital
-                
+        curr_capital_arr = pd.DataFrame(data = curr_capital_arr.flatten(), index = self.backtest_data.index, columns = ['curr_capital'])
+        curr_capital_arr['curr_capital'] = curr_capital_arr['curr_capital'].fillna(method = 'ffill')
+
+        self.curr_capital_arr = curr_capital_arr
+                        
     def __generate_pnl(self):
-        pnl_data = pd.DataFrame(index = self.data.index, columns = ['pnl']).fillna(0)
+        pnl_data = pd.DataFrame(index = self.backtest_data.index, columns = ['pnl']).fillna(0)
         max_slippage = self.backtest_params['max_slippage']
         
         for trade in self.trades.to_dict(orient = 'records'):
@@ -143,7 +165,7 @@ class PairsTradingBacktest:
             units_long = trade[long_symbol]
             units_short = trade[short_symbol]
             
-            trade_period = self.data.loc[entry_date:exit_date].copy()
+            trade_period = self.backtest_data.loc[entry_date:exit_date].copy()
             
             trade_period.at[entry_date, long_symbol] = trade_period.at[entry_date, long_symbol] * (1 + max_slippage)
             trade_period.at[exit_date, long_symbol] = trade_period.at[exit_date, long_symbol] * (1 - max_slippage)
@@ -160,7 +182,13 @@ class PairsTradingBacktest:
         return pnl_data.fillna(0)
 
     def __generate_equity_curve(self):
-        return (self.backtest_params['initial_capital'] + self.pnl.cumsum()).rename({'pnl':'equity'}, axis = 1)
+        equity = pd.DataFrame(
+            data = (self.curr_capital_arr.values + self.pnl.cumsum().values),
+            index = self.backtest_data.index,
+            columns = ['equity']
+        )
+
+        return equity
     
     def __calculate_performance_metrics(self):
         ########################### HELPER FUNCTIONS ####################################
@@ -179,12 +207,12 @@ class PairsTradingBacktest:
                 return np.nan
 
         def buy_and_hold_return():
-            token1_start_value = self.data.at[self.data.index[0], self.symbol_id_1]
-            token1_end_value = self.data.at[self.data.index[-1], self.symbol_id_1]
+            token1_start_value = self.backtest_data.at[self.backtest_data.index[0], self.symbol_id_1]
+            token1_end_value = self.backtest_data.at[self.backtest_data.index[-1], self.symbol_id_1]
             buy_and_hold_return_token_1 = round((token1_end_value - token1_start_value) / token1_start_value * 100, 2)
             
-            token2_start_value = self.data.at[self.data.index[0], self.symbol_id_2]
-            token2_end_value = self.data.at[self.data.index[-1], self.symbol_id_2]
+            token2_start_value = self.backtest_data.at[self.backtest_data.index[0], self.symbol_id_2]
+            token2_end_value = self.backtest_data.at[self.backtest_data.index[-1], self.symbol_id_2]
             buy_and_hold_return_token_2 = round((token2_end_value - token2_start_value) / token2_start_value * 100, 2)
 
             return max([buy_and_hold_return_token_1, buy_and_hold_return_token_2])
@@ -212,7 +240,7 @@ class PairsTradingBacktest:
                 return np.nan
             
         def calmar_ratio():
-            num_years = len(self.data) / 8760
+            num_years = len(self.backtest_data) / 8760
             cum_ret_final = (1 + self.equity.equity.pct_change()).prod().squeeze()
             annual_returns = cum_ret_final ** (1 / num_years) - 1
             
@@ -222,7 +250,7 @@ class PairsTradingBacktest:
                 return np.nan
 
         def cagr_over_avg_drawdown():
-            num_years = len(self.data) / 8760
+            num_years = len(self.backtest_data) / 8760
             cum_ret_final = (1 + self.equity.equity.pct_change()).prod().squeeze()
             annual_returns = cum_ret_final ** (1 / num_years) - 1
             
@@ -325,7 +353,6 @@ class PairsTradingBacktest:
         start = self.start_date
         end = self.end_date
         duration = pd.to_datetime(end) - pd.to_datetime(start)
-
         return_pct = ((self.equity['equity'].iloc[-1] - self.equity['equity'].iloc[0]) / self.equity['equity'].iloc[0]) * 100
         
         metrics_dict = {
@@ -469,16 +496,16 @@ class PairsTradingBacktest:
     
     def backtest(self):        
         # Calculate rolling hedge ratios at each timestep
-        self.data['rolling_hedge_ratio'] = self.__rolling_hedge_ratios()
+        self.backtest_data['rolling_hedge_ratio'] = self.__rolling_hedge_ratios()
                 
         # Calculate rolling spread z score at each timestep
-        self.data['rolling_spread_z_score'] = self.__rolling_spread_z_score()
+        self.backtest_data['rolling_spread_z_score'] = self.__rolling_spread_z_score()
 
         # Calculate entry and exit signals at each timestep
         entry_signals, exit_signals = self.__generate_trading_signals()
 
-        self.data['entry_signals'] = entry_signals
-        self.data['exit_signals'] = exit_signals
+        self.backtest_data['entry_signals'] = entry_signals
+        self.backtest_data['exit_signals'] = exit_signals
         
         # Reset trades DataFrame to make sure it's empty
         self.trades = pd.DataFrame(columns = ['entry_date', 'exit_date', 'entry_i', 'exit_i', self.symbol_id_2, self.symbol_id_1, 'pnl', 'pnl_pct', 'is_long'])
@@ -498,6 +525,5 @@ class PairsTradingBacktest:
         # Reset position variable back to default state for subsequent backtests
         self.position = 0
 
-        # Reset curr_capital variable back to initial value for subsequent backtests
-
-        self.curr_capital = self.backtest_params['initial_capital']
+        # Reset initial_capital parameter back to default state for subsequent backtests
+        self.backtest_params['initial_capital'] = self.curr_capital_arr['curr_capital'].iloc[0]

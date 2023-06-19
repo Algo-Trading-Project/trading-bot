@@ -182,7 +182,7 @@ class PairsTradingBackTester:
             return max([buy_and_hold_return_token_1, buy_and_hold_return_token_2])
         
         def sharpe_ratio(equity):
-            returns = equity.equity.pct_change()
+            returns = equity.pct_change()
             mean_returns = returns.mean()
             std_returns = returns.std()
             
@@ -205,7 +205,7 @@ class PairsTradingBackTester:
             
         def calmar_ratio(equity):
             num_years = len(equity) / 8760
-            cum_ret_final = (1 + equity.equity.pct_change()).prod().squeeze()
+            cum_ret_final = (1 + equity.pct_change()).prod().squeeze()
             annual_returns = cum_ret_final ** (1 / num_years) - 1
             
             try:
@@ -215,7 +215,7 @@ class PairsTradingBackTester:
 
         def cagr_over_avg_drawdown(equity):
             num_years = len(equity) / 8760
-            cum_ret_final = (1 + equity.equity.pct_change()).prod().squeeze()
+            cum_ret_final = (1 + equity.pct_change()).prod().squeeze()
             annual_returns = cum_ret_final ** (1 / num_years) - 1
             
             try:
@@ -345,15 +345,19 @@ class PairsTradingBackTester:
 
     ########################################## HELPER FUNCTIONS END ##########################################
 
-    def backtest(self, symbol_id_1, symbol_id_2, training_data, testing_data, starting_equity):
+    def backtest(self, symbol_id_1, symbol_id_2, 
+                 price_data, starting_equity, is_start_i, 
+                 is_end_i, oos_start_i, oos_end_i):
+        
         is_backtest = PairsTradingBacktest(
-            price_data = training_data,
+            price_data = price_data,
             symbol_id_1 = symbol_id_1,
-            symbol_id_2 = symbol_id_2
+            symbol_id_2 = symbol_id_2,
+            start_i = is_start_i,
+            end_i = is_end_i
         )
 
         is_backtest.backtest_params['initial_capital'] = starting_equity
-        is_backtest.curr_capital = starting_equity
 
         optimal_params = is_backtest.optimize_parameters(
             optimize_dict = self.optimize_dict,
@@ -363,13 +367,14 @@ class PairsTradingBackTester:
 
         # Evaluate optimized trading strategy on unseen data
         oos_backtest = PairsTradingBacktest(
-            price_data = testing_data,
+            price_data = price_data,
             symbol_id_1 = symbol_id_1,
-            symbol_id_2 = symbol_id_2
+            symbol_id_2 = symbol_id_2,
+            start_i = oos_start_i,
+            end_i = oos_end_i
         )
        
         oos_backtest.backtest_params['initial_capital'] = starting_equity
-        oos_backtest.curr_capital = starting_equity
 
         oos_backtest.z_window = optimal_params['z_window']
         oos_backtest.hedge_ratio_window = optimal_params['hedge_ratio_window']
@@ -378,7 +383,7 @@ class PairsTradingBackTester:
 
         oos_backtest.backtest()
         
-        return oos_backtest.equity, oos_backtest.trades
+        return oos_backtest.trades, oos_backtest.equity
     
     def walk_forward_optimization(self, symbol_id_1, symbol_id_2,
                                   in_sample_size, out_of_sample_size):
@@ -395,27 +400,41 @@ class PairsTradingBackTester:
         equity_curves = []
         trades = []
         price_data = []
+        # capital_curves = []
 
-        starting_equity = 10_000
+        starting_curr_capital = 10_000
 
         while start + in_sample_size + out_of_sample_size <= len(backtest_data):
             print()
             print('Backtesting on days: {} - {} / {}'.format(int(start / 24), int((start + in_sample_size + out_of_sample_size) / 24), int(len(backtest_data) / 24)))
-            print('Starting equity: {}'.format(starting_equity))
+            print('Starting curr capital: {}'.format(starting_curr_capital))
 
             if len(backtest_data.iloc[start:]) - (in_sample_size + out_of_sample_size) < out_of_sample_size:
-                in_sample_data = backtest_data.iloc[start:start + in_sample_size]
-                out_of_sample_data = backtest_data.iloc[start + in_sample_size:]
+                # in_sample_data = backtest_data.iloc[start:start + in_sample_size]
+                # out_of_sample_data = backtest_data.iloc[start + in_sample_size:]
+                is_start_i = start
+                is_end_i = start + in_sample_size
+
+                oos_start_i = start + in_sample_size
+                oos_end_i = len(backtest_data)
             else:
-                in_sample_data = backtest_data.iloc[start:start + in_sample_size]
-                out_of_sample_data = backtest_data.iloc[start + in_sample_size:start + in_sample_size + out_of_sample_size]
-                        
-            oos_equity_curve, oos_trades = self.backtest(
+                # in_sample_data = backtest_data.iloc[start:start + in_sample_size]
+                # out_of_sample_data = backtest_data.iloc[start + in_sample_size:start + in_sample_size + out_of_sample_size]
+                is_start_i = start
+                is_end_i = start + in_sample_size
+
+                oos_start_i = start + in_sample_size
+                oos_end_i = start + in_sample_size + out_of_sample_size
+
+            oos_trades, oos_equity_curve = self.backtest(
                 symbol_id_1 = symbol_id_1,
                 symbol_id_2 = symbol_id_2,
-                training_data = in_sample_data,
-                testing_data = out_of_sample_data,
-                starting_equity = starting_equity
+                price_data = backtest_data,
+                starting_equity = starting_curr_capital,
+                is_start_i = is_start_i,
+                is_end_i = is_end_i,
+                oos_start_i = oos_start_i,
+                oos_end_i = oos_end_i
             )
 
             tr = 1 + ((oos_equity_curve['equity'].iloc[-1] - oos_equity_curve['equity'].iloc[0]) / oos_equity_curve['equity'].iloc[0])
@@ -423,7 +442,7 @@ class PairsTradingBackTester:
             print('num trades: {}, avg trade: {}'.format(len(oos_trades), round(oos_trades['pnl_pct'].mean(), 5)))
             print('total return: {}'.format(tr))
 
-            starting_equity = oos_equity_curve['equity'].iloc[-1]
+            starting_curr_capital = oos_equity_curve['equity'].iloc[-1]
 
             oos_trades['entry_date'] = oos_trades['entry_date'].astype(str)
             oos_trades['exit_date'] = oos_trades['exit_date'].astype(str)
@@ -450,13 +469,13 @@ class PairsTradingBackTester:
             insert_str = insert_str[:-2]
 
             insert_str_2 = ''
-
+            
             for i in range(len(oos_equity_curve)):
                 date = oos_equity_curve.index[i]
                 equity = oos_equity_curve['equity'].iloc[i]
 
                 insert_str_2 += """('{}', '{}', '{}', {}), """.format(symbol_id_1, symbol_id_2, date, equity)
-            
+
             insert_str_2 = insert_str_2[:-2]
 
             with redshift_connector.connect(
@@ -476,7 +495,7 @@ class PairsTradingBackTester:
                         cursor.execute(query)
 
                     query = """
-                    INSERT INTO eth.pair_trading_backtest_equity_curves VALUES {}
+                    INSERT INTO eth.pair_trading_backtest_capital_curves VALUES {}
                     """.format(insert_str_2)
 
                     # Execute query on Redshift
@@ -486,16 +505,15 @@ class PairsTradingBackTester:
 
                 conn.commit()
 
-            equity_curves.append(oos_equity_curve)
             trades.append(oos_trades)
-            price_data.append(out_of_sample_data)
+            price_data.append(backtest_data.iloc[oos_start_i:oos_end_i])
+            equity_curves.append(oos_equity_curve)
             
             start += out_of_sample_size
-
-        equity_curves = pd.concat(equity_curves).sort_index()
         
         trades = pd.concat(trades, ignore_index = True)
         price_data = pd.concat(price_data).sort_index()
+        equity_curves = pd.concat(equity_curves).sort_index()
 
         return equity_curves, trades, price_data
                                                         
@@ -568,15 +586,15 @@ class PairsTradingBackTester:
                         print('({} / {}) Now backtesting pairs {} / {}'.format(i + 1, len(combs), x_y_dict['X'], x_y_dict['Y']))
                         print()
 
-                        oos_equity_curve, oos_trades, oos_price_data = self.walk_forward_optimization(
+                        oos_equity_curves, oos_trades, oos_price_data = self.walk_forward_optimization(
                             symbol_id_1 = x_y_dict['X'],
                             symbol_id_2 = x_y_dict['Y'],
                             in_sample_size = 24 * 30 * 3,
-                            out_of_sample_size = 24 * 30 * 3  
+                            out_of_sample_size = 24 * 30 * 3,  
                         )
 
                         performance_metrics = self.__calculate_performance_metrics(
-                            oos_equity_curve, 
+                            oos_equity_curves, 
                             oos_trades, 
                             oos_price_data
                         ).to_dict(orient = 'records')[0]
@@ -607,15 +625,15 @@ class PairsTradingBackTester:
                             conn.commit()
 if __name__ == '__main__': 
     optimize_dict = {
-        'z_window':[12, 24, 24 * 7, 24 * 30],
-        'hedge_ratio_window':[12, 24, 24 * 7, 24 * 30],
-        'z_thresh_upper':[0, 0.5, 1, 2],
-        'z_thresh_lower':[-0.5, -1, -2]
+        'z_window':[24, 24 * 7, 24 * 14, 24 * 30, 24 * 60],
+        'hedge_ratio_window':[24, 24 * 7, 24 * 14, 24 * 30, 24 * 60],
+        'z_thresh_upper':[0.5, 1, 2, 3],
+        'z_thresh_lower':[-0.5, -1, -2, -3]
     }
 
     b = PairsTradingBackTester(
         optimize_dict = optimize_dict,
-        optimization_metric = 'sharpe_ratio'
+        optimization_metric = 'sortino_ratio'
     )
 
     print()
