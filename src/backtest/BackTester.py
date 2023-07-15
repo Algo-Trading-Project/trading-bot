@@ -73,7 +73,7 @@ class BackTester:
                     asset_id_quote = '{}' AND
                     exchange_id = '{}'
                 ORDER BY time_period_start ASC
-                """.format(title, asset_id_base, asset_id_quote, 
+                """.format(asset_id_base, asset_id_quote, 
                             exchange_id)
 
                 # Execute query on Redshift and return result
@@ -210,7 +210,7 @@ class BackTester:
                         asset_id_quote,
                         exchange_id,
                         COUNT(*) / 24.0 AS num_days_data
-                    FROM token_price.eth.stg_price_data_1h
+                    FROM token_price.coinapi.price_data_1h
                     GROUP BY asset_id_base, asset_id_quote, exchange_id
                 ), 
                 ordered_pairs_by_data_size AS (

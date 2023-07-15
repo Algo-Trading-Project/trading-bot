@@ -115,7 +115,7 @@ class PairsTradingBackTester:
         data = self.__get_data(
             symbol_id_1 = symbol_id_1,
             symbol_id_2 = symbol_id_2
-        )
+        ).iloc[-24 * 365 * 2:]
 
         correlation = np.corrcoef(data[symbol_id_1].values, data[symbol_id_2].values)[0][1]
 
@@ -392,7 +392,7 @@ class PairsTradingBackTester:
         backtest_data = self.__get_data(
             symbol_id_1 = symbol_id_1,
             symbol_id_2 = symbol_id_2
-        )
+        ).iloc[-24 * 365 * 2:]
 
         equity_curves = []
         trades = []
@@ -516,7 +516,6 @@ class PairsTradingBackTester:
                                                         
     def execute(self):
         # Run a walk-forward optimization on each pair/strategy combination
-
         with redshift_connector.connect(
             host = 'project-poseidon.cpsnf8brapsd.us-west-2.redshift.amazonaws.com',
             database = 'token_price',
@@ -526,7 +525,6 @@ class PairsTradingBackTester:
             with conn.cursor() as cursor:
                 # Get all unique pairs in Redshift w/ atleast 1 year's worth of
                 # hourly price data
-                
                 top_100_tokens_by_volume_query = """
                 WITH last_month AS (
                     SELECT  
@@ -565,6 +563,9 @@ class PairsTradingBackTester:
 
                 for i in range(len(combs)):
                     p1, p2 = combs[i][0], combs[i][1]
+                    
+                    if p1.split('_')[0] == p2.split('_')[0]:
+                        continue
                         
                     is_cointegrated, x_y_dict = self.__is_cointegrated(
                         symbol_id_1 = p1,
@@ -621,12 +622,12 @@ class PairsTradingBackTester:
                             conn.commit()
 if __name__ == '__main__': 
     optimize_dict = {
-        'z_window':[12, 24, 24 * 7, 24 * 30],
-        'hedge_ratio_window':[24, 24 * 7, 24 * 30, 24 * 60],
-        'z_thresh_upper':[1, 2],
-        'z_thresh_lower':[-1, -2],
+        'z_window':[24, 24 * 7, 24 * 30],
+        'hedge_ratio_window':[24, 24 * 7, 24 * 30 ],
+        'z_thresh_upper':[1, 2, 3],
+        'z_thresh_lower':[-1, -2, -3],
         # 'rolling_cointegration_window':[24 * 7, 24 * 30, 24 * 60],
-        'max_holding_time': [12, 24, 24 * 7, float('inf')]
+        'max_holding_time': [24, 24 * 7, float('inf')]
     }
 
     b = PairsTradingBackTester(
