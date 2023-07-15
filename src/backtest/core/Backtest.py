@@ -79,16 +79,21 @@ class Backtest:
             **self.backtest_params
         )
 
-        backtest_results = portfolio.stats().to_dict()
+        equity_curve = (1 + portfolio.returns()).cumprod() * self.backtest_params['init_cash']
+        trades = portfolio.trades.records_readable
+        trades = trades[['Entry Timestamp', 'Exit Timestamp', 'PnL', 'Return', 'Direction']]
+        
+        rename_dict = {
+            'Entry Timestamp':'entry_date', 'Exit Timestamp':'exit_date', 
+            'PnL':'pnl', 'Return':'pnl_pct', 'Direction':'is_long'
+        }
 
-        for del_col in ['Start', 'End', 'Period', 'Total Fees Paid', 
-                        'Total Closed Trades', 'Total Open Trades', 'Open Trade PnL']:
-            try:
-                del backtest_results[del_col]
-            except:
-                pass
+        trades = trades.rename(rename_dict, axis = 1)
+        trades['is_long'] = trades['is_long'] == 'Long'
 
-        return backtest_results
+        equity_curve = equity_curve.to_frame().rename({0:'equity'}, axis = 1)
+
+        return trades, equity_curve
 
     def optimize(self):
         entries, exits = self.generate_signals(
@@ -120,11 +125,11 @@ class Backtest:
             for param_name, best_value in zip(self.strategy.optimize_dict.keys(), maximizing_index):
                 best_param_comb[param_name] = best_value
 
-            return best_param_comb, portfolio.loc[maximizing_index].stats().to_dict()
+            return best_param_comb
         else:
             minimizing_index = backtest_result_metrics.idxmin()
 
             for param_name, best_value in zip(self.strategy.optimize_dict.keys(), minimizing_index):
                 best_param_comb[param_name] = best_value
 
-            return best_param_comb, portfolio.loc[minimizing_index].stats().to_dict()
+            return best_param_comb

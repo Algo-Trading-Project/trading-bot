@@ -27,13 +27,14 @@ from core.Backtest import Backtest
 
 from strategies.TestStratVBT import TestStratVBT
 from strategies.ARIMA import ARIMAStrat
+from core.performance_metrics import calculate_performance_metrics
 
 class BackTester:
 
     def __init__(self, 
                  strategies,
                  optimization_metric = 'Sortino Ratio',
-                 backtest_params = {'init_cash':10_000, 'fees':0.01}
+                 backtest_params = {'init_cash':10_000, 'fees':0.005}
                  ):
 
         self.optimization_metric = optimization_metric
@@ -87,73 +88,31 @@ class BackTester:
 
                 return df
 
-    def backtest(self, base, quote, exchange, strat, training_data, testing_data):
+    def backtest(self, base, quote, exchange, strat, training_data, testing_data, starting_equity):
+        print('starting equity: ', starting_equity)
+        backtest_params = self.backtest_params.copy()
+        backtest_params['init_cash'] = starting_equity
+
         is_backtest = Backtest(
             strategy = strat,
             price_data = training_data,
             optimization_metric = self.optimization_metric,
-            backtest_params = self.backtest_params
+            backtest_params = backtest_params
         )   
 
-        optimal_params, is_backtest_results = is_backtest.optimize() 
+        optimal_params = is_backtest.optimize() 
 
         # Evaluate optimized trading strategy on unseen data
-
         oos_backtest = Backtest(
             strategy = strat,
             price_data = testing_data,
             optimization_metric = self.optimization_metric,
-            backtest_params = self.backtest_params
+            backtest_params = backtest_params
         )   
 
-        oos_backtest_results = oos_backtest.backtest(optimal_params)
-
-        # Delete unwanted metrics from in-sample and oos
-        # backtest results before uploading to Redshift
-        for del_col in ['Start', 'End', 'Period', 'Total Fees Paid', 
-                        'Total Closed Trades', 'Total Open Trades', 'Open Trade PnL']:
-            try:
-                del is_backtest_results[del_col]
-            except:
-                pass
-
-            try:
-                del oos_backtest_results[del_col]
-            except:
-                pass
-
-        # Upload backtest
-        with redshift_connector.connect(
-            host = 'project-poseidon.cpsnf8brapsd.us-west-2.redshift.amazonaws.com',
-            database = 'trading_bot',
-            user = 'administrator',
-            password = 'Free2play2'
-        ) as conn:
-            with conn.cursor() as cursor:
-                # Query to insert backtest results into Redshift 
-                query = """
-                INSERT INTO trading_bot.eth.backtest_results VALUES 
-                (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """
-                str_is_backtest_results = json.dumps(is_backtest_results, default = BackTester.serialize_json_data)
-                str_is_backtest_results = str_is_backtest_results.replace('NaN', 'null').replace('Infinity', 'null')
-
-                str_oos_backtest_results = json.dumps(oos_backtest_results, default = BackTester.serialize_json_data)
-                str_oos_backtest_results = str_oos_backtest_results.replace('NaN', 'null').replace('Infinity', 'null')
-
-                # Execute query on Redshift
-                params = (strat.indicator_factory_dict['class_name'], base, quote, exchange,
-                          training_data.index[0], training_data.index[-1], 
-                          str_is_backtest_results, 
-                          testing_data.index[0], testing_data.index[-1], 
-                          str_oos_backtest_results,
-                          json.dumps(optimal_params, default = BackTester.serialize_json_data), self.optimization_metric,
-                          json.dumps(self.backtest_params, default = BackTester.serialize_json_data))
-                
-                cursor.execute(query, params)
-                cursor.close()
-
-            conn.commit()
+        oos_trades, oos_equity_curve = oos_backtest.backtest(optimal_params)
+        
+        return oos_trades, oos_equity_curve
     
     def walk_forward_optimization(self, base, quote, exchange, strat,
                                   in_sample_size, out_of_sample_size):
@@ -167,6 +126,12 @@ class BackTester:
             asset_id_quote = quote,
             exchange_id = exchange
         )
+        
+        equity_curves = []
+        trades = []
+        price_data = []
+
+        starting_equity = 10_000
 
         while start + in_sample_size + out_of_sample_size <= len(backtest_data):
             print()
@@ -180,16 +145,98 @@ class BackTester:
                 in_sample_data = backtest_data.iloc[start:start + in_sample_size]
                 out_of_sample_data = backtest_data.iloc[start + in_sample_size:start + in_sample_size + out_of_sample_size]
                         
-            self.backtest(
+            oos_trades, oos_equity_curve = self.backtest(
                 base = base,
                 quote = quote,
                 exchange = exchange,
                 strat = strat,
                 training_data = in_sample_data,
-                testing_data = out_of_sample_data
+                testing_data = out_of_sample_data,
+                starting_equity = starting_equity
             )
             
+            tr = 1 + ((oos_equity_curve['equity'].iloc[-1] - oos_equity_curve['equity'].iloc[0]) / oos_equity_curve['equity'].iloc[0])
+            
+            print('num trades: {}, avg trade: {}'.format(len(oos_trades), round(oos_trades['pnl_pct'].mean(), 5)))
+            print('total return: {}'.format(tr))
+
+            starting_equity = oos_equity_curve.iloc[-1]['equity']
+            
+            oos_trades['entry_date'] = oos_trades['entry_date'].astype(str)
+            oos_trades['exit_date'] = oos_trades['exit_date'].astype(str)
+            oos_trades_dict = oos_trades.to_dict(orient = 'records')
+            
+            insert_str = ''
+
+            for trade in oos_trades_dict:
+                pnl = float(str(trade['pnl'])[:38])
+                pnl_pct = float(str(trade['pnl_pct'])[:38])
+
+                insert_str += """('{}', '{}', '{}', '{}', '{}', '{}', '{}'), """.format(
+                    base + '_' + quote + '_' + exchange, 
+                    strat.indicator_factory_dict['class_name'],
+                    trade['entry_date'],
+                    trade['exit_date'],
+                    pnl,
+                    pnl_pct,
+                    trade['is_long']
+                )
+
+            insert_str = insert_str[:-2]
+
+            insert_str_2 = ''
+            
+            for i in range(len(oos_equity_curve)):
+                date = oos_equity_curve.index[i]
+                equity = oos_equity_curve['equity'].iloc[i]
+
+                insert_str_2 += """('{}', '{}', '{}', {}), """.format(
+                    base + '_' + quote + '_' + exchange,
+                    strat.indicator_factory_dict['class_name'],
+                    date,
+                    equity
+                )
+
+            insert_str_2 = insert_str_2[:-2]
+
+            with redshift_connector.connect(
+                host = 'project-poseidon.cpsnf8brapsd.us-west-2.redshift.amazonaws.com',
+                database = 'trading_bot',
+                user = 'administrator',
+                password = 'Free2play2'
+            ) as conn:
+                with conn.cursor() as cursor:
+                    # Query to insert backtest results into Redshift 
+                    if len(oos_trades) > 0:
+                        query = """
+                        INSERT INTO eth.backtest_trades VALUES {}
+                        """.format(insert_str)
+                        
+                        # Execute query on Redshift
+                        cursor.execute(query)
+
+                    query = """
+                    INSERT INTO eth.backtest_equity_curves VALUES {}
+                    """.format(insert_str_2)
+
+                    # Execute query on Redshift
+                    cursor.execute(query)
+
+                    cursor.close()
+
+                conn.commit()
+
+            equity_curves.append(oos_equity_curve)
+            trades.append(oos_trades)
+            price_data.append(out_of_sample_data)
+            
             start += out_of_sample_size
+
+        equity_curves = pd.concat(equity_curves).sort_index()
+        trades = pd.concat(trades, ignore_index = True)
+        price_data = pd.concat(price_data).sort_index()
+
+        return equity_curves, trades, price_data
                                     
     def execute(self):
         # Run a walk-forward optimization on each pair/strategy combination
@@ -251,14 +298,51 @@ class BackTester:
                     i + 1, len(df)
                 ))
 
-                self.walk_forward_optimization(
+                oos_equity_curves, oos_trades, oos_price_data = self.walk_forward_optimization(
                     base = base,
                     quote = quote, 
                     exchange = exchange,
                     strat = strat,
-                    in_sample_size = 24 * 30 * 4,
-                    out_of_sample_size = 24 * 30 * 4 
+                    in_sample_size = 24 * 30 * 6,
+                    out_of_sample_size = 24 * 30 * 3 
                 )
+
+                performance_metrics = calculate_performance_metrics(
+                    oos_equity_curves, 
+                    oos_trades, 
+                    oos_price_data
+                ).to_dict(orient = 'records')[0]
+                
+                performance_metrics = json.dumps(performance_metrics, default = BackTester.serialize_json_data)
+                performance_metrics = performance_metrics.replace('NaN', 'null').replace('Infinity', 'null')
+
+                with redshift_connector.connect(
+                    host = 'project-poseidon.cpsnf8brapsd.us-west-2.redshift.amazonaws.com',
+                    database = 'trading_bot',
+                    user = 'administrator',
+                    password = 'Free2play2'
+                ) as conn:
+                    with conn.cursor() as cursor:
+                        # Query to insert backtest results into Redshift 
+                        query = """
+                        INSERT INTO eth.backtest_results VALUES
+                        (%s, %s, %s, %s, %s, %s)
+                        """
+
+                        # Execute query on Redshift
+                        params = (
+                            strat.indicator_factory_dict['class_name'],
+                            base + '_' + quote + '_' + exchange,
+                            oos_price_data.index[0],
+                            oos_price_data.index[-1],
+                            performance_metrics,  
+                            self.optimization_metric
+                        )
+                        
+                        cursor.execute(query, params)
+                        cursor.close()
+
+                    conn.commit()
 
 if __name__ == '__main__': 
     backtest_params = {'init_cash': 10_000, 'fees': 0.01, 'size':1}
