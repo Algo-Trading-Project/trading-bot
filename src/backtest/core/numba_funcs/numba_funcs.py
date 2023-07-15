@@ -142,7 +142,7 @@ def __enter_trade_numba(positions, data, dates, trades, curr_capital, pct_capita
     return positions, trades, curr_capital, curr_position_long_units, curr_position_short_units
 
 @njit            
-def generate_positions_numba(positions, data, dates, trades, position, curr_capital, pct_capital_per_trade, commission, slippage, sl, tp):
+def generate_positions_numba(positions, data, dates, trades, position, curr_capital, pct_capital_per_trade, commission, slippage, sl, tp, max_holding_time):
     cp_long = 0
     cp_short = 0
 
@@ -187,9 +187,9 @@ def generate_positions_numba(positions, data, dates, trades, position, curr_capi
             # If long or short entry signal is received and we have capital remaining
             if (entry_signal == 1 or entry_signal == -1): 
                 
-                # If we're on the last timestamp or if rolling hedge ratio is negative 
-                # then don't open a trade
-                if (i == len(data) - 1) or (data[i][2] < 0):
+                # If we're on the last timestamp, the rolling hedge ratio is negative,
+                # or if prices aren't cointegrated at this timestamp then don't open a trade
+                if (i == len(data) - 1) or (data[i][2] < 0): # or (data[i][2] == 0):
                     c = np.array([float(curr_capital)]).reshape((1,1))
                     curr_capital_arr = np.vstack((curr_capital_arr, c))
                     continue
@@ -224,6 +224,11 @@ def generate_positions_numba(positions, data, dates, trades, position, curr_capi
 
         # If in a trade at current timestamp
         else:
+
+            # Entry date of most current trade and curr date
+            start = int(trades[-1][2])
+            curr_date = i
+
             is_long = trades[-1][-1]
             if is_long:
                 long_symbol_index_pos = 0
@@ -238,10 +243,7 @@ def generate_positions_numba(positions, data, dates, trades, position, curr_capi
                 short_symbol_index_pos = 0
                 short_symbol_index_data = 1
 
-            # Entry and exit dates of most current trade
-            start = int(trades[-1][2])
-            curr_date = i
-
+            # Calculate the PnL from the long position
             start_value_long = data[start][long_symbol_index_data] * positions[start][long_symbol_index_pos]
             curr_value_long = data[curr_date][long_symbol_index_data] * positions[start][long_symbol_index_pos]
             long_pnl = (curr_value_long - start_value_long) * (1 - commission)
@@ -256,6 +258,8 @@ def generate_positions_numba(positions, data, dates, trades, position, curr_capi
             total_investment = start_value_long + start_value_short
             trade_pnl_pct = trade_pnl / total_investment
 
+            # If our trade has hit our take profit or stop loss then close
+            # the trade
             if (trade_pnl_pct <= -sl) or (trade_pnl_pct >= tp):
                 
                 # Close the current trade
@@ -273,8 +277,28 @@ def generate_positions_numba(positions, data, dates, trades, position, curr_capi
 
                 position = 0
 
+            # If we've been in the current trade longer than max_trade_duration
+            # then close the trade
+            elif curr_date - start > max_holding_time:
+                
+                # Close the current trade
+                positions, trades, curr_capital = __exit_trade_numba(
+                    positions = positions,
+                    data = data,
+                    dates = dates,
+                    trades = trades,
+                    i = i,
+                    is_long = is_long,
+                    commission = commission,
+                    slippage = slippage,
+                    curr_capital = curr_capital
+                )
+
+                position = 0
+
             # If curr trade is long and we get a long exit or curr trade is short and we get a short exit
-            if (is_long and exit_signal == 1) or (not is_long and exit_signal == -1):
+            elif (is_long and exit_signal == 1) or (not is_long and exit_signal == -1):
+                
                 # Close the current trade
                 positions, trades, curr_capital = __exit_trade_numba(
                     positions = positions,
@@ -299,24 +323,24 @@ def generate_positions_numba(positions, data, dates, trades, position, curr_capi
                 positions[i][long_symbol_index_pos] = cp_long
                 positions[i][short_symbol_index_pos] = cp_short
 
-        # If the backtest reaches the final timestamp and the current trade hasn't
-        # been exited yet 
-        if i == len(data) - 1 and len(trades) > 0 and trades[-1][1] == -1:
+            # If the backtest reaches the final timestamp and the current trade hasn't
+            # been exited yet 
+            if i == len(data) - 1 and len(trades) > 0 and trades[-1][1] == -1:
 
-            # Close the current trade
-            positions, trades, curr_capital = __exit_trade_numba(
-                positions = positions,
-                data = data,
-                dates = dates,
-                trades = trades,
-                i = i,
-                is_long = is_long,
-                commission = commission,
-                slippage = slippage,
-                curr_capital = curr_capital
-            )
+                # Close the current trade
+                positions, trades, curr_capital = __exit_trade_numba(
+                    positions = positions,
+                    data = data,
+                    dates = dates,
+                    trades = trades,
+                    i = i,
+                    is_long = is_long,
+                    commission = commission,
+                    slippage = slippage,
+                    curr_capital = curr_capital
+                )
 
-            position = 0
+                position = 0
 
         c = np.array([float(curr_capital)]).reshape((1,1))
         curr_capital_arr = np.vstack((curr_capital_arr, c))
@@ -371,13 +395,13 @@ def generate_trading_signals_numba(z, z_prev, zl, zu):
     )
 
     ex = np.where(
-        ((z_prev < zu) & (z > zu)),
+        ((z_prev < 0) & (z > 0)),
         1,
         0
     )
 
     ex = np.where(
-        ((z_prev > zl) & (z < zl)),
+        ((z_prev > 0) & (z < 0)),
         -1,
         ex
     )

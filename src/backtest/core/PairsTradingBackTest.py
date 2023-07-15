@@ -5,16 +5,17 @@ import itertools
 
 from datetime import timedelta
 from .numba_funcs.numba_funcs import *
+from statsmodels.tsa.vector_ar.vecm import coint_johansen
 
 class PairsTradingBacktest:
     # BACKTESTING PARAMETERS
 
     # Window size to calculate the rolling z score
     # of the price spread
-    z_window = 96
+    z_window = 48
 
     # Window size to calculate the rollling hedge ratios 
-    hedge_ratio_window = 168
+    hedge_ratio_window = 24 * 7
 
     # Value of price spread rolling z score to initiate 
     # an entry/exit when crossed above
@@ -22,7 +23,13 @@ class PairsTradingBacktest:
 
     # Value of price spread rolling z score to initiate 
     # an entry/exit when crossed below
-    z_score_lower_thresh = -2.5
+    z_score_lower_thresh = -2
+
+    # Window size to perform rolling cointegration test
+    # rolling_cointegration_window = 24 * 7
+
+    # Max amount of time in hours a position can be held
+    max_holding_time = 48
 
     def __init__(self, 
                  price_data,
@@ -31,7 +38,8 @@ class PairsTradingBacktest:
                  start_i,
                  end_i,
                  backtest_params = {
-                    'initial_capital':10_000, 'pct_capital_per_trade': 0.95,
+                    'initial_capital':10_000, 
+                    'pct_capital_per_trade': 0.95,
                     'comission': 0.005,
                     'sl': float('inf'),
                     'tp':float('inf'),
@@ -85,7 +93,26 @@ class PairsTradingBacktest:
         self.equity = None
         
     ################################# HELPER METHODS #################################
+    def __rolling_cointegration(self):
+        rolling_coint = []
+
+        for i in range(len(self.backtest_data)):
+            if i < self.rolling_cointegration_window - 1:
+                rolling_coint.append(0)
+            else:
+                df = self.backtest_data[[self.symbol_id_2, self.symbol_id_1]].iloc[i - self.rolling_cointegration_window + 1:i + 1]
+                result = coint_johansen(df, 0, 1)
+
+                trace_crit_value = result.cvt[:, 0]
+                eigen_crit_value = result.cvm[:, 0]
+
+                if np.all(result.lr1 >= trace_crit_value) and np.all(result.lr2 >= eigen_crit_value):
+                    rolling_coint.append(1)
+                else:
+                    rolling_coint.append(0)
         
+        return rolling_coint
+            
     def __rolling_hedge_ratios(self):
         start = max(0, self.start_i - self.hedge_ratio_window)
 
@@ -134,13 +161,14 @@ class PairsTradingBacktest:
             commission = self.backtest_params['comission'],
             slippage = self.backtest_params['max_slippage'],
             sl = self.backtest_params['sl'],
-            tp = self.backtest_params['tp']
-        ) 
+            tp = self.backtest_params['tp'],
+            max_holding_time = self.max_holding_time
+        )
 
-        len_diff = abs(len(curr_capital_arr) - len(self.backtest_data))
+        # len_diff = abs(len(curr_capital_arr) - len(self.backtest_data))
 
-        for _ in range(len_diff):
-            curr_capital_arr = np.append(curr_capital_arr, np.nan)
+        # for _ in range(len_diff):
+        #     curr_capital_arr = np.append(curr_capital_arr, np.nan)
 
         self.trades = pd.DataFrame(data = trades, columns = self.trades.columns)
         self.trades['entry_date'] = pd.to_datetime(self.trades['entry_date'])
@@ -453,7 +481,15 @@ class PairsTradingBacktest:
         lists = []
         parameter_combinations = []
 
-        best_comb_so_far = [self.z_window, self.hedge_ratio_window, self.z_score_upper_thresh, self.z_score_lower_thresh]
+        best_comb_so_far = [
+            self.z_window, 
+            self.hedge_ratio_window,
+            self.z_score_upper_thresh, 
+            self.z_score_lower_thresh, 
+            # self.rolling_cointegration_window, 
+            self.max_holding_time
+        ]
+
         best_metric_so_far = float('inf') if minimize else float('-inf')
         
         for key in optimize_dict.keys():
@@ -469,7 +505,9 @@ class PairsTradingBacktest:
             self.hedge_ratio_window = parameter_combinations[i][1]
             self.z_score_upper_thresh = parameter_combinations[i][2]
             self.z_score_lower_thresh = parameter_combinations[i][3]
-            
+            # self.rolling_cointegration_window = parameter_combinations[i][4]
+            self.max_holding_time = parameter_combinations[i][4]
+
             self.backtest()
 
             backtest_result_metric = float(self.performance_metrics[performance_metric][0])
@@ -486,15 +524,26 @@ class PairsTradingBacktest:
         self.hedge_ratio_window = best_comb_so_far[1]
         self.z_score_upper_thresh = best_comb_so_far[2]
         self.z_score_lower_thresh = best_comb_so_far[3]
-        
+        # self.rolling_cointegration_window = best_comb_so_far[4]
+        self.max_holding_time = best_comb_so_far[4]
+
         self.backtest()
 
-        optimal_params = {'z_window': self.z_window, 'hedge_ratio_window': self.hedge_ratio_window,
-                          'z_score_upper_thresh': self.z_score_upper_thresh, 'z_score_lower_thresh': self.z_score_lower_thresh}
+        optimal_params = {
+            'z_window': self.z_window, 
+            'hedge_ratio_window': self.hedge_ratio_window,
+            'z_score_upper_thresh': self.z_score_upper_thresh, 
+            'z_score_lower_thresh': self.z_score_lower_thresh,
+            # 'rolling_cointegration_window': self.rolling_cointegration_window,
+            'max_holding_time': self.max_holding_time
+        }
         
         return optimal_params
     
-    def backtest(self):        
+    def backtest(self):   
+        # Calculate rolling cointegration tests at each timestep
+        # self.backtest_data['rolling_cointegration'] = self.__rolling_cointegration()
+
         # Calculate rolling hedge ratios at each timestep
         self.backtest_data['rolling_hedge_ratio'] = self.__rolling_hedge_ratios()
                 

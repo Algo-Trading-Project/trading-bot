@@ -52,65 +52,37 @@ class BackTester:
         # Connect to Redshift cluster containing price data
         with redshift_connector.connect(
             host = 'project-poseidon.cpsnf8brapsd.us-west-2.redshift.amazonaws.com',
-            database = 'administrator',
+            database = 'token_price',
             user = 'administrator',
             password = 'Free2play2'
         ) as conn:
             with conn.cursor() as cursor:
-                # Query to fetch OHLCV data for an ETH pair & exchange of interest
-                # within a specified date range
-                if asset_id_base == 'ETH' and asset_id_quote == 'USD':
-                    title = asset_id_base + '-' + asset_id_quote
-                    query = """
-                    SELECT 
-                        time_period_end,
-                        price_close AS "{}"
-                    FROM token_price.eth.stg_price_data_1h
-                    WHERE 
-                        asset_id_base = '{}' AND
-                        asset_id_quote = '{}' AND
-                        exchange_id = '{}'
-                    ORDER BY time_period_start ASC
-                    """.format(title, asset_id_base, asset_id_quote, 
-                               exchange_id)
-                else:
-                    title = asset_id_base + '-' + 'USD'
-                    query = """
-                    WITH requested_pair AS (
-                        SELECT 
-                            time_period_end,
-                            price_close
-                        FROM token_price.eth.stg_price_data_1h
-                        WHERE
-                            asset_id_base = '{}' AND
-                            asset_id_quote = '{}' AND
-                            exchange_id = '{}'
-                    ), 
-                    eth_usd_bitfinex AS (
-                        SELECT
-                            time_period_end,
-                            price_close
-                        FROM token_price.eth.stg_price_data_1h
-                        WHERE
-                            asset_id_base = 'ETH' AND
-                            asset_id_quote = 'USD' AND
-                            exchange_id = 'BITFINEX'
-                    )
-
-                    SELECT
-                        e.time_period_end,
-                        r.price_close / (1 / e.price_close) AS "{}"
-                    FROM eth_usd_bitfinex e INNER JOIN requested_pair r
-                        ON e.time_period_end = r.time_period_end
-                    ORDER BY e.time_period_end
-                    """.format(asset_id_base, asset_id_quote, exchange_id, title)
+                # Query to fetch OHLCV data for a token & exchange of interest
+                title = asset_id_base + '-' + asset_id_quote
+                query = """
+                SELECT 
+                    time_period_end,
+                    price_open,
+                    price_high,
+                    price_low,
+                    price_close,
+                    volume_traded
+                FROM token_price.coinapi.price_data_1h
+                WHERE 
+                    asset_id_base = '{}' AND
+                    asset_id_quote = '{}' AND
+                    exchange_id = '{}'
+                ORDER BY time_period_start ASC
+                """.format(title, asset_id_base, asset_id_quote, 
+                            exchange_id)
 
                 # Execute query on Redshift and return result
                 cursor.execute(query)
                 tuples = cursor.fetchall()
                 
                 # Return queried data as a DataFrame
-                df = pd.DataFrame(tuples, columns = ['Date', title]).set_index('Date')
+                cols = ['Date', 'price_open', 'price_high', 'price_low', 'price_close', 'volume_traded']
+                df = pd.DataFrame(tuples, columns = cols).set_index('Date')
                 df = df.astype(float)
 
                 return df
@@ -267,12 +239,6 @@ class BackTester:
                 # Turn queried data into a DataFrame
                 df = pd.DataFrame(tuples, columns = ['asset_id_base', 'asset_id_quote', 'exchange_id'])
                 
-                eth = df[(df['asset_id_base'] == 'ETH') & (df['asset_id_quote'] == 'USD')].copy()
-                temp = df.iloc[0].copy()
-                
-                df.iloc[0] = eth
-                df.iloc[eth.index] = temp
-
         for i in range(len(df)):
             row = df.iloc[i]
             base, quote, exchange = row['asset_id_base'], row['asset_id_quote'], row['exchange_id']
