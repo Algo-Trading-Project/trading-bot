@@ -73,7 +73,7 @@ class PairsTradingBackTester:
                     SELECT 
                         time_period_end,
                         price_close
-                    FROM token_price.eth.stg_price_data_1h
+                    FROM token_price.coinapi.price_data_1h
                     WHERE
                         asset_id_base = '{}' AND
                         asset_id_quote = '{}' AND
@@ -82,7 +82,7 @@ class PairsTradingBackTester:
                     SELECT 
                         time_period_end,
                         price_close
-                    FROM token_price.eth.stg_price_data_1h
+                    FROM token_price.coinapi.price_data_1h
                     WHERE
                         asset_id_base = '{}' AND
                         asset_id_quote = '{}' AND
@@ -91,15 +91,10 @@ class PairsTradingBackTester:
                 
                 SELECT
                     s1.time_period_end,
-                    s1.price_close / (1 / s3.price_close) AS "{}",
-                    s2.price_close / (1 / s3.price_close) AS "{}"
+                    s1.price_close AS "{}",
+                    s2.price_close AS "{}"
                 FROM symbol_id_1 s1 INNER JOIN symbol_id_2 s2
                         ON s1.time_period_end = s2.time_period_end
-                     INNER JOIN token_price.eth.stg_price_data_1h s3
-                        ON s1.time_period_end = s3.time_period_end AND
-                           s3.asset_id_base = 'ETH' AND
-                           s3.asset_id_quote = 'USD' AND
-                           s3.exchange_id = 'BITFINEX'
                 ORDER BY s1.time_period_end 
                 """.format(
                     base_1, quote_1, exchange_id_1,
@@ -116,11 +111,11 @@ class PairsTradingBackTester:
 
                 return df
             
-    def __is_cointegrated(self, symbol_id_1, symbol_id_2, p_val_thresh = 0.05, correlation_thresh = 0.8):                    
+    def __is_cointegrated(self, symbol_id_1, symbol_id_2, p_val_thresh = 0.05, correlation_thresh = 0.9):                    
         data = self.__get_data(
             symbol_id_1 = symbol_id_1,
             symbol_id_2 = symbol_id_2
-        )  
+        )
 
         correlation = np.corrcoef(data[symbol_id_1].values, data[symbol_id_2].values)[0][1]
 
@@ -380,6 +375,8 @@ class PairsTradingBackTester:
         oos_backtest.hedge_ratio_window = optimal_params['hedge_ratio_window']
         oos_backtest.z_score_upper_thresh = optimal_params['z_score_upper_thresh']
         oos_backtest.z_score_lower_thresh = optimal_params['z_score_lower_thresh']
+        # oos_backtest.rolling_cointegration_window = optimal_params['rolling_cointegration_window']
+        oos_backtest.max_holding_time = optimal_params['max_holding_time']
 
         oos_backtest.backtest()
         
@@ -495,7 +492,7 @@ class PairsTradingBackTester:
                         cursor.execute(query)
 
                     query = """
-                    INSERT INTO eth.pair_trading_backtest_capital_curves VALUES {}
+                    INSERT INTO eth.pair_trading_backtest_equity_curves VALUES {}
                     """.format(insert_str_2)
 
                     # Execute query on Redshift
@@ -537,7 +534,7 @@ class PairsTradingBackTester:
                         asset_id_quote,
                         exchange_id,
                         MAX(time_period_start) - INTERVAL '30 DAYS' AS start_date
-                    FROM token_price.eth.stg_price_data_1h o
+                    FROM token_price.coinapi.price_data_1h
                     GROUP BY         
                         asset_id_base,
                         asset_id_quote,
@@ -548,12 +545,11 @@ class PairsTradingBackTester:
                     o.asset_id_base,
                     o.asset_id_quote,
                     o.exchange_id
-                FROM token_price.eth.stg_price_data_1h o INNER JOIN last_month l
+                FROM token_price.coinapi.price_data_1h o INNER JOIN last_month l
                     ON o.asset_id_base = l.asset_id_base AND
                         o.asset_id_quote = l.asset_id_quote AND
-                        o.exchange_id = l.exchange_id
+                        o.exchange_id = l.exchange_id 
                 WHERE
-                    o.asset_id_base != 'ETH' AND
                     time_period_start >= start_date
                 GROUP BY o.asset_id_base, o.asset_id_quote, o.exchange_id
                 ORDER BY AVG(volume_traded / (1 / price_close)) * 24 DESC
@@ -589,7 +585,7 @@ class PairsTradingBackTester:
                         oos_equity_curves, oos_trades, oos_price_data = self.walk_forward_optimization(
                             symbol_id_1 = x_y_dict['X'],
                             symbol_id_2 = x_y_dict['Y'],
-                            in_sample_size = 24 * 30 * 3,
+                            in_sample_size = 24 * 30 * 6,
                             out_of_sample_size = 24 * 30 * 3,  
                         )
 
@@ -625,10 +621,12 @@ class PairsTradingBackTester:
                             conn.commit()
 if __name__ == '__main__': 
     optimize_dict = {
-        'z_window':[24, 24 * 7, 24 * 14, 24 * 30, 24 * 60],
-        'hedge_ratio_window':[24, 24 * 7, 24 * 14, 24 * 30, 24 * 60],
-        'z_thresh_upper':[0.5, 1, 2, 3],
-        'z_thresh_lower':[-0.5, -1, -2, -3]
+        'z_window':[12, 24, 24 * 7, 24 * 30],
+        'hedge_ratio_window':[24, 24 * 7, 24 * 30, 24 * 60],
+        'z_thresh_upper':[1, 2],
+        'z_thresh_lower':[-1, -2],
+        # 'rolling_cointegration_window':[24 * 7, 24 * 30, 24 * 60],
+        'max_holding_time': [12, 24, 24 * 7, float('inf')]
     }
 
     b = PairsTradingBackTester(

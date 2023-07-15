@@ -11,7 +11,7 @@ class Backtest:
         
         """
         strategy            - Strategy class in src/backtest/strategies to backtested
-        price_data          - Dataframe of close price data indexed by timestamp
+        price_data          - Dataframe of OHLCV data indexed by timestamp
         optimization_metric - Performance metric to optimize backtest on
         backtest_params     - Miscellaneous parameters to configure the backtest
         """
@@ -29,6 +29,7 @@ class Backtest:
             'Profit Factor':'trades.profit_factor',
             'Expectancy':'trades.expectancy',
             'Sharpe Ratio':'returns_acc.sharpe_ratio',
+            'Deflated Sharpe Ratio':'returns_acc.deflated_sharpe_ratio',
             'Calmar Ratio':'returns_acc.calmar_ratio',
             'Omega Ratio':'returns_acc.omega_ratio',
             'Sortino Ratio':'returns_acc.sortino_ratio'
@@ -42,6 +43,7 @@ class Backtest:
             'Profit Factor':'Max',
             'Expectancy':'Max',
             'Sharpe Ratio':'Max',
+            'Delfated Sharpe Ratio':'Max',
             'Calmar Ratio':'Max',
             'Omega Ratio':'Max',
             'Sortino Ratio':'Max'
@@ -52,7 +54,11 @@ class Backtest:
 
     def generate_signals(self, params, param_product = False): 
         res = self.custom_indicator.run(
-            self.price_data,
+            self.price_data.price_open,
+            self.price_data.price_high,
+            self.price_data.price_low,
+            self.price_data.price_close,
+            self.price_data.volume_traded,
             param_product = param_product,
             **params
         )
@@ -66,7 +72,7 @@ class Backtest:
         entries, exits = self.generate_signals(params = params)
 
         portfolio = vbt.Portfolio.from_signals(
-            close = self.price_data,
+            close = self.price_data.price_close,
             entries = entries,
             exits = exits,
             freq = 'h',
@@ -91,7 +97,7 @@ class Backtest:
         )
 
         portfolio = vbt.Portfolio.from_signals(
-            close = self.price_data,
+            close = self.price_data.price_close,
             entries = entries,
             exits = exits,
             freq = 'h',

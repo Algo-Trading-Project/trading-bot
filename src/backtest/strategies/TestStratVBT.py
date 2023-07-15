@@ -1,4 +1,3 @@
-import vectorbt as vbt
 import numpy as np
 
 class TestStratVBT:
@@ -6,7 +5,7 @@ class TestStratVBT:
     indicator_factory_dict = {
         'class_name':'Test_Strat_VBT',
         'short_name':'test_strat',
-        'input_names':['close'],
+        'input_names':['open', 'high', 'low', 'close', 'volume'],
         'param_names':['fast_window', 'slow_window'],
         'output_names':['entries', 'exits']
     }
@@ -21,7 +20,7 @@ class TestStratVBT:
         'slow_window':24 * 7
     }
 
-    def indicator_func(close, fast_window, slow_window):
+    def indicator_func(open, high, low, close, volume, fast_window, slow_window):
         sma_slow = []
         sma_fast = []
 
