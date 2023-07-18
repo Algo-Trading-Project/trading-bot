@@ -14,9 +14,9 @@ class ARIMAStrat:
     } 
 
     optimize_dict = {
-        'p': [0,1,2],
-        'd': [0,1],
-        'q': [0,1,2]
+        'p': [1],
+        'd': [1],
+        'q': [1]
     }
 
     default_dict = {
@@ -47,7 +47,7 @@ class ARIMAStrat:
             )
 
             fit_model = model.fit()
-            pred = fit_model.forecast(steps = 1)
+            pred = fit_model.forecast(steps = 1)[0]
 
             entry_signal = pred > close[i]
             exit_signal = pred < close[i]

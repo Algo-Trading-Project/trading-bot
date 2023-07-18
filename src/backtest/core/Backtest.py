@@ -43,14 +43,16 @@ class Backtest:
             'Profit Factor':'Max',
             'Expectancy':'Max',
             'Sharpe Ratio':'Max',
-            'Delfated Sharpe Ratio':'Max',
+            'Deflated Sharpe Ratio':'Max',
             'Calmar Ratio':'Max',
             'Omega Ratio':'Max',
             'Sortino Ratio':'Max'
         }
 
         self.custom_indicator = (vbt.IndicatorFactory(**strategy.indicator_factory_dict)
-                                 .from_apply_func(strategy.indicator_func, **strategy.default_dict))
+                                 .from_apply_func(strategy.indicator_func, 
+                                                  to_2d = False,
+                                                  **strategy.default_dict))
 
     def generate_signals(self, params, param_product = False): 
         res = self.custom_indicator.run(

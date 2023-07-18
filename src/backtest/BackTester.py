@@ -154,7 +154,7 @@ class BackTester:
                 testing_data = out_of_sample_data,
                 starting_equity = starting_equity
             )
-            
+
             tr = 1 + ((oos_equity_curve['equity'].iloc[-1] - oos_equity_curve['equity'].iloc[0]) / oos_equity_curve['equity'].iloc[0])
             
             print('num trades: {}, avg trade: {}'.format(len(oos_trades), round(oos_trades['pnl_pct'].mean(), 5)))
@@ -251,32 +251,16 @@ class BackTester:
                 # Get all unique pairs in Redshift w/ atleast 1 year's worth of
                 # hourly price data
                 query = """
-                WITH num_days_data AS (
-                    SELECT 
-                        asset_id_base,
-                        asset_id_quote,
-                        exchange_id,
-                        COUNT(*) / 24.0 AS num_days_data
-                    FROM token_price.coinapi.price_data_1h
-                    GROUP BY asset_id_base, asset_id_quote, exchange_id
-                ), 
-                ordered_pairs_by_data_size AS (
-                    SELECT
-                        *,
-                        ROW_NUMBER() OVER (PARTITION BY asset_id_base, asset_id_quote 
-                                           ORDER BY num_days_data DESC) AS pos
-                    FROM num_days_data
-                )
-
                 SELECT 
+                DISTINCT
                     asset_id_base,
                     asset_id_quote,
                     exchange_id
-                FROM ordered_pairs_by_data_size
-                WHERE 
-                    pos = 1 AND
-                    num_days_data >= 365
-                ORDER BY asset_id_base, asset_id_quote, exchange_id
+                FROM token_price.coinapi.price_data_1h
+                WHERE
+                    asset_id_base = 'ETH' AND
+                    asset_id_quote = 'USD' AND
+                    exchange_id = 'COINBASE'
                 """
 
                 # Execute query on Redshift and return result
@@ -303,8 +287,8 @@ class BackTester:
                     quote = quote, 
                     exchange = exchange,
                     strat = strat,
-                    in_sample_size = 24 * 30 * 6,
-                    out_of_sample_size = 24 * 30 * 3 
+                    in_sample_size = 24 * 30 * 4,
+                    out_of_sample_size = 24 * 30 * 2
                 )
 
                 performance_metrics = calculate_performance_metrics(
@@ -345,11 +329,11 @@ class BackTester:
                     conn.commit()
 
 if __name__ == '__main__': 
-    backtest_params = {'init_cash': 10_000, 'fees': 0.005, 'size':1}
+    backtest_params = {'init_cash': 10_000, 'fees': 0.005}
 
     b = BackTester(
-        strategies = [ARIMAStrat],
-        optimization_metric = 'Sortino Ratio',
+        strategies = [TestStratVBT],
+        optimization_metric = 'Deflated Sharpe Ratio',
         backtest_params = backtest_params
     )
 
