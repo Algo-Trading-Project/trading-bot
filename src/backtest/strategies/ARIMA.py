@@ -8,75 +8,49 @@ class ARIMAStrat:
     indicator_factory_dict = {
         'class_name':'ARIMA',
         'short_name':'arima',
-        'input_names':['close'],
-        'param_names':['p', 'd', 'q', 'ema1_window', 'ema2_window', 'forecast_window'],
+        'input_names':['open', 'high', 'low', 'close', 'volume'],
+        'param_names':['p', 'd', 'q'],
         'output_names':['entries', 'exits']
     } 
 
     optimize_dict = {
         'p': [0,1,2],
         'd': [0,1],
-        'q': [0,1,2],
-        'ema1_window': [3,7,9,12,15],
-        'ema2_window':[21,26,33,50,100],
-        'forecast_window': [1,2,3,4,5]
+        'q': [0,1,2]
     }
 
     default_dict = {
         'p': 1,
         'd': 0,
-        'q': 1,
-        'ema1_window': 9,
-        'ema2_window': 26,
-        'forecast_window':1
+        'q': 1
     }
 
-    def indicator_func(close, p, d, q, ema1_window, ema2_window, forecast_window):
+    def indicator_func(open, high, low, close, volume,
+                       p, d, q):
         entries = []
         exits = []
-        
-        ema1 = vbt.MA.run(
-            close = close, 
-            window = ema1_window,
-            ewm = True
-        ).ma.values
-
-        ema2 = vbt.MA.run(
-            close = close, 
-            window = ema2_window,
-            ewm = True
-        ).ma.values
-    
-        for i in range(len(close)):            
+            
+        for i in range(len(close)):  
             if i < 24 * 7:
                 entries.append(False)
                 exits.append(False)
                 continue
+
+            start = max(i - 24 * 30 * 2, 0)
+            end = i + 1
             
             model = ARIMA(
-                close[i - 24 * 30: i + 1], 
+                close[start: end], 
                 order = (p, d, q), 
                 enforce_stationarity = False, 
                 enforce_invertibility = False,
             )
 
             fit_model = model.fit()
-            
-            pred = fit_model.get_prediction(start = 0, end = forecast_window)
-            conf_int = pred.conf_int(alpha = 0.01)
+            pred = fit_model.forecast(steps = 1)
 
-            lower_bound = conf_int[-1][0]
-            upper_bound = conf_int[-1][-1]
-
-            entry_signal = (
-                (close[i - 1][0] < ema[i - 1][0]) and
-                (close[i][0] > ema[i][0]) and
-                ((upper_bound - close[i][0]) / close[i][0] >= .005)
-            )
-            exit_signal = (
-                (close[i - 1][0] > ema[i - 1][0]) and
-                (close[i][0] < ema[i][0])
-            )
+            entry_signal = pred > close[i]
+            exit_signal = pred < close[i]
 
             entries.append(entry_signal)
             exits.append(exit_signal)

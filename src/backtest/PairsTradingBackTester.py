@@ -375,8 +375,13 @@ class PairsTradingBackTester:
                
                 combs = PairsTradingBackTester.numpy_combinations(token_df['symbol_id'].to_numpy())
 
+                history = {}
+
                 for i in range(len(combs)):
                     p1, p2 = combs[i][0], combs[i][1]
+
+                    if history.get(p1.split('_')[0] + '_' + p2.split('_')[0]):
+                        continue
                     
                     if p1.split('_')[0] == p2.split('_')[0]:
                         continue
@@ -392,6 +397,7 @@ class PairsTradingBackTester:
                     print()
 
                     if is_cointegrated:
+                        history[p1.split('_')[0] + '_' + p2.split('_')[0]] = True
 
                         print()
                         print('({} / {}) Now backtesting pairs {} / {}'.format(i + 1, len(combs), x_y_dict['X'], x_y_dict['Y']))
@@ -400,8 +406,8 @@ class PairsTradingBackTester:
                         oos_equity_curves, oos_trades, oos_price_data = self.walk_forward_optimization(
                             symbol_id_1 = x_y_dict['X'],
                             symbol_id_2 = x_y_dict['Y'],
-                            in_sample_size = 24 * 30 * 6,
-                            out_of_sample_size = 24 * 30 * 3,  
+                            in_sample_size = 24 * 30 * 4,
+                            out_of_sample_size = 24 * 30 * 2,  
                         )
 
                         performance_metrics = calculate_performance_metrics(
@@ -436,17 +442,17 @@ class PairsTradingBackTester:
                             conn.commit()
 if __name__ == '__main__': 
     optimize_dict = {
-        'z_window':[24, 24 * 7, 24 * 30],
-        'hedge_ratio_window':[24, 24 * 7, 24 * 30 ],
+        'z_window':[24, 24 * 7, 24 * 14, 24 * 28],
+        'hedge_ratio_window':[24, 24 * 7, 24 * 14, 24 * 28],
         'z_thresh_upper':[1, 2, 3],
         'z_thresh_lower':[-1, -2, -3],
         # 'rolling_cointegration_window':[24 * 7, 24 * 30, 24 * 60],
-        'max_holding_time': [24, 24 * 7, float('inf')]
+        'max_holding_time': [24, 24 * 7, 24 * 28, float('inf')]
     }
 
     b = PairsTradingBackTester(
         optimize_dict = optimize_dict,
-        optimization_metric = 'sortino_ratio'
+        optimization_metric = 'sharpe_ratio'
     )
 
     print()

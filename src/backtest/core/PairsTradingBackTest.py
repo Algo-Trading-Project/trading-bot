@@ -7,6 +7,8 @@ from datetime import timedelta
 from .numba_funcs.numba_funcs import *
 from statsmodels.tsa.vector_ar.vecm import coint_johansen
 
+from core.performance_metrics import calculate_performance_metrics
+
 class PairsTradingBacktest:
     # BACKTESTING PARAMETERS
 
@@ -39,8 +41,8 @@ class PairsTradingBacktest:
                  end_i,
                  backtest_params = {
                     'initial_capital':10_000, 
-                    'pct_capital_per_trade': 0.95,
-                    'comission': 0.005,
+                    'pct_capital_per_trade': 1,
+                    'comission': 0,
                     'sl': float('inf'),
                     'tp':float('inf'),
                     'max_slippage':0.00
@@ -377,7 +379,11 @@ class PairsTradingBacktest:
         self.equity = self.__generate_equity_curve()
 
         # Calculate performance metrics for backtest
-        self.performance_metrics = self.__calculate_performance_metrics()  
+        self.performance_metrics = calculate_performance_metrics(
+            self.equity,
+            self.trades,
+            self.backtest_data[[self.backtest_data.columns[0], self.backtest_data.columns[1]]]
+        )
 
         # Reset position variable back to default state for subsequent backtests
         self.position = 0

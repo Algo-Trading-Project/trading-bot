@@ -89,7 +89,6 @@ class BackTester:
                 return df
 
     def backtest(self, base, quote, exchange, strat, training_data, testing_data, starting_equity):
-        print('starting equity: ', starting_equity)
         backtest_params = self.backtest_params.copy()
         backtest_params['init_cash'] = starting_equity
 
@@ -136,6 +135,7 @@ class BackTester:
         while start + in_sample_size + out_of_sample_size <= len(backtest_data):
             print()
             print('Progress: {} / {} days...'.format(int(start / 24), int(len(backtest_data) / 24)))
+            print('Starting equity: ', starting_equity)
             print()
 
             if len(backtest_data.iloc[start:]) - (in_sample_size + out_of_sample_size) < out_of_sample_size:
@@ -144,7 +144,7 @@ class BackTester:
             else:
                 in_sample_data = backtest_data.iloc[start:start + in_sample_size]
                 out_of_sample_data = backtest_data.iloc[start + in_sample_size:start + in_sample_size + out_of_sample_size]
-                        
+
             oos_trades, oos_equity_curve = self.backtest(
                 base = base,
                 quote = quote,
@@ -345,10 +345,10 @@ class BackTester:
                     conn.commit()
 
 if __name__ == '__main__': 
-    backtest_params = {'init_cash': 10_000, 'fees': 0.01, 'size':1}
+    backtest_params = {'init_cash': 10_000, 'fees': 0.005, 'size':1}
 
     b = BackTester(
-        strategies = [TestStratVBT],
+        strategies = [ARIMAStrat],
         optimization_metric = 'Sortino Ratio',
         backtest_params = backtest_params
     )
