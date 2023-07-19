@@ -1,24 +1,34 @@
 import vectorbt as vbt
 import numpy as np
 
-class Backtest:
+class WalkForwardOptimization:
 
     def __init__(self, 
                  strategy,
-                 price_data, 
+                 backtest_data,
+                 is_start_i,
+                 is_end_i,
+                 oos_start_i,
+                 oos_end_i,
                  optimization_metric,
                  backtest_params):
         
         """
+
         strategy            - Strategy class in src/backtest/strategies to backtested
-        price_data          - Dataframe of OHLCV data indexed by timestamp
+        backtest_data       - Dataframe of OHLCV data indexed by timestamp
+        is_start_i          - Starting index of
         optimization_metric - Performance metric to optimize backtest on
         backtest_params     - Miscellaneous parameters to configure the backtest
         """
         
-        self.price_data = price_data
-        self.optimization_metric = optimization_metric
         self.strategy = strategy
+        self.backtest_data = backtest_data
+        self.is_start_i = is_start_i
+        self.is_end_i = is_end_i
+        self.oos_start_i = oos_start_i
+        self.oos_end_i = oos_end_i
+        self.optimization_metric = optimization_metric
         self.backtest_params = backtest_params
 
         self.metric_map = {
@@ -53,14 +63,19 @@ class Backtest:
                                  .from_apply_func(strategy.indicator_func, 
                                                   to_2d = False,
                                                   **strategy.default_dict))
+        
+    def generate_signals(self, params, optimize, param_product = False):
+        if optimize:
+            backtest_window = self.backtest_data.iloc[self.is_start_i:self.is_end_i]
+        else:
+            backtest_window = self.backtest_data.iloc[self.is_start_i:self.oos_end_i]
 
-    def generate_signals(self, params, param_product = False): 
         res = self.custom_indicator.run(
-            self.price_data.price_open,
-            self.price_data.price_high,
-            self.price_data.price_low,
-            self.price_data.price_close,
-            self.price_data.volume_traded,
+            backtest_window.price_open,
+            backtest_window.price_high,
+            backtest_window.price_low,
+            backtest_window.price_close,
+            backtest_window.volume_traded,
             param_product = param_product,
             **params
         )
@@ -70,11 +85,19 @@ class Backtest:
 
         return entries, exits
     
-    def backtest(self, params):
-        entries, exits = self.generate_signals(params = params)
+    def walk_forward(self, params):
+        entries, exits = self.generate_signals(params = params, optimize = False)
+        
+        backtest_data = self.backtest_data.iloc[self.oos_start_i:self.oos_end_i]
+        
+        entries = entries.dropna()
+        entries = entries[entries.index.isin(backtest_data.index)]
+
+        exits = exits.dropna()
+        exits = exits[exits.index.isin(backtest_data.index)]
 
         portfolio = vbt.Portfolio.from_signals(
-            close = self.price_data.price_close,
+            close = self.backtest_data.iloc[self.oos_start_i:self.oos_end_i].price_close,
             entries = entries,
             exits = exits,
             freq = 'h',
@@ -95,16 +118,17 @@ class Backtest:
 
         equity_curve = equity_curve.to_frame().rename({0:'equity'}, axis = 1)
 
-        return trades, equity_curve
+        return trades, equity_curve, portfolio
 
     def optimize(self):
         entries, exits = self.generate_signals(
             params = self.strategy.optimize_dict,
+            optimize = True,
             param_product = True
         )
 
         portfolio = vbt.Portfolio.from_signals(
-            close = self.price_data.price_close,
+            close = self.backtest_data.iloc[self.is_start_i:self.is_end_i].price_close,
             entries = entries,
             exits = exits,
             freq = 'h',
@@ -120,6 +144,9 @@ class Backtest:
             backtest_result_metrics = getattr(getattr(portfolio, split_path[0]), split_path[1])()
 
         best_param_comb = {}
+        print('backtest results metrics: ')
+        print(backtest_result_metrics)
+        print()
 
         if self.metric_min_max_map.get(self.optimization_metric) == 'Max':
             maximizing_index = backtest_result_metrics.idxmax()

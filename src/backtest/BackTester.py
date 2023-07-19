@@ -23,9 +23,9 @@ import json
 ###############################################
 #      TRADING STRATEGIES / BACKTESTING       #
 ###############################################
-from core.Backtest import Backtest
+from core.WFO import WalkForwardOptimization
 
-from strategies.TestStratVBT import TestStratVBT
+from strategies.MACrossOver import MACrossOver
 from strategies.ARIMA import ARIMAStrat
 from core.performance_metrics import calculate_performance_metrics
 
@@ -33,15 +33,51 @@ class BackTester:
 
     def __init__(self, 
                  strategies,
-                 optimization_metric = 'Sortino Ratio',
+                 optimization_metric = 'Sharpe Ratio',
                  backtest_params = {'init_cash':10_000, 'fees':0.005}
                  ):
+        """
+        High-level orchestration engine for performing walk-forward optimization on a set of
+        strategies over a set of tokens, utilizing the vectorbt package for efficient
+        parameter optimization & metric calculation.  The results of the walk-forward optimizations
+        are logged to Redshift for further dashboarding/analysis.
+
+        Parameters:
+        -----------
+        strategies : list
+            List of Strategy classes from src/backtest/strategies to backtest.
+
+        optimization_metric : str, default = 'Sharpe Ratio'
+            Performance metric to maximize/minimize during the paramater optimization of the 
+            in-sample periods. The full list of metrics available to use can be found in the file 
+            src/backtest/core/WFO.py in the metric_map dictionary in the __init__ method.
+
+        backtest_params : dict, default = {'init_cash':10_000, 'fees':0.005}
+            Dictionary containing miscellaneous parameters to configure the
+            backtest.
+
+        """
 
         self.optimization_metric = optimization_metric
         self.backtest_params = backtest_params
         self.strategies = strategies
 
     def serialize_json_data(obj):
+        """
+        Converts obj into a form that can be JSON serialized.
+
+        Parameters:
+        -----------
+        obj : Any
+            A value of a JSON dictionary that needs to be converted
+            into a serializable format.
+
+        Returns:
+        --------
+        (float or int or None):
+            Result of converting obj into a JSON serializable format.
+
+        """
         if isinstance(obj, pd.Timedelta):
             return obj.total_seconds()
         elif isinstance(obj, np.integer):
@@ -49,7 +85,29 @@ class BackTester:
         elif isinstance(obj, np.floating):
             return float(obj)
              
-    def __fetch_OHLCV_df_from_redshift(self, asset_id_base, asset_id_quote, exchange_id):
+    def __fetch_OHLCV_df_from_redshift(self, base, quote, exchange):
+        """
+        Queries OHLCV data for {exchange}_SPOT_{base}_{quote} CoinAPI pair stored in
+        Project Poseidon's Redshift cluster. Returns the queried data as a DataFrame 
+        indexed by timestamp.
+
+        Parameters:
+        -----------
+        base : str 
+            CoinAPI asset_id_base of the pair being backtested.
+
+        quote : str
+            CoinAPI asset_id_quote of the pair being backtested.
+
+        exchange : str
+            CoinAPI exchange_id of the pair being backtested.
+
+        Returns:
+        --------
+        DataFrame:
+            DataFrame of queried OHLCV data, indexed by timestamp.
+
+        """
         # Connect to Redshift cluster containing price data
         with redshift_connector.connect(
             host = 'project-poseidon.cpsnf8brapsd.us-west-2.redshift.amazonaws.com',
@@ -59,7 +117,7 @@ class BackTester:
         ) as conn:
             with conn.cursor() as cursor:
                 # Query to fetch OHLCV data for a token & exchange of interest
-                title = asset_id_base + '-' + asset_id_quote
+                title = base + '-' + quote
                 query = """
                 SELECT 
                     time_period_end,
@@ -74,8 +132,7 @@ class BackTester:
                     asset_id_quote = '{}' AND
                     exchange_id = '{}'
                 ORDER BY time_period_start ASC
-                """.format(asset_id_base, asset_id_quote, 
-                            exchange_id)
+                """.format(base, quote, exchange)
 
                 # Execute query on Redshift and return result
                 cursor.execute(query)
@@ -88,47 +145,134 @@ class BackTester:
 
                 return df
 
-    def backtest(self, base, quote, exchange, strat, training_data, testing_data, starting_equity):
+    def walk_forward_optimization(self, strat, backtest_data, is_start_i, is_end_i,
+                 oos_start_i, oos_end_i, starting_equity):
+        """
+        Optimizes the parameters of a Strategy (strat) on the in-sample data and performs 
+        a backtest on the out-of-sample data w/ the optimized parameters. Returns the 
+        out-of-sample trades, out-of-sample equity curve, and the deflated sharpe ratio (DSR) 
+        so that it can be logged to Redshift for further dashboarding/analysis.
+
+        Parameters:
+        -----------
+        strat: Strategy class in src/backtest/strategies
+            Trading strategy to be backtested.
+
+        backtest_data: DataFrame
+            OHLCV CoinAPI token price data being backtested on.
+
+        is_start_i: int
+            Start index of the in-sample optimization period in backtest_data.
+
+        is_end_i: int
+            End index of the in-sample optimization period in backtest_data.
+
+        oos_start_i: int
+            Start index of the out-of-sample test period in backtest_data.
+
+        oos_end_i: int
+            End index of the out-of-sample test period in backtest_data.
+
+        starting_equity: float
+            Amount of capital to initiate the backtest with.
+
+        Returns:
+        --------
+        DataFrame:
+            DataFrame containing the trades from the walk-forward backtest.
+
+        DataFrame:
+            DataFrame containing the equity curve from the walk-forward backtest.
+
+        float:
+            Deflated sharpe ratio (DSR) for the in-sample optimization period.
+
+        """
+                
         backtest_params = self.backtest_params.copy()
         backtest_params['init_cash'] = starting_equity
 
-        is_backtest = Backtest(
+        wfo = WalkForwardOptimization(
             strategy = strat,
-            price_data = training_data,
+            backtest_data = backtest_data,
+            is_start_i = is_start_i,
+            is_end_i = is_end_i,
+            oos_start_i = oos_start_i,
+            oos_end_i = oos_end_i,
             optimization_metric = self.optimization_metric,
             backtest_params = backtest_params
-        )   
+        )
 
-        optimal_params = is_backtest.optimize() 
+        optimal_params = wfo.optimize()
+        oos_trades, oos_equity_curve, portfolio = wfo.walk_forward(optimal_params)
 
-        # Evaluate optimized trading strategy on unseen data
-        oos_backtest = Backtest(
-            strategy = strat,
-            price_data = testing_data,
-            optimization_metric = self.optimization_metric,
-            backtest_params = backtest_params
-        )   
-
-        oos_trades, oos_equity_curve = oos_backtest.backtest(optimal_params)
-        
-        return oos_trades, oos_equity_curve
+        return oos_trades, oos_equity_curve, portfolio.returns_acc.deflated_sharpe_ratio()
     
-    def walk_forward_optimization(self, base, quote, exchange, strat,
-                                  in_sample_size, out_of_sample_size):
-        
+    def orchestrate_wfo(self, base, quote, exchange, strat,
+                        in_sample_size, out_of_sample_size):
+        """
+        Orchestrates the walk-forward optimization of an arbitrary trading strategy (strat) 
+        on the {exchange}_SPOT_{base}_{quote} CoinAPI pair. Aggregates and returns the equity curves,
+        trades, and token prices across all out-of-sample backtests to calculate the overall out-of-sample
+        performance metrics.
+
+        Parameters:
+        -----------
+        base : str 
+            CoinAPI asset_id_base of the pair being backtested.
+
+        quote : str
+            CoinAPI asset_id_quote of the pair being backtested.
+
+        exchange : str
+            CoinAPI exchange_id of the pair being backtested.
+
+        strat: Strategy class in src/backtest/strategies
+            Trading strategy to be backtested.
+
+        in_sample_size : int
+            Length of the in-sample optimization period in the walk-forward
+            optimization.
+
+        out_of_sample_size : int
+            Length of the out-of-sample test period in the walk-forward
+            optimization.
+
+        Returns:
+        --------
+        DataFrame:
+            DataFrame containing the combined equity curves from all of the
+            out-of-sample periods, sorted by date.
+
+        DataFrame:
+            DataFrame containing the combined trades from all of the
+            out-of-sample periods.
+
+        DataFrame:
+            DataFrame containing the combined token price data from all of the
+            out-of-sample periods, sorted by date.
+
+        float:
+            The average deflated Sharpe ratio (DSR) across all in-sample
+            optimization periods.
+
+        """
+
         # Walk-forward analysis
         start = 0
 
         # Fetch revelant price data for backtest
         backtest_data = self.__fetch_OHLCV_df_from_redshift(
-            asset_id_base = base,
-            asset_id_quote = quote,
-            exchange_id = exchange
+            base = base,
+            quote = quote,
+            exchange = exchange
         )
         
         equity_curves = []
         trades = []
         price_data = []
+
+        deflated_sharpe_ratios = []
 
         starting_equity = 10_000
 
@@ -139,19 +283,25 @@ class BackTester:
             print()
 
             if len(backtest_data.iloc[start:]) - (in_sample_size + out_of_sample_size) < out_of_sample_size:
-                in_sample_data = backtest_data.iloc[start:start + in_sample_size]
-                out_of_sample_data = backtest_data.iloc[start + in_sample_size:]
-            else:
-                in_sample_data = backtest_data.iloc[start:start + in_sample_size]
-                out_of_sample_data = backtest_data.iloc[start + in_sample_size:start + in_sample_size + out_of_sample_size]
+                is_start_i = start
+                is_end_i = start + in_sample_size
 
-            oos_trades, oos_equity_curve = self.backtest(
-                base = base,
-                quote = quote,
-                exchange = exchange,
+                oos_start_i = start + in_sample_size
+                oos_end_i = len(backtest_data)
+            else:
+                is_start_i = start
+                is_end_i = start + in_sample_size
+
+                oos_start_i = start + in_sample_size
+                oos_end_i = start + in_sample_size + out_of_sample_size
+
+            oos_trades, oos_equity_curve, deflated_sharpe_ratio = self.walk_forward_optimization(
                 strat = strat,
-                training_data = in_sample_data,
-                testing_data = out_of_sample_data,
+                backtest_data = backtest_data,
+                is_start_i = is_start_i,
+                is_end_i = is_end_i,
+                oos_start_i = oos_start_i,
+                oos_end_i = oos_end_i,
                 starting_equity = starting_equity
             )
 
@@ -228,18 +378,34 @@ class BackTester:
 
             equity_curves.append(oos_equity_curve)
             trades.append(oos_trades)
-            price_data.append(out_of_sample_data)
+            price_data.append(backtest_data.iloc[oos_start_i:oos_end_i])
+            deflated_sharpe_ratios.append(deflated_sharpe_ratio)
             
             start += out_of_sample_size
 
         equity_curves = pd.concat(equity_curves).sort_index()
         trades = pd.concat(trades, ignore_index = True)
         price_data = pd.concat(price_data).sort_index()
+        avg_deflated_sharpe_ratio = np.mean(deflated_sharpe_ratios)
 
-        return equity_curves, trades, price_data
+        return equity_curves, trades, price_data, avg_deflated_sharpe_ratio
                                     
     def execute(self):
-        # Run a walk-forward optimization on each pair/strategy combination
+        """
+        Runs a walk-forward optimization on each (token, Strategy) combination, where token
+        is OHLCV data for a CoinAPI token stored in Redshift and Strategy is a trading strategy
+        in src/backtest/strategies. Performance metrics are then calculated on the combined
+        out-of-sample equity curve, trade, and price data output from the walk-forward optimization
+        and logged to Redshift for further dashboarding/analysis
+
+        Parameters:
+        -----------
+        None
+
+        Returns:
+        ________
+        None
+        """
 
         with redshift_connector.connect(
             host = 'project-poseidon.cpsnf8brapsd.us-west-2.redshift.amazonaws.com',
@@ -282,7 +448,7 @@ class BackTester:
                     i + 1, len(df)
                 ))
 
-                oos_equity_curves, oos_trades, oos_price_data = self.walk_forward_optimization(
+                oos_equity_curves, oos_trades, oos_price_data, avg_deflated_sharpe_ratio = self.orchestrate_wfo(
                     base = base,
                     quote = quote, 
                     exchange = exchange,
@@ -296,7 +462,8 @@ class BackTester:
                     oos_trades, 
                     oos_price_data
                 ).to_dict(orient = 'records')[0]
-                
+
+                performance_metrics['avg_oos_deflated_sharpe_ratio'] = avg_deflated_sharpe_ratio
                 performance_metrics = json.dumps(performance_metrics, default = BackTester.serialize_json_data)
                 performance_metrics = performance_metrics.replace('NaN', 'null').replace('Infinity', 'null')
 
@@ -329,13 +496,25 @@ class BackTester:
                     conn.commit()
 
 if __name__ == '__main__': 
-    backtest_params = {'init_cash': 10_000, 'fees': 0.005}
+
+    # Set initial capital of backtest to $10,000 and set the trading
+    # fees to the average 'taker' fee across many well-known centralized
+    # exchanges, which is 0.295 percent (or 0.00295)
+
+    backtest_params = {'init_cash': 10_000, 'fees': 0.00295}
+
+    # Initialize a BackTester instance w/ the intended strategies to optimize,
+    # an optimization metric to find the best combination of strategy parameters,
+    # and a dictionary of backtest hyperparameters
 
     b = BackTester(
-        strategies = [TestStratVBT],
-        optimization_metric = 'Deflated Sharpe Ratio',
+        strategies = [MACrossOver, ARIMAStrat],
+        optimization_metric = 'Sharpe Ratio',
         backtest_params = backtest_params
     )
+
+    # Execute a walk-forward optimization across all strategies
+    # and log the results to Redshift
 
     backtest_start = time.time()
     b.execute()
