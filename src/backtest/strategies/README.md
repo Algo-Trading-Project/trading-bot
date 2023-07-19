@@ -69,9 +69,9 @@ For example, if tol_p is 3/6 and each signal has weighting 1, then we are saying
 
 Project Poseidon has price feeds for Open, Close, Low, High and Volume data--these price feeds serve as the 'inputs' for which we run our backtests on. Let's take a look at our indicators and see which of these we actually need:
 
-- Donchian requires close, high, low
-- KAMA requires close 
-- Aroon requires close
+- **Donchian requires close, high, low**
+- **KAMA requires close**
+- **Aroon requires close**
 
 All together, this means that we only need the close, high and low price feeds. However, it is best practice to specify all of the available time-series anyways as they will eventually get concatenated together on a dataframe and column mismatch would be an issue. This check is mostly to make sure that the price feeds avaialble are sufficient for the indicators we want to generate, which in this case is true, so we proceed.
 
@@ -87,15 +87,15 @@ All together, this means that we only need the close, high and low price feeds. 
 Now, let's look at the parameters associated with each indicator and name them for future reference, alongside determining a range of possible values through which to gridsearch. 
 
 ##### I. Donchian Channel 
-donc_window => n period. 
+**donc_window** => n period. 
 
 ##### II. KAMA 
-KAMA_window (int) => n period. 
-KAMA_pow1 (int) => number of periods for the fastest EMA constant. 
-KAMA_pow2 (int) => number of periods for the slowest EMA constant. 
+**KAMA_window** (int) => n period. 
+**KAMA_pow1** (int) => number of periods for the fastest EMA constant. 
+**KAMA_pow2** (int) => number of periods for the slowest EMA constant. 
 
 ##### III. Aroon
-ar_window (int) => n period.
+**ar_window** (int) => n period.
 
 ##### IV. Signal Weightings 
 
@@ -104,18 +104,28 @@ All will be defaulted to 1 (aside from the aroon-based signal, since only 1 sign
 To recap, our signal names are:
 
 ##### ENTRY SIGNALS 
-c_under_donc_l 
-c_cross_under_donc_l 
-c_under_KAMA 
-c_cross_under_KAMA 
-ar_up_above_down
+
+**c_under_donc_l** 
+
+**c_cross_under_donc_l**
+
+**c_under_KAMA**
+
+**c_cross_under_KAMA**
+
+**ar_up_above_down**
 
 ##### EXIT SIGNALS 
-c_above_donc_h
-c_cross_above_donc_h
-c_above_KAMA
-c_cross_above_KAMA
-ar_down_above_up
+
+**c_above_donc_h**
+
+**c_cross_above_donc_h**
+
+**c_above_KAMA**
+
+**c_cross_above_KAMA**
+
+**ar_down_above_up**
 
 Let's write these down in code so we don't forget, in a format that will be useful to copy-paste later:
 
