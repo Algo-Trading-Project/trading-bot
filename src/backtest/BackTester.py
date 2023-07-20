@@ -19,15 +19,17 @@ import redshift_connector
 import pandas as pd
 import numpy as np
 import json
+import itertools
 
 ###############################################
 #      TRADING STRATEGIES / BACKTESTING       #
 ###############################################
 from core.WFO import WalkForwardOptimization
+from core.performance_metrics import calculate_performance_metrics
+from core.performance_metrics import compute_deflated_sharpe_ratio
 
 from strategies.MACrossOver import MACrossOver
 from strategies.ARIMA import ARIMAStrat
-from core.performance_metrics import calculate_performance_metrics
 
 class BackTester:
 
@@ -203,10 +205,26 @@ class BackTester:
             backtest_params = backtest_params
         )
 
-        optimal_params = wfo.optimize()
-        oos_trades, oos_equity_curve, portfolio = wfo.walk_forward(optimal_params)
+        optimal_params, portfolio = wfo.optimize()
+        oos_trades, oos_equity_curve = wfo.walk_forward(optimal_params)
+        
+        estimated_sharpe = portfolio.returns_acc.sharpe_ratio().max() / np.sqrt(8760)
+        sharpe_variance = portfolio.returns_acc.sharpe_ratio().var() / 8760
+        nb_trials = len(list(itertools.product(*strat.optimize_dict.values())))
+        backtest_horizon = is_end_i - is_start_i + 1
+        skew = portfolio.loc[portfolio.returns_acc.sharpe_ratio().idxmax()].returns().skew()
+        kurtosis = portfolio.loc[portfolio.returns_acc.sharpe_ratio().idxmax()].returns().kurt()
 
-        return oos_trades, oos_equity_curve, portfolio.returns_acc.deflated_sharpe_ratio()
+        deflated_sharpe_ratio = compute_deflated_sharpe_ratio(
+            estimated_sharpe = estimated_sharpe,
+            sharpe_variance = sharpe_variance,
+            nb_trials = nb_trials,
+            backtest_horizon = backtest_horizon,
+            skew = skew, 
+            kurtosis = kurtosis
+        )
+
+        return oos_trades, oos_equity_curve, deflated_sharpe_ratio
     
     def orchestrate_wfo(self, base, quote, exchange, strat,
                         in_sample_size, out_of_sample_size):
@@ -271,7 +289,6 @@ class BackTester:
         equity_curves = []
         trades = []
         price_data = []
-
         deflated_sharpe_ratios = []
 
         starting_equity = 10_000
@@ -386,7 +403,7 @@ class BackTester:
         equity_curves = pd.concat(equity_curves).sort_index()
         trades = pd.concat(trades, ignore_index = True)
         price_data = pd.concat(price_data).sort_index()
-        avg_deflated_sharpe_ratio = np.mean(deflated_sharpe_ratios)
+        avg_deflated_sharpe_ratio = np.nanmean(deflated_sharpe_ratios)
 
         return equity_curves, trades, price_data, avg_deflated_sharpe_ratio
                                     
@@ -463,7 +480,7 @@ class BackTester:
                     oos_price_data
                 ).to_dict(orient = 'records')[0]
 
-                performance_metrics['avg_oos_deflated_sharpe_ratio'] = avg_deflated_sharpe_ratio
+                performance_metrics['avg_deflated_sharpe_ratio'] = avg_deflated_sharpe_ratio
                 performance_metrics = json.dumps(performance_metrics, default = BackTester.serialize_json_data)
                 performance_metrics = performance_metrics.replace('NaN', 'null').replace('Infinity', 'null')
 
@@ -508,7 +525,7 @@ if __name__ == '__main__':
     # and a dictionary of backtest hyperparameters
 
     b = BackTester(
-        strategies = [MACrossOver, ARIMAStrat],
+        strategies = [MACrossOver],
         optimization_metric = 'Sharpe Ratio',
         backtest_params = backtest_params
     )

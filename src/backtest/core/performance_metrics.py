@@ -1,4 +1,6 @@
 from datetime import timedelta
+from scipy.stats import norm
+
 import pandas as pd
 import numpy as np
 
@@ -187,3 +189,24 @@ def calculate_performance_metrics(oos_equity_curve, oos_trades, oos_price_data):
     }
 
     return pd.DataFrame(metrics_dict).reset_index(drop = True)
+
+# analytical formula for expected maximum sharpe ratio
+def approximate_expected_maximum_sharpe(mean_sharpe, var_sharpe, nb_trials):
+    # universal constants
+    gamma = 0.5772156649015328606
+    e = np.exp(1)
+
+    return mean_sharpe + np.sqrt(var_sharpe) * (
+        (1 - gamma) * norm.ppf(1 - 1 / nb_trials) + gamma * norm.ppf(1 - 1 / (nb_trials * e)))
+
+def compute_deflated_sharpe_ratio(estimated_sharpe,
+                                  sharpe_variance,
+                                  nb_trials,
+                                  backtest_horizon,
+                                  skew,
+                                  kurtosis):
+    
+    SR0 = approximate_expected_maximum_sharpe(0, sharpe_variance, nb_trials)
+    
+    return norm.cdf(((estimated_sharpe - SR0) * np.sqrt(backtest_horizon - 1)) 
+                    / np.sqrt(1 - skew * estimated_sharpe + ((kurtosis - 1) / 4) * estimated_sharpe**2))

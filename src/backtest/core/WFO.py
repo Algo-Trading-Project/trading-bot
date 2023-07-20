@@ -118,7 +118,7 @@ class WalkForwardOptimization:
 
         equity_curve = equity_curve.to_frame().rename({0:'equity'}, axis = 1)
 
-        return trades, equity_curve, portfolio
+        return trades, equity_curve
 
     def optimize(self):
         entries, exits = self.generate_signals(
@@ -144,9 +144,6 @@ class WalkForwardOptimization:
             backtest_result_metrics = getattr(getattr(portfolio, split_path[0]), split_path[1])()
 
         best_param_comb = {}
-        print('backtest results metrics: ')
-        print(backtest_result_metrics)
-        print()
 
         if self.metric_min_max_map.get(self.optimization_metric) == 'Max':
             maximizing_index = backtest_result_metrics.idxmax()
@@ -154,11 +151,11 @@ class WalkForwardOptimization:
             for param_name, best_value in zip(self.strategy.optimize_dict.keys(), maximizing_index):
                 best_param_comb[param_name] = best_value
 
-            return best_param_comb
+            return best_param_comb, portfolio
         else:
             minimizing_index = backtest_result_metrics.idxmin()
 
             for param_name, best_value in zip(self.strategy.optimize_dict.keys(), minimizing_index):
                 best_param_comb[param_name] = best_value
 
-            return best_param_comb
+            return best_param_comb, portfolio
