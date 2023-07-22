@@ -1,13 +1,10 @@
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 import itertools
 
-from datetime import timedelta
-from .numba_funcs.numba_funcs import *
+from numba_funcs import *
 from statsmodels.tsa.vector_ar.vecm import coint_johansen
-
-from core.performance_metrics import calculate_performance_metrics
+from performance_metrics import calculate_performance_metrics
 
 class PairsTradingBacktest:
     # BACKTESTING PARAMETERS
@@ -26,9 +23,6 @@ class PairsTradingBacktest:
     # Value of price spread rolling z score to initiate 
     # an entry/exit when crossed below
     z_score_lower_thresh = -2
-
-    # Window size to perform rolling cointegration test
-    # rolling_cointegration_window = 24 * 7
 
     # Max amount of time in hours a position can be held
     max_holding_time = 48
@@ -95,26 +89,6 @@ class PairsTradingBacktest:
         self.equity = None
         
     ################################# HELPER METHODS #################################
-    def __rolling_cointegration(self):
-        rolling_coint = []
-
-        for i in range(len(self.backtest_data)):
-            if i < self.rolling_cointegration_window - 1:
-                rolling_coint.append(0)
-            else:
-                df = self.backtest_data[[self.symbol_id_2, self.symbol_id_1]].iloc[i - self.rolling_cointegration_window + 1:i + 1]
-                result = coint_johansen(df, 0, 1)
-
-                trace_crit_value = result.cvt[:, 0]
-                eigen_crit_value = result.cvm[:, 0]
-
-                if np.all(result.lr1 >= trace_crit_value) and np.all(result.lr2 >= eigen_crit_value):
-                    rolling_coint.append(1)
-                else:
-                    rolling_coint.append(0)
-        
-        return rolling_coint
-            
     def __rolling_hedge_ratios(self):
         start = max(0, self.start_i - self.hedge_ratio_window)
 
@@ -219,67 +193,10 @@ class PairsTradingBacktest:
         )
 
         return equity
-        
+
     ################################# HELPER METHODS #################################
     
-    def visualize_results(self):
-        fig, (a0, a1, a2) = plt.subplots(nrows = 3, ncols = 1, figsize = (16, 10), gridspec_kw={'height_ratios': [0.4, 0.4, 0.6]})
-        fig.subplots_adjust(hspace=.5)
-        
-        # Plot % returns curve
-        plt.subplot(3,1,1)
-        
-        (self.equity.rename({'equity':''}, axis = 1) / self.backtest_params['initial_capital']).plot(ax = a0, grid = True, title = 'Return [%]')
-        
-        a0.get_legend().remove()
-        plt.xlabel('')
-
-        # Plot PnL % for all trades taken
-        plt.subplot(3,1,2)
-        
-        trade_pnl_pct = pd.DataFrame(index = self.data.index, columns = ['pnl_pct']).fillna(0)
-        trade_marker_colors = pd.DataFrame(index = self.data.index, columns = ['color']).fillna('green')
-        alphas = pd.DataFrame(index = self.data.index, columns = ['alpha']).fillna(0)
-        
-        for i in range(len(self.trades)):
-            exit_date = self.trades.at[i, 'exit_date']
-            pnl_pct = self.trades.at[i, 'pnl_pct']
-
-            trade_pnl_pct.at[exit_date, 'pnl_pct'] = pnl_pct * 100
-            alphas.at[exit_date, 'alpha'] = 1
-
-            if pnl_pct > 0:
-                trade_marker_colors.at[exit_date, 'color'] = 'green'
-            else:
-                trade_marker_colors.at[exit_date, 'color'] = 'red'
-
-        trade_pnl_pct.reset_index().plot(
-            ax = a1,
-            kind = 'scatter', 
-            x = 'time_period_end', 
-            y = 'pnl_pct',
-            title = 'Profit / Loss [%]',
-            marker = '^', 
-            c = trade_marker_colors.color.values, 
-            s = 100,
-            alpha = alphas.alpha.values,
-            grid = True
-        )
-        
-        plt.ylabel('')
-        plt.xlabel('')
-
-        # Plot normalized price data of the two tokens used
-        plt.subplot(3,1,3)
-        
-        prices = self.data[[self.symbol_id_2, self.symbol_id_1]]
-        prices = (prices - prices.min()) / (prices.max() - prices.min())
-
-        title = '{} vs. {} (Normalized)'.format(self.symbol_id_2, self.symbol_id_1)
-
-        prices.plot(ax = a2, grid = True, title = title, xlabel = '')
-                
-    def optimize_parameters(self, optimize_dict, performance_metric = 'Equity Final [$]', minimize = False):
+    def optimize_parameters(self, optimize_dict, performance_metric = 'Sharpe Ratio', minimize = False):
         """
         Optimize strategy over every combination of parameters given in
         
@@ -296,7 +213,6 @@ class PairsTradingBacktest:
             self.hedge_ratio_window,
             self.z_score_upper_thresh, 
             self.z_score_lower_thresh, 
-            # self.rolling_cointegration_window, 
             self.max_holding_time
         ]
 
@@ -315,7 +231,6 @@ class PairsTradingBacktest:
             self.hedge_ratio_window = parameter_combinations[i][1]
             self.z_score_upper_thresh = parameter_combinations[i][2]
             self.z_score_lower_thresh = parameter_combinations[i][3]
-            # self.rolling_cointegration_window = parameter_combinations[i][4]
             self.max_holding_time = parameter_combinations[i][4]
 
             self.backtest()
@@ -334,7 +249,6 @@ class PairsTradingBacktest:
         self.hedge_ratio_window = best_comb_so_far[1]
         self.z_score_upper_thresh = best_comb_so_far[2]
         self.z_score_lower_thresh = best_comb_so_far[3]
-        # self.rolling_cointegration_window = best_comb_so_far[4]
         self.max_holding_time = best_comb_so_far[4]
 
         self.backtest()
@@ -344,16 +258,12 @@ class PairsTradingBacktest:
             'hedge_ratio_window': self.hedge_ratio_window,
             'z_score_upper_thresh': self.z_score_upper_thresh, 
             'z_score_lower_thresh': self.z_score_lower_thresh,
-            # 'rolling_cointegration_window': self.rolling_cointegration_window,
             'max_holding_time': self.max_holding_time
         }
         
         return optimal_params
     
     def backtest(self):   
-        # Calculate rolling cointegration tests at each timestep
-        # self.backtest_data['rolling_cointegration'] = self.__rolling_cointegration()
-
         # Calculate rolling hedge ratios at each timestep
         self.backtest_data['rolling_hedge_ratio'] = self.__rolling_hedge_ratios()
                 

@@ -1,12 +1,12 @@
 # Project Poseidon: Trading Strategy Creation Tutorial
 ##### 7/18/23  |  Author: Eamon, Louis
-This document serves as a tutorial for creating a trading strategy and then backtesting it via Project Poseidon.
+This document serves as a tutorial for creating an arbitrary trading strategy and then backtesting it via Project Poseidon.
 
-# Example: Moving Average Crossover Strategy
-In this example I will be showing how to implement a moving average crossover trading strategy. The strategy involves entering a long position when the short timeframe moving average crosses above our long timeframe moving average and exiting our long position when our short timeframe moving average crosses below our long timeframe moving average.
+## Example: Moving Average Crossover Strategy
+In this example I will demonstrate how to implement a moving average crossover trading strategy. The strategy involves entering a long position when the short timeframe moving average crosses above the long timeframe moving average and exiting the long position when the short timeframe moving average crosses below the long timeframe moving average.
 
-# Step 1: Create Strategy Class Skeleton
-Every trading strategy in the **src.backtest.strategies** module has the following general structure:
+## Step 1: Create Strategy Class Skeleton
+Every trading strategy defined in the **src.backtest.strategies** directory has the following general structure:
 
 ```py
 class Strategy:
@@ -42,22 +42,23 @@ class Strategy:
         return entries, exits
 ```
 
-Here are the explanations for each component of the Strategy class skeleton:
+Here are the descriptions for each component of the Strategy class skeleton:
 
 ## indicator_factory_dict
-A dictionary with the following keys:
-- class_name : The name of the trading strategy.
+- A dictionary with the following keys:
 
-- short_name : Shortened name of the trading strategy.
+    - class_name : Name of the trading strategy.
 
-- input_names : Data being passed in as input to the trading strategy.  Includes OHLCV data by default.
+    - short_name : Shortened name of the trading strategy.
 
-- param_names : Parameters of the trading strategy that will be optimized.
+    - input_names : Data that gets passed as input to the function indicator_funcs for trading signal generation.  Includes OHLCV data by default.
 
-- output_names : Outputs of the trading strategy.  Always has the values ['entries', 'exits'].
+    - param_names : Parameters of the trading strategy that will be optimized during backtesting.
+
+    - output_names : Outputs of the trading strategy.  Always has the values ['entries', 'exits'].
 
 ## optimize_dict
-- A dictionary whose keys are each of the param_names in indicator_factory_dict['param_names'] and values are a list of possible values for that parameter to use in optimization.
+- A dictionary whose keys are the values in indicator_factory_dict['param_names'] and values are a list of values for that parameter to use in optimization.
 
 ## default_dict
 - A dictionary whose keys are each of the param_names in indicator_factory_dict['param_names'] and values are a default value for that parameter.
@@ -65,7 +66,7 @@ A dictionary with the following keys:
 ## def indicator_func
 - A user-defined function that takes in the input data defined in input_names as well as values for parameters defined in param_names and executes the strategy on the input data with the given parameters.  Returns the entry and exit signals produced by the strategy.
 
-# Step 2: Implement Moving Average Crossover Strategy
+## Step 2: Implement Moving Average Crossover Strategy
 Now that we have the general structure for a Strategy class, here's what it would look like for the moving average crossover strategy:
 
 ```py
@@ -105,7 +106,7 @@ class MACrossOver:
 
 For this strategy, its name is MACrossOver and its short name is ma_crossover.  It has parameters fast_window & slow_window.  The indicator_func takes in OHLCV data as well as values for the fast_window and slow_window parameters and returns the entry and exit signals from applying the strategy w/ the given parameters on the OHLCV data.  At this stage, the trading strategy is fully defined and is ready to be backtested.  
 
-# Step 3: Backtest Strategy
+## Step 3: Backtest the Strategy
 Once we have defined our trading strategy in the required template, we can finally backtest it on historical price data stored in Redshift.  We do so in the **src.backtest.BackTester.py** file.  Shown below is the bottom of that file and the place where you'll setup your backtests:
 
 ```py

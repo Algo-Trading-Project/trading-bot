@@ -24,7 +24,7 @@ import itertools
 ###############################################
 #      TRADING STRATEGIES / BACKTESTING       #
 ###############################################
-from core.WFO import WalkForwardOptimization
+from core.walk_forward_optimization import WalkForwardOptimization
 from core.performance_metrics import calculate_performance_metrics
 from core.performance_metrics import compute_deflated_sharpe_ratio
 
@@ -52,7 +52,7 @@ class BackTester:
         optimization_metric : str, default = 'Sharpe Ratio'
             Performance metric to maximize/minimize during the paramater optimization of the 
             in-sample periods. The full list of metrics available to use can be found in the file 
-            src/backtest/core/WFO.py in the metric_map dictionary in the __init__ method.
+            src/backtest/core/walk_forward_optimization.py in the metric_map dictionary in the __init__ method.
 
         backtest_params : dict, default = {'init_cash':10_000, 'fees':0.005}
             Dictionary containing miscellaneous parameters to configure the
@@ -64,7 +64,7 @@ class BackTester:
         self.backtest_params = backtest_params
         self.strategies = strategies
 
-    def serialize_json_data(obj):
+    def __serialize_json_data(obj):
         """
         Converts obj into a form that can be JSON serialized.
 
@@ -207,9 +207,11 @@ class BackTester:
 
         optimal_params, portfolio = wfo.optimize()
         oos_trades, oos_equity_curve = wfo.walk_forward(optimal_params)
+
+        annualization_factor = portfolio.returns_acc.ann_factor
         
-        estimated_sharpe = portfolio.returns_acc.sharpe_ratio().max() / np.sqrt(8760)
-        sharpe_variance = portfolio.returns_acc.sharpe_ratio().var() / 8760
+        estimated_sharpe = portfolio.returns_acc.sharpe_ratio().max() / np.sqrt(annualization_factor)
+        sharpe_variance = portfolio.returns_acc.sharpe_ratio().var() / annualization_factor
         nb_trials = len(list(itertools.product(*strat.optimize_dict.values())))
         backtest_horizon = is_end_i - is_start_i + 1
         skew = portfolio.loc[portfolio.returns_acc.sharpe_ratio().idxmax()].returns().skew()
@@ -403,9 +405,8 @@ class BackTester:
         equity_curves = pd.concat(equity_curves).sort_index()
         trades = pd.concat(trades, ignore_index = True)
         price_data = pd.concat(price_data).sort_index()
-        avg_deflated_sharpe_ratio = np.nanmean(deflated_sharpe_ratios)
 
-        return equity_curves, trades, price_data, avg_deflated_sharpe_ratio
+        return equity_curves, trades, price_data, deflated_sharpe_ratios
                                     
     def execute(self):
         """
@@ -440,10 +441,6 @@ class BackTester:
                     asset_id_quote,
                     exchange_id
                 FROM token_price.coinapi.price_data_1h
-                WHERE
-                    asset_id_base = 'ETH' AND
-                    asset_id_quote = 'USD' AND
-                    exchange_id = 'COINBASE'
                 """
 
                 # Execute query on Redshift and return result
@@ -465,13 +462,13 @@ class BackTester:
                     i + 1, len(df)
                 ))
 
-                oos_equity_curves, oos_trades, oos_price_data, avg_deflated_sharpe_ratio = self.orchestrate_wfo(
+                oos_equity_curves, oos_trades, oos_price_data, deflated_sharpe_ratios = self.orchestrate_wfo(
                     base = base,
                     quote = quote, 
                     exchange = exchange,
                     strat = strat,
-                    in_sample_size = 24 * 30 * 4,
-                    out_of_sample_size = 24 * 30 * 2
+                    in_sample_size = 24 * 30 * 6,
+                    out_of_sample_size = 24 * 30 * 3
                 )
 
                 performance_metrics = calculate_performance_metrics(
@@ -480,8 +477,11 @@ class BackTester:
                     oos_price_data
                 ).to_dict(orient = 'records')[0]
 
-                performance_metrics['avg_deflated_sharpe_ratio'] = avg_deflated_sharpe_ratio
-                performance_metrics = json.dumps(performance_metrics, default = BackTester.serialize_json_data)
+                deflated_sharpe_ratios = [round(dsr, 4) for dsr in deflated_sharpe_ratios]
+                deflated_sharpe_ratios = json.dumps(deflated_sharpe_ratios)
+
+                performance_metrics['deflated_sharpe_ratios'] = deflated_sharpe_ratios
+                performance_metrics = json.dumps(performance_metrics, default = BackTester.__serialize_json_data)
                 performance_metrics = performance_metrics.replace('NaN', 'null').replace('Infinity', 'null')
 
                 with redshift_connector.connect(

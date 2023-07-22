@@ -1,8 +1,9 @@
-import vectorbt as vbt
 import numpy as np
+import arch
 
 from statsmodels.tsa.arima.model import ARIMA
 from sklearn.metrics import mean_squared_error
+
 class ARIMAStrat:
     
     indicator_factory_dict = {
@@ -35,15 +36,16 @@ class ARIMAStrat:
         y_true = []
 
         for i in range(len(close)):  
-            if i < 24 * 7:
+            if i < 24 * 30 * 2:
                 entries.append(False)
                 exits.append(False)
                 continue
 
+            start = i - 24 * 30 * 2
             end = i + 1
 
             model = ARIMA(
-                close[:end], 
+                close[start:end], 
                 order = (p, d, q), 
                 enforce_stationarity = False, 
                 enforce_invertibility = False,
@@ -52,7 +54,7 @@ class ARIMAStrat:
             fit_model = model.fit()
             pred = fit_model.forecast(steps = 1)[0]
 
-            if end < len(close) - 1:
+            if i < len(close) - 1:
                 y_true.append(close[i + 1])
                 y_pred.append(pred)
             else:

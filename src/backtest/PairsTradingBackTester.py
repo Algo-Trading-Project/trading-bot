@@ -18,27 +18,27 @@ warnings.simplefilter('ignore', RuntimeWarning)
 import time
 import redshift_connector
 import pandas as pd
+
 pd.options.mode.chained_assignment = None
 
 import numpy as np
 import json
-import itertools
 import statsmodels.api as sm
 
-from datetime import timedelta
 from statsmodels.tools import add_constant
 from statsmodels.tsa.stattools import adfuller
+
 ###############################################
 #      TRADING STRATEGIES / BACKTESTING       #
 ###############################################
-from core.PairsTradingBackTest import PairsTradingBacktest
+from core.pairs_trading_backtest import PairsTradingBacktest
 from core.performance_metrics import calculate_performance_metrics
 
 class PairsTradingBackTester:
 
     def __init__(self, 
                  optimize_dict,
-                 optimization_metric = 'Sortino Ratio'
+                 optimization_metric = 'sortino_ratio'
                  ):
         
         self.optimize_dict = optimize_dict
@@ -299,14 +299,14 @@ class PairsTradingBackTester:
                     # Query to insert backtest results into Redshift 
                     if len(oos_trades) > 0:
                         query = """
-                        INSERT INTO eth.pair_trading_backtest_trades VALUES {}
+                        INSERT INTO eth.pt_backtest_trades VALUES {}
                         """.format(insert_str)
                         
                         # Execute query on Redshift
                         cursor.execute(query)
 
                     query = """
-                    INSERT INTO eth.pair_trading_backtest_equity_curves VALUES {}
+                    INSERT INTO eth.pt_backtest_equity_curves VALUES {}
                     """.format(insert_str_2)
 
                     # Execute query on Redshift
@@ -428,7 +428,7 @@ class PairsTradingBackTester:
                             with conn.cursor() as cursor:
                                 # Query to insert backtest results into Redshift 
                                 query = """
-                                INSERT INTO eth.pairs_trading_backtest_results VALUES
+                                INSERT INTO eth.pt_backtest_results VALUES
                                 (%s, %s, %s, %s, %s, %s)
                                 """
 
@@ -440,13 +440,14 @@ class PairsTradingBackTester:
                                 cursor.close()
 
                             conn.commit()
+
 if __name__ == '__main__': 
+   
     optimize_dict = {
         'z_window':[24, 24 * 7, 24 * 14, 24 * 28],
         'hedge_ratio_window':[24, 24 * 7, 24 * 14, 24 * 28],
         'z_thresh_upper':[1, 2, 3],
         'z_thresh_lower':[-1, -2, -3],
-        # 'rolling_cointegration_window':[24 * 7, 24 * 30, 24 * 60],
         'max_holding_time': [24, 24 * 7, 24 * 28, float('inf')]
     }
 

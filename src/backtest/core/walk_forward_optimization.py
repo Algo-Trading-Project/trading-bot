@@ -14,7 +14,6 @@ class WalkForwardOptimization:
                  backtest_params):
         
         """
-
         strategy            - Strategy class in src/backtest/strategies to backtested
         backtest_data       - Dataframe of OHLCV data indexed by timestamp
         is_start_i          - Starting index of

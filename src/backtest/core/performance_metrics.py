@@ -4,7 +4,10 @@ from scipy.stats import norm
 import pandas as pd
 import numpy as np
 
-def calculate_performance_metrics(oos_equity_curve, oos_trades, oos_price_data):
+def calculate_performance_metrics(oos_equity_curve, 
+                                  oos_trades, 
+                                  oos_price_data):
+    
     ########################### HELPER FUNCTIONS ####################################
     def exposure_time(duration, trades):
         exposure = timedelta(days = 0, hours = 0)
@@ -190,8 +193,9 @@ def calculate_performance_metrics(oos_equity_curve, oos_trades, oos_price_data):
 
     return pd.DataFrame(metrics_dict).reset_index(drop = True)
 
-# analytical formula for expected maximum sharpe ratio
-def approximate_expected_maximum_sharpe(mean_sharpe, var_sharpe, nb_trials):
+def approximate_expected_maximum_sharpe(mean_sharpe, 
+                                        var_sharpe, 
+                                        nb_trials):
     # universal constants
     gamma = 0.5772156649015328606
     e = np.exp(1)
@@ -202,8 +206,8 @@ def approximate_expected_maximum_sharpe(mean_sharpe, var_sharpe, nb_trials):
 def compute_deflated_sharpe_ratio(estimated_sharpe,
                                   sharpe_variance,
                                   nb_trials,
-                                  backtest_horizon,
-                                  skew,
+                                  backtest_horizon, 
+                                  skew, 
                                   kurtosis):
     
     SR0 = approximate_expected_maximum_sharpe(0, sharpe_variance, nb_trials)
