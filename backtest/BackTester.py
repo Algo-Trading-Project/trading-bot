@@ -47,12 +47,12 @@ class BackTester:
         Parameters:
         -----------
         strategies : list
-            List of Strategy classes from src/backtest/strategies to backtest.
+            List of Strategy classes from backtest/strategies to backtest.
 
         optimization_metric : str, default = 'Sharpe Ratio'
             Performance metric to maximize/minimize during the paramater optimization of the 
             in-sample periods. The full list of metrics available to use can be found in the file 
-            src/backtest/core/walk_forward_optimization.py in the metric_map dictionary in the __init__ method.
+            backtest/core/walk_forward_optimization.py in the metric_map dictionary in the __init__ method.
 
         backtest_params : dict, default = {'init_cash':10_000, 'fees':0.005}
             Dictionary containing miscellaneous parameters to configure the
@@ -157,7 +157,7 @@ class BackTester:
 
         Parameters:
         -----------
-        strat: Strategy class in src/backtest/strategies
+        strat: Strategy class in backtest/strategies
             Trading strategy to be backtested.
 
         backtest_data: DataFrame
@@ -247,7 +247,7 @@ class BackTester:
         exchange : str
             CoinAPI exchange_id of the pair being backtested.
 
-        strat: Strategy class in src/backtest/strategies
+        strat: Strategy class in backtest/strategies
             Trading strategy to be backtested.
 
         in_sample_size : int
@@ -412,7 +412,7 @@ class BackTester:
         """
         Runs a walk-forward optimization on each (token, Strategy) combination, where token
         is OHLCV data for a CoinAPI token stored in Redshift and Strategy is a trading strategy
-        in src/backtest/strategies. Performance metrics are then calculated on the combined
+        in backtest/strategies. Performance metrics are then calculated on the combined
         out-of-sample equity curve, trade, and price data output from the walk-forward optimization
         and logged to Redshift for further dashboarding/analysis
 

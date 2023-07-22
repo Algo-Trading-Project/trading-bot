@@ -14,7 +14,11 @@ class WalkForwardOptimization:
                  backtest_params):
         
         """
-        strategy            - Strategy class in src/backtest/strategies to backtested
+        Performs a walk-forward optimization on an arbitrary strategy over an arbitrary
+        token.  Logs the resulting trades and equity curve to Redshift for further dashboarding/analysis.
+
+
+        strategy            - Strategy class in backtest/strategies to backtest
         backtest_data       - Dataframe of OHLCV data indexed by timestamp
         is_start_i          - Starting index of
         optimization_metric - Performance metric to optimize backtest on

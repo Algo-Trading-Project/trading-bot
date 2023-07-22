@@ -6,7 +6,7 @@ This document serves as a tutorial for creating an arbitrary trading strategy an
 In this example I will demonstrate how to implement a moving average crossover trading strategy. The strategy involves entering a long position when the short timeframe moving average crosses above the long timeframe moving average and exiting the long position when the short timeframe moving average crosses below the long timeframe moving average.
 
 ## Step 1: Create Strategy Class Skeleton
-Every trading strategy defined in the **src.backtest.strategies** directory has the following general structure:
+Every trading strategy defined in the **backtest.strategies** directory has the following general structure:
 
 ```py
 class Strategy:
@@ -107,7 +107,7 @@ class MACrossOver:
 For this strategy, its name is MACrossOver and its short name is ma_crossover.  It has parameters fast_window & slow_window.  The indicator_func takes in OHLCV data as well as values for the fast_window and slow_window parameters and returns the entry and exit signals from applying the strategy w/ the given parameters on the OHLCV data.  At this stage, the trading strategy is fully defined and is ready to be backtested.  
 
 ## Step 3: Backtest the Strategy
-Once we have defined our trading strategy in the required template, we can finally backtest it on historical price data stored in Redshift.  We do so in the **src.backtest.BackTester.py** file.  Shown below is the bottom of that file and the place where you'll setup your backtests:
+Once we have defined our trading strategy in the required template, we can finally backtest it on historical price data stored in Redshift.  We do so in the **backtest.BackTester.py** file.  Shown below is the bottom of that file and the place where you'll setup your backtests:
 
 ```py
 if __name__ == '__main__': 
@@ -139,4 +139,4 @@ if __name__ == '__main__':
     print('Total Time Elapsed: {} mins'.format(round(abs(backtest_end - backtest_start) / 60.0, 2)))
 ```
 
-As you can see, everyting is pretty much already laid out.  The only thing you need to do when you want to backtest a strategy is to import it into the **src.backtest.BackTester.py** file and add it to the 'strategies' list that's passed into the BackTester class.  Running the file will initiate a walk-forward optimization of all the strategies passed into the backtester and the results are logged to Redshift for further dashboarding/analysis.
+As you can see, everyting is pretty much already laid out.  The only thing you need to do when you want to backtest a strategy is to import it into the **backtest.BackTester.py** file and add it to the 'strategies' list that's passed into the BackTester class.  Running the file will initiate a walk-forward optimization of all the strategies passed into the backtester and the results are logged to Redshift for further dashboarding/analysis.

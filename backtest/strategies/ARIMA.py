@@ -1,5 +1,4 @@
 import numpy as np
-import arch
 
 from statsmodels.tsa.arima.model import ARIMA
 from sklearn.metrics import mean_squared_error
