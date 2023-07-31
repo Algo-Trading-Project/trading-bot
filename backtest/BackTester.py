@@ -28,21 +28,22 @@ from core.walk_forward_optimization import WalkForwardOptimization
 from core.performance_metrics import calculate_performance_metrics
 from core.performance_metrics import compute_deflated_sharpe_ratio
 
-from strategies.MACrossOver import MACrossOver
-from strategies.ARIMA import ARIMAStrat
+from strategies.base import Strategy
+from strategies.ma_crossover import MACrossOver
+from strategies.arima import ARIMAStrat
+from strategies.bollinger_bands import BollingerBands
 
 class BackTester:
 
     def __init__(self, 
-                 strategies,
-                 optimization_metric = 'Sharpe Ratio',
-                 backtest_params = {'init_cash':10_000, 'fees':0.005}
+                 strategies: list,
+                 optimization_metric: str = 'Sharpe Ratio',
+                 backtest_params: dict = {'init_cash':10_000, 'fees':0.005}
                  ):
         """
-        High-level orchestration engine for performing walk-forward optimization on a set of
-        strategies over a set of tokens, utilizing the vectorbt package for efficient
-        parameter optimization & metric calculation.  The results of the walk-forward optimizations
-        are logged to Redshift for further dashboarding/analysis.
+        Coordinates the walk-forward optimization of a set of strategies over a set of CoinAPI tokens, 
+        utilizing the vectorbt package for efficient parameter optimization. The results of the walk-forward
+        optimizations are logged to Redshift for further dashboarding/analysis.
 
         Parameters:
         -----------
@@ -50,8 +51,8 @@ class BackTester:
             List of Strategy classes from backtest/strategies to backtest.
 
         optimization_metric : str, default = 'Sharpe Ratio'
-            Performance metric to maximize/minimize during the paramater optimization of the 
-            in-sample periods. The full list of metrics available to use can be found in the file 
+            Performance metric to maximize/minimize during the in-sample parameter optimizations. 
+            The full list of metrics available to use can be found in the file 
             backtest/core/walk_forward_optimization.py in the metric_map dictionary in the __init__ method.
 
         backtest_params : dict, default = {'init_cash':10_000, 'fees':0.005}
@@ -64,22 +65,23 @@ class BackTester:
         self.backtest_params = backtest_params
         self.strategies = strategies
 
-    def __serialize_json_data(obj):
+    def __serialize_json_data(obj: pd.Timedelta | int | float) -> int | float:
         """
         Converts obj into a form that can be JSON serialized.
 
         Parameters:
         -----------
-        obj : Any
+        obj : pd.Timedelta or int or float
             A value of a JSON dictionary that needs to be converted
             into a serializable format.
 
         Returns:
         --------
-        (float or int or None):
+        int or float:
             Result of converting obj into a JSON serializable format.
 
         """
+
         if isinstance(obj, pd.Timedelta):
             return obj.total_seconds()
         elif isinstance(obj, np.integer):
@@ -87,7 +89,7 @@ class BackTester:
         elif isinstance(obj, np.floating):
             return float(obj)
              
-    def __fetch_OHLCV_df_from_redshift(self, base, quote, exchange):
+    def __fetch_OHLCV_df_from_redshift(self, base: str, quote: str, exchange: str) -> pd.DataFrame:
         """
         Queries OHLCV data for {exchange}_SPOT_{base}_{quote} CoinAPI pair stored in
         Project Poseidon's Redshift cluster. Returns the queried data as a DataFrame 
@@ -96,13 +98,13 @@ class BackTester:
         Parameters:
         -----------
         base : str 
-            CoinAPI asset_id_base of the pair being backtested.
+            CoinAPI asset_id_base of the token being backtested.
 
         quote : str
-            CoinAPI asset_id_quote of the pair being backtested.
+            CoinAPI asset_id_quote of the token being backtested.
 
         exchange : str
-            CoinAPI exchange_id of the pair being backtested.
+            CoinAPI exchange_id of the token being backtested.
 
         Returns:
         --------
@@ -147,8 +149,15 @@ class BackTester:
 
                 return df
 
-    def walk_forward_optimization(self, strat, backtest_data, is_start_i, is_end_i,
-                 oos_start_i, oos_end_i, starting_equity):
+    def walk_forward_optimization(self, 
+                                  strat: Strategy, 
+                                  backtest_data: pd.DataFrame, 
+                                  is_start_i: int, 
+                                  is_end_i: int,
+                                  oos_start_i: int, 
+                                  oos_end_i: int, 
+                                  starting_equity: float) -> (pd.DataFrame, pd.DataFrame, float):
+        
         """
         Optimizes the parameters of a Strategy (strat) on the in-sample data and performs 
         a backtest on the out-of-sample data w/ the optimized parameters. Returns the 
@@ -181,10 +190,10 @@ class BackTester:
         Returns:
         --------
         DataFrame:
-            DataFrame containing the trades from the walk-forward backtest.
+            DataFrame containing the trades from the out-of-sample backtest.
 
         DataFrame:
-            DataFrame containing the equity curve from the walk-forward backtest.
+            DataFrame containing the equity curve from the out-of-sample backtest.
 
         float:
             Deflated sharpe ratio (DSR) for the in-sample optimization period.
@@ -209,13 +218,19 @@ class BackTester:
         oos_trades, oos_equity_curve = wfo.walk_forward(optimal_params)
 
         annualization_factor = portfolio.returns_acc.ann_factor
+
+        # Drop potential non-finite sharpe ratio values so we can calculate
+        # Deflated Sharpe Ratio without issues
+        sharpes = portfolio.returns_acc.sharpe_ratio()
+        sharpes.replace([np.inf, -np.inf], np.nan, inplace = True)
+        sharpes.dropna(inplace = True)
         
-        estimated_sharpe = portfolio.returns_acc.sharpe_ratio().max() / np.sqrt(annualization_factor)
-        sharpe_variance = portfolio.returns_acc.sharpe_ratio().var() / annualization_factor
+        estimated_sharpe = sharpes.max() / np.sqrt(annualization_factor)
+        sharpe_variance = sharpes.var() / annualization_factor
         nb_trials = len(list(itertools.product(*strat.optimize_dict.values())))
         backtest_horizon = is_end_i - is_start_i + 1
-        skew = portfolio.loc[portfolio.returns_acc.sharpe_ratio().idxmax()].returns().skew()
-        kurtosis = portfolio.loc[portfolio.returns_acc.sharpe_ratio().idxmax()].returns().kurt()
+        skew = sharpes.loc[sharpes.idxmax()].returns().skew()
+        kurtosis = sharpes.loc[sharpes.idxmax()].returns().kurt()
 
         deflated_sharpe_ratio = compute_deflated_sharpe_ratio(
             estimated_sharpe = estimated_sharpe,
@@ -228,13 +243,18 @@ class BackTester:
 
         return oos_trades, oos_equity_curve, deflated_sharpe_ratio
     
-    def orchestrate_wfo(self, base, quote, exchange, strat,
-                        in_sample_size, out_of_sample_size):
+    def execute_wfo(self, 
+                    base: str,
+                    quote: str, 
+                    exchange: str, 
+                    strat: Strategy,
+                    in_sample_size: int, 
+                    out_of_sample_size: int) -> (pd.DataFrame, pd.DataFrame, pd.DataFrame, list):
+
         """
-        Orchestrates the walk-forward optimization of an arbitrary trading strategy (strat) 
-        on the {exchange}_SPOT_{base}_{quote} CoinAPI pair. Aggregates and returns the equity curves,
-        trades, and token prices across all out-of-sample backtests to calculate the overall out-of-sample
-        performance metrics.
+        Executes a walk-forward optimization on an arbitrary trading strategy and a
+        {exchange}_SPOT_{base}_{quote} CoinAPI pair. Aggregates and returns the out-of-sample equity curves,
+        trades, and token prices to calculate the overall out-of-sample performance metrics.
 
         Parameters:
         -----------
@@ -272,8 +292,8 @@ class BackTester:
             DataFrame containing the combined token price data from all of the
             out-of-sample periods, sorted by date.
 
-        float:
-            The average deflated Sharpe ratio (DSR) across all in-sample
+        list:
+            List of Deflated Sharpe Ratios (DSR) across all in-sample
             optimization periods.
 
         """
@@ -408,20 +428,20 @@ class BackTester:
 
         return equity_curves, trades, price_data, deflated_sharpe_ratios
                                     
-    def execute(self):
+    def execute(self) -> None:
         """
         Runs a walk-forward optimization on each (token, Strategy) combination, where token
-        is OHLCV data for a CoinAPI token stored in Redshift and Strategy is a trading strategy
-        in backtest/strategies. Performance metrics are then calculated on the combined
-        out-of-sample equity curve, trade, and price data output from the walk-forward optimization
-        and logged to Redshift for further dashboarding/analysis
+        is a CoinAPI token and Strategy is a trading strategy in backtest/strategies. Performance 
+        metrics are then calculated on the combined out-of-sample equity curve, trade, and 
+        price data output from the walk-forward optimization and logged to Redshift for further 
+        dashboarding/analysis.
 
         Parameters:
         -----------
         None
 
         Returns:
-        ________
+        --------
         None
         """
 
@@ -462,7 +482,7 @@ class BackTester:
                     i + 1, len(df)
                 ))
 
-                oos_equity_curves, oos_trades, oos_price_data, deflated_sharpe_ratios = self.orchestrate_wfo(
+                oos_equity_curves, oos_trades, oos_price_data, deflated_sharpe_ratios = self.execute_wfo(
                     base = base,
                     quote = quote, 
                     exchange = exchange,
@@ -525,7 +545,7 @@ if __name__ == '__main__':
     # and a dictionary of backtest hyperparameters
 
     b = BackTester(
-        strategies = [MACrossOver],
+        strategies = [BollingerBands],
         optimization_metric = 'Sharpe Ratio',
         backtest_params = backtest_params
     )
