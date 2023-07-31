@@ -229,8 +229,8 @@ class BackTester:
         sharpe_variance = sharpes.var() / annualization_factor
         nb_trials = len(list(itertools.product(*strat.optimize_dict.values())))
         backtest_horizon = is_end_i - is_start_i + 1
-        skew = sharpes.loc[sharpes.idxmax()].returns().skew()
-        kurtosis = sharpes.loc[sharpes.idxmax()].returns().kurt()
+        skew = portfolio.loc[sharpes.idxmax()].returns().skew()
+        kurtosis = portfolio.loc[sharpes.idxmax()].returns().kurt()
 
         deflated_sharpe_ratio = compute_deflated_sharpe_ratio(
             estimated_sharpe = estimated_sharpe,
@@ -455,12 +455,32 @@ class BackTester:
                 # Get all unique pairs in Redshift w/ atleast 1 year's worth of
                 # hourly price data
                 query = """
+                WITH last_month AS (
+                    SELECT  
+                        asset_id_base,
+                        asset_id_quote,
+                        exchange_id,
+                        MAX(time_period_start) - INTERVAL '30 DAYS' AS start_date
+                    FROM token_price.coinapi.price_data_1h
+                    GROUP BY         
+                        asset_id_base,
+                        asset_id_quote,
+                        exchange_id
+                )
+
                 SELECT 
-                DISTINCT
-                    asset_id_base,
-                    asset_id_quote,
-                    exchange_id
-                FROM token_price.coinapi.price_data_1h
+                    o.asset_id_base,
+                    o.asset_id_quote,
+                    o.exchange_id
+                FROM token_price.coinapi.price_data_1h o INNER JOIN last_month l
+                    ON o.asset_id_base = l.asset_id_base AND
+                        o.asset_id_quote = l.asset_id_quote AND
+                        o.exchange_id = l.exchange_id 
+                WHERE
+                    time_period_start >= start_date
+                GROUP BY o.asset_id_base, o.asset_id_quote, o.exchange_id
+                ORDER BY AVG(volume_traded / (1 / price_close)) * 24 DESC
+                LIMIT 100
                 """
 
                 # Execute query on Redshift and return result
