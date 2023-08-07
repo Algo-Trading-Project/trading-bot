@@ -148,9 +148,106 @@ class BackTester:
                 df = df.astype(float)
 
                 return df
+            
+    def __upsert_into_redshift_table(self, 
+                                     table: str, 
+                                     insert_str: str, 
+                                     cursor: redshift_connector.Cursor, 
+                                     conn: redshift_connector.Connection,
+                                     start_date,
+                                     end_date) -> None:
+
+        begin_transaction = """
+        BEGIN TRANSACTION;
+        """
+
+        create_staging_table = """
+        CREATE TABLE IF NOT EXISTS trading_bot.eth.stg_{table} (LIKE trading_bot.eth.{table})
+        """.format(table = table)
+
+        insert_into_staging_table = """
+        INSERT INTO trading_bot.eth.stg_{table} VALUES {insert_str}
+        """.format(table = table, insert_str = insert_str)
+
+        if table == 'backtest_equity_curves':
+            delete_from_target_table = """
+            DELETE FROM trading_bot.eth.{table} 
+            USING trading_bot.eth.stg_{table}
+            WHERE
+                {table}.symbol_id = stg_{table}.symbol_id AND
+                {table}.strat = stg_{table}.strat AND
+                {table}.date = stg_{table}.date
+            """.format(table = table)
+        elif table == 'backtest_trades':
+            delete_from_target_table = """
+            DELETE FROM trading_bot.eth.{table} 
+            USING trading_bot.eth.stg_{table}
+            WHERE
+                {table}.symbol_id = stg_{table}.symbol_id AND
+                {table}.strat = stg_{table}.strat AND
+                {table}.entry_date >= '{start_date}' AND
+                {table}.exit_date <= '{end_date}'
+            """.format(table = table, start_date = start_date, end_date = end_date)
+        else:
+            delete_from_target_table = """
+            DELETE FROM trading_bot.eth.{table} 
+            USING trading_bot.eth.stg_{table}
+            WHERE
+                {table}.symbol_id = stg_{table}.symbol_id AND
+                {table}.strategy = stg_{table}.strategy
+            """.format(table = table)
+
+        insert_into_target_table = """
+        INSERT INTO trading_bot.eth.{table} 
+        SELECT * FROM trading_bot.eth.stg_{table};
+        """.format(table = table)
+
+        drop_staging_table = """
+        DROP TABLE trading_bot.eth.stg_{table}
+        """.format(table = table)
+
+        end_transaction = """
+        END TRANSACTION;
+        """
+
+        queries = [
+            begin_transaction,
+
+            create_staging_table, 
+
+            insert_into_staging_table,
+
+            delete_from_target_table, 
+
+            insert_into_target_table, 
+
+            drop_staging_table,
+
+            end_transaction
+        ]
+
+        for query in queries:
+            try:
+                cursor.execute(query)
+            except redshift_connector.InterfaceError as err:
+                with redshift_connector.connect(
+                    host = 'project-poseidon.cpsnf8brapsd.us-west-2.redshift.amazonaws.com',
+                    database = 'trading_bot',
+                    user = 'administrator',
+                    password = 'Free2play2'
+                ) as conn2:
+                    with conn2.cursor() as cursor2:
+                        
+                        for query in queries:
+                            cursor2.execute(query)
+
+                    conn2.commit()
+                    return
+                    
+        conn.commit()
 
     def walk_forward_optimization(self, 
-                                  strat: Strategy, 
+                                  strat, 
                                   backtest_data: pd.DataFrame, 
                                   is_start_i: int, 
                                   is_end_i: int,
@@ -227,7 +324,7 @@ class BackTester:
         
         estimated_sharpe = sharpes.max() / np.sqrt(annualization_factor)
         sharpe_variance = sharpes.var() / annualization_factor
-        nb_trials = len(list(itertools.product(*strat.optimize_dict.values())))
+        nb_trials = len(sharpes)
         backtest_horizon = is_end_i - is_start_i + 1
         skew = portfolio.loc[sharpes.idxmax()].returns().skew()
         kurtosis = portfolio.loc[sharpes.idxmax()].returns().kurt()
@@ -318,7 +415,8 @@ class BackTester:
         while start + in_sample_size + out_of_sample_size <= len(backtest_data):
             print()
             print('Progress: {} / {} days...'.format(int(start / 24), int(len(backtest_data) / 24)))
-            print('Starting equity: ', starting_equity)
+            print()
+            print('*** Starting Equity: ', starting_equity)
             print()
 
             if len(backtest_data.iloc[start:]) - (in_sample_size + out_of_sample_size) < out_of_sample_size:
@@ -346,8 +444,12 @@ class BackTester:
 
             tr = 1 + ((oos_equity_curve['equity'].iloc[-1] - oos_equity_curve['equity'].iloc[0]) / oos_equity_curve['equity'].iloc[0])
             
-            print('num trades: {}, avg trade: {}'.format(len(oos_trades), round(oos_trades['pnl_pct'].mean(), 5)))
-            print('total return: {}'.format(tr))
+            print('*** Num. Trades: {}'.format(len(oos_trades)))
+            print()
+            print('*** Avg. Trade: {}'.format(round(oos_trades['pnl_pct'].mean(), 4)))
+            print()
+            print('*** Total Return: {}'.format(tr))
+            print()
 
             starting_equity = oos_equity_curve.iloc[-1]['equity']
             
@@ -395,25 +497,26 @@ class BackTester:
                 password = 'Free2play2'
             ) as conn:
                 with conn.cursor() as cursor:
-                    # Query to insert backtest results into Redshift 
+                    # UPSERT backtest trades into Redshift 
                     if len(oos_trades) > 0:
-                        query = """
-                        INSERT INTO eth.backtest_trades VALUES {}
-                        """.format(insert_str)
-                        
-                        # Execute query on Redshift
-                        cursor.execute(query)
+                        self.__upsert_into_redshift_table(
+                            table = 'backtest_trades', 
+                            insert_str = insert_str, 
+                            cursor = cursor, 
+                            conn = conn,
+                            start_date = oos_equity_curve.index[0],
+                            end_date = oos_equity_curve.index[-1]
+                        )
 
-                    query = """
-                    INSERT INTO eth.backtest_equity_curves VALUES {}
-                    """.format(insert_str_2)
-
-                    # Execute query on Redshift
-                    cursor.execute(query)
-
-                    cursor.close()
-
-                conn.commit()
+                    # UPSERT backtest equity curve into Redshift
+                    self.__upsert_into_redshift_table(
+                        table = 'backtest_equity_curves',
+                        insert_str = insert_str_2,
+                        cursor = cursor,
+                        conn = conn,
+                        start_date = oos_equity_curve.index[0],
+                        end_date = oos_equity_curve.index[-1]
+                    )
 
             equity_curves.append(oos_equity_curve)
             trades.append(oos_trades)
@@ -452,16 +555,56 @@ class BackTester:
             password = 'Free2play2'
         ) as conn:
             with conn.cursor() as cursor:
-                # Get all unique pairs in Redshift w/ atleast 1 year's worth of
-                # hourly price data
+                # Get top 50 unique tokens in Redshift by average daily volume in
+                # the past 30 days since last candle
                 query = """
-                WITH last_month AS (
+                WITH num_days_data AS (
+                    SELECT 
+                        asset_id_base,
+                        asset_id_quote,
+                        exchange_id,
+                        COUNT(*) / 24.0 AS num_days
+                    FROM coinapi.price_data_1h
+                    WHERE 
+                        asset_id_base NOT LIKE '%USD%'
+                    GROUP BY 
+                        asset_id_base,
+                        asset_id_quote,
+                        exchange_id
+                ),
+                token_history_len_rank AS (
+                    SELECT
+                        asset_id_base,
+                        asset_id_quote,
+                        exchange_id,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY asset_id_base
+                            ORDER BY num_days DESC
+                        ) AS rank
+                    FROM num_days_data
+                ),
+                tokens_w_longest_history AS (
+                    SELECT
+                        asset_id_base,
+                        asset_id_quote,
+                        exchange_id
+                    FROM token_history_len_rank
+                    WHERE 
+                        rank = 1
+                ),
+                last_month AS (
                     SELECT  
                         asset_id_base,
                         asset_id_quote,
                         exchange_id,
                         MAX(time_period_start) - INTERVAL '30 DAYS' AS start_date
                     FROM token_price.coinapi.price_data_1h
+                    WHERE 
+                        asset_id_base || '_' || asset_id_quote || '_' || exchange_id IN (
+                            SELECT 
+                                asset_id_base || '_' || asset_id_quote || '_' || exchange_id
+                            FROM tokens_w_longest_history
+                        )
                     GROUP BY         
                         asset_id_base,
                         asset_id_quote,
@@ -473,14 +616,14 @@ class BackTester:
                     o.asset_id_quote,
                     o.exchange_id
                 FROM token_price.coinapi.price_data_1h o INNER JOIN last_month l
-                    ON o.asset_id_base = l.asset_id_base AND
+                    ON  o.asset_id_base = l.asset_id_base AND
                         o.asset_id_quote = l.asset_id_quote AND
                         o.exchange_id = l.exchange_id 
                 WHERE
                     time_period_start >= start_date
                 GROUP BY o.asset_id_base, o.asset_id_quote, o.exchange_id
                 ORDER BY AVG(volume_traded / (1 / price_close)) * 24 DESC
-                LIMIT 100
+                LIMIT 50
                 """
 
                 # Execute query on Redshift and return result
@@ -524,48 +667,45 @@ class BackTester:
                 performance_metrics = json.dumps(performance_metrics, default = BackTester.__serialize_json_data)
                 performance_metrics = performance_metrics.replace('NaN', 'null').replace('Infinity', 'null')
 
-                with redshift_connector.connect(
-                    host = 'project-poseidon.cpsnf8brapsd.us-west-2.redshift.amazonaws.com',
-                    database = 'trading_bot',
-                    user = 'administrator',
-                    password = 'Free2play2'
-                ) as conn:
-                    with conn.cursor() as cursor:
-                        # Query to insert backtest results into Redshift 
-                        query = """
-                        INSERT INTO eth.backtest_results VALUES
-                        (%s, %s, %s, %s, %s, %s)
-                        """
+                insert_str = """
+                ('{}', '{}', '{}', '{}', '{}', '{}')
+                """.format(
+                    strat.indicator_factory_dict['class_name'],
+                    base + '_' + quote + '_' + exchange,
+                    oos_price_data.index[0],
+                    oos_price_data.index[-1],
+                    performance_metrics,  
+                    self.optimization_metric
+                )
 
-                        # Execute query on Redshift
-                        params = (
-                            strat.indicator_factory_dict['class_name'],
-                            base + '_' + quote + '_' + exchange,
-                            oos_price_data.index[0],
-                            oos_price_data.index[-1],
-                            performance_metrics,  
-                            self.optimization_metric
-                        )
-                        
-                        cursor.execute(query, params)
-                        cursor.close()
-
-                    conn.commit()
+                self.__upsert_into_redshift_table(
+                    table = 'backtest_results',
+                    insert_str = insert_str,
+                    cursor = cursor,
+                    conn = conn,
+                    start_date = oos_equity_curves.index[0],
+                    end_date = oos_equity_curves.index[-1]
+                )
 
 if __name__ == '__main__': 
 
-    # Set initial capital of backtest to $10,000 and set the trading
-    # fees to the average 'taker' fee across many well-known centralized
-    # exchanges, which is 0.295 percent (or 0.00295)
+    # Set backtest parameters
 
-    backtest_params = {'init_cash': 10_000, 'fees': 0.00295}
+    backtest_params = {
+        'init_cash': 10_000, 
+        'fees': 0.00295, 
+        'sl_stop': 0.2,
+        'sl_trail': True,
+        'size': 0.05,
+        'size_type':2
+    }
 
     # Initialize a BackTester instance w/ the intended strategies to optimize,
     # an optimization metric to find the best combination of strategy parameters,
     # and a dictionary of backtest hyperparameters
 
     b = BackTester(
-        strategies = [BollingerBands],
+        strategies = [BollingerBands, MACrossOver],
         optimization_metric = 'Sharpe Ratio',
         backtest_params = backtest_params
     )

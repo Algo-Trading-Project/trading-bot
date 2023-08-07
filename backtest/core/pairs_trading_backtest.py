@@ -141,11 +141,6 @@ class PairsTradingBacktest:
             max_holding_time = self.max_holding_time
         )
 
-        # len_diff = abs(len(curr_capital_arr) - len(self.backtest_data))
-
-        # for _ in range(len_diff):
-        #     curr_capital_arr = np.append(curr_capital_arr, np.nan)
-
         self.trades = pd.DataFrame(data = trades, columns = self.trades.columns)
         self.trades['entry_date'] = pd.to_datetime(self.trades['entry_date'])
         self.trades['exit_date'] = pd.to_datetime(self.trades['exit_date'])
