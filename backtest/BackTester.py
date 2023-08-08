@@ -19,7 +19,6 @@ import redshift_connector
 import pandas as pd
 import numpy as np
 import json
-import itertools
 
 ###############################################
 #      TRADING STRATEGIES / BACKTESTING       #
@@ -30,7 +29,6 @@ from core.performance_metrics import compute_deflated_sharpe_ratio
 
 from strategies.base import Strategy
 from strategies.ma_crossover import MACrossOver
-from strategies.arima import ARIMAStrat
 from strategies.bollinger_bands import BollingerBands
 
 class BackTester:
@@ -442,11 +440,11 @@ class BackTester:
                 starting_equity = starting_equity
             )
 
-            tr = 1 + ((oos_equity_curve['equity'].iloc[-1] - oos_equity_curve['equity'].iloc[0]) / oos_equity_curve['equity'].iloc[0])
+            tr = round(1 + ((oos_equity_curve['equity'].iloc[-1] - oos_equity_curve['equity'].iloc[0]) / oos_equity_curve['equity'].iloc[0]), 3)
             
             print('*** Num. Trades: {}'.format(len(oos_trades)))
             print()
-            print('*** Avg. Trade: {}'.format(round(oos_trades['pnl_pct'].mean(), 4)))
+            print('*** Avg. Trade: {}'.format(round(oos_trades['pnl_pct'].mean(), 3)))
             print()
             print('*** Total Return: {}'.format(tr))
             print()
@@ -524,6 +522,9 @@ class BackTester:
             deflated_sharpe_ratios.append(deflated_sharpe_ratio)
             
             start += out_of_sample_size
+
+        if len(equity_curves) == 0 or len(trades) == 0 or len(price_data) == 0:
+            return None, None, None, None
 
         equity_curves = pd.concat(equity_curves).sort_index()
         trades = pd.concat(trades, ignore_index = True)
@@ -653,6 +654,9 @@ class BackTester:
                     in_sample_size = 24 * 30 * 6,
                     out_of_sample_size = 24 * 30 * 3
                 )
+
+                if oos_equity_curves == None:
+                    continue
 
                 performance_metrics = calculate_performance_metrics(
                     oos_equity_curves, 
