@@ -655,7 +655,7 @@ class BackTester:
                     out_of_sample_size = 24 * 30 * 3
                 )
 
-                if (oos_equity_curves == None) or (oos_trades == None) or (oos_price_data == None):
+                if (oos_equity_curves is None) or (oos_trades is None) or (oos_price_data is None):
                     continue
 
                 performance_metrics = calculate_performance_metrics(
@@ -708,7 +708,7 @@ if __name__ == '__main__':
     # a performance metric to optimize on, and a dictionary of backtest hyperparameters
 
     b = BackTester(
-        strategies = [BollingerBands, MACrossOver],
+        strategies = [BollingerBands],
         optimization_metric = 'Sharpe Ratio',
         backtest_params = backtest_params
     )
