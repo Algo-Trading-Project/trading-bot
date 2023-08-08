@@ -244,7 +244,7 @@ class BackTester:
                     
         conn.commit()
 
-    def walk_forward_optimization(self, 
+    def __walk_forward_optimization(self, 
                                   strat, 
                                   backtest_data: pd.DataFrame, 
                                   is_start_i: int, 
@@ -338,7 +338,7 @@ class BackTester:
 
         return oos_trades, oos_equity_curve, deflated_sharpe_ratio
     
-    def execute_wfo(self, 
+    def __execute_wfo(self, 
                     base: str,
                     quote: str, 
                     exchange: str, 
@@ -430,7 +430,7 @@ class BackTester:
                 oos_start_i = start + in_sample_size
                 oos_end_i = start + in_sample_size + out_of_sample_size
 
-            oos_trades, oos_equity_curve, deflated_sharpe_ratio = self.walk_forward_optimization(
+            oos_trades, oos_equity_curve, deflated_sharpe_ratio = self.__walk_forward_optimization(
                 strat = strat,
                 backtest_data = backtest_data,
                 is_start_i = is_start_i,
@@ -642,11 +642,11 @@ class BackTester:
                 print()
                 print('Backtesting the {} strategy on {} ({} / {})'.format(
                    strat.indicator_factory_dict['class_name'],
-                    base + '_' + 'USD' + '_' + exchange,
-                    i + 1, len(df)
+                   base + '_' + 'USD' + '_' + exchange,
+                   i + 1, len(df)
                 ))
 
-                oos_equity_curves, oos_trades, oos_price_data, deflated_sharpe_ratios = self.execute_wfo(
+                oos_equity_curves, oos_trades, oos_price_data, deflated_sharpe_ratios = self.__execute_wfo(
                     base = base,
                     quote = quote, 
                     exchange = exchange,
@@ -655,7 +655,7 @@ class BackTester:
                     out_of_sample_size = 24 * 30 * 3
                 )
 
-                if oos_equity_curves == None:
+                if (oos_equity_curves == None) or (oos_trades == None) or (oos_price_data == None):
                     continue
 
                 performance_metrics = calculate_performance_metrics(
@@ -704,9 +704,8 @@ if __name__ == '__main__':
         'size_type':2
     }
 
-    # Initialize a BackTester instance w/ the intended strategies to optimize,
-    # an optimization metric to find the best combination of strategy parameters,
-    # and a dictionary of backtest hyperparameters
+    # Initialize a BackTester instance w/ the intended strategies to backtest,
+    # a performance metric to optimize on, and a dictionary of backtest hyperparameters
 
     b = BackTester(
         strategies = [BollingerBands, MACrossOver],
