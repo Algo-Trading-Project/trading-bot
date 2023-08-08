@@ -655,12 +655,12 @@ if __name__ == '__main__':
     # Set backtest parameters
 
     backtest_params = {
-        'init_cash': 10_000, 
-        'fees': 0.00295, 
-        'sl_stop': 0.2,
-        'sl_trail': True,
-        'size': 0.05,
-        'size_type':2
+        'init_cash': 10_000, # Initial cash
+        'fees': 0.00295, # Comission fee percent
+        'sl_stop': 0.2, # Stop-loss percentage
+        'sl_trail': True, # Indicate we want a trailing stop-loss
+        'size': 0.05, # Percentage of capital to use for each trade
+        'size_type':2 # Indicates the 'size' parameter represents a percent
     }
 
     # Initialize a BackTester instance w/ the intended strategies to backtest,
