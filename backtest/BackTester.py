@@ -151,9 +151,7 @@ class BackTester:
                                      table: str, 
                                      insert_str: str, 
                                      cursor: redshift_connector.Cursor, 
-                                     conn: redshift_connector.Connection,
-                                     start_date,
-                                     end_date) -> None:
+                                     conn: redshift_connector.Connection) -> None:
 
         begin_transaction = """
         BEGIN TRANSACTION;
@@ -167,33 +165,13 @@ class BackTester:
         INSERT INTO trading_bot.eth.stg_{table} VALUES {insert_str}
         """.format(table = table, insert_str = insert_str)
 
-        if table == 'backtest_equity_curves':
-            delete_from_target_table = """
-            DELETE FROM trading_bot.eth.{table} 
-            USING trading_bot.eth.stg_{table}
-            WHERE
-                {table}.symbol_id = stg_{table}.symbol_id AND
-                {table}.strat = stg_{table}.strat AND
-                {table}.date = stg_{table}.date
-            """.format(table = table)
-        elif table == 'backtest_trades':
-            delete_from_target_table = """
-            DELETE FROM trading_bot.eth.{table} 
-            USING trading_bot.eth.stg_{table}
-            WHERE
-                {table}.symbol_id = stg_{table}.symbol_id AND
-                {table}.strat = stg_{table}.strat AND
-                {table}.entry_date >= '{start_date}' AND
-                {table}.exit_date <= '{end_date}'
-            """.format(table = table, start_date = start_date, end_date = end_date)
-        else:
-            delete_from_target_table = """
-            DELETE FROM trading_bot.eth.{table} 
-            USING trading_bot.eth.stg_{table}
-            WHERE
-                {table}.symbol_id = stg_{table}.symbol_id AND
-                {table}.strategy = stg_{table}.strategy
-            """.format(table = table)
+        delete_from_target_table = """
+        DELETE FROM trading_bot.eth.{table} 
+        USING trading_bot.eth.stg_{table}
+        WHERE
+            {table}.symbol_id = stg_{table}.symbol_id AND
+            {table}.strat = stg_{table}.strat
+        """.format(table = table)
 
         insert_into_target_table = """
         INSERT INTO trading_bot.eth.{table} 
@@ -235,7 +213,6 @@ class BackTester:
                     password = 'Free2play2'
                 ) as conn2:
                     with conn2.cursor() as cursor2:
-                        
                         for query in queries:
                             cursor2.execute(query)
 
@@ -451,71 +428,6 @@ class BackTester:
 
             starting_equity = oos_equity_curve.iloc[-1]['equity']
             
-            oos_trades['entry_date'] = oos_trades['entry_date'].astype(str)
-            oos_trades['exit_date'] = oos_trades['exit_date'].astype(str)
-            oos_trades_dict = oos_trades.to_dict(orient = 'records')
-            
-            insert_str = ''
-
-            for trade in oos_trades_dict:
-                pnl = float(str(trade['pnl'])[:38])
-                pnl_pct = float(str(trade['pnl_pct'])[:38])
-
-                insert_str += """('{}', '{}', '{}', '{}', '{}', '{}', '{}'), """.format(
-                    base + '_' + quote + '_' + exchange, 
-                    strat.indicator_factory_dict['class_name'],
-                    trade['entry_date'],
-                    trade['exit_date'],
-                    pnl,
-                    pnl_pct,
-                    trade['is_long']
-                )
-
-            insert_str = insert_str[:-2]
-
-            insert_str_2 = ''
-            
-            for i in range(len(oos_equity_curve)):
-                date = oos_equity_curve.index[i]
-                equity = oos_equity_curve['equity'].iloc[i]
-
-                insert_str_2 += """('{}', '{}', '{}', {}), """.format(
-                    base + '_' + quote + '_' + exchange,
-                    strat.indicator_factory_dict['class_name'],
-                    date,
-                    equity
-                )
-
-            insert_str_2 = insert_str_2[:-2]
-
-            with redshift_connector.connect(
-                host = 'project-poseidon.cpsnf8brapsd.us-west-2.redshift.amazonaws.com',
-                database = 'trading_bot',
-                user = 'administrator',
-                password = 'Free2play2'
-            ) as conn:
-                with conn.cursor() as cursor:
-                    # UPSERT backtest trades into Redshift 
-                    if len(oos_trades) > 0:
-                        self.__upsert_into_redshift_table(
-                            table = 'backtest_trades', 
-                            insert_str = insert_str, 
-                            cursor = cursor, 
-                            conn = conn,
-                            start_date = oos_equity_curve.index[0],
-                            end_date = oos_equity_curve.index[-1]
-                        )
-
-                    # UPSERT backtest equity curve into Redshift
-                    self.__upsert_into_redshift_table(
-                        table = 'backtest_equity_curves',
-                        insert_str = insert_str_2,
-                        cursor = cursor,
-                        conn = conn,
-                        start_date = oos_equity_curve.index[0],
-                        end_date = oos_equity_curve.index[-1]
-                    )
-
             equity_curves.append(oos_equity_curve)
             trades.append(oos_trades)
             price_data.append(backtest_data.iloc[oos_start_i:oos_end_i])
@@ -658,6 +570,43 @@ class BackTester:
                 if (oos_equity_curves is None) or (oos_trades is None) or (oos_price_data is None):
                     continue
 
+                oos_trades['entry_date'] = oos_trades['entry_date'].astype(str)
+                oos_trades['exit_date'] = oos_trades['exit_date'].astype(str)
+                oos_trades_dict = oos_trades.to_dict(orient = 'records')
+                
+                insert_str_backtest_trades = ''
+
+                for trade in oos_trades_dict:
+                    pnl = float(str(trade['pnl'])[:38])
+                    pnl_pct = float(str(trade['pnl_pct'])[:38])
+
+                    insert_str_backtest_trades += """('{}', '{}', '{}', '{}', '{}', '{}', '{}'), """.format(
+                        base + '_' + quote + '_' + exchange, 
+                        strat.indicator_factory_dict['class_name'],
+                        trade['entry_date'],
+                        trade['exit_date'],
+                        pnl,
+                        pnl_pct,
+                        trade['is_long']
+                    )
+
+                insert_str_backtest_trades = insert_str_backtest_trades[:-2]
+
+                insert_str_backtest_equity_curve = ''
+                
+                for i in range(len(oos_equity_curves)):
+                    date = oos_equity_curves.index[i]
+                    equity = oos_equity_curves['equity'].iloc[i]
+
+                    insert_str_backtest_equity_curve += """('{}', '{}', '{}', {}), """.format(
+                        base + '_' + quote + '_' + exchange,
+                        strat.indicator_factory_dict['class_name'],
+                        date,
+                        equity
+                    )
+
+                insert_str_backtest_equity_curve = insert_str_backtest_equity_curve[:-2]
+
                 performance_metrics = calculate_performance_metrics(
                     oos_equity_curves, 
                     oos_trades, 
@@ -671,7 +620,7 @@ class BackTester:
                 performance_metrics = json.dumps(performance_metrics, default = BackTester.__serialize_json_data)
                 performance_metrics = performance_metrics.replace('NaN', 'null').replace('Infinity', 'null')
 
-                insert_str = """
+                insert_str_backtest_result = """
                 ('{}', '{}', '{}', '{}', '{}', '{}')
                 """.format(
                     strat.indicator_factory_dict['class_name'],
@@ -684,11 +633,21 @@ class BackTester:
 
                 self.__upsert_into_redshift_table(
                     table = 'backtest_results',
-                    insert_str = insert_str,
+                    insert_str = insert_str_backtest_result,
                     cursor = cursor,
-                    conn = conn,
-                    start_date = oos_equity_curves.index[0],
-                    end_date = oos_equity_curves.index[-1]
+                    conn = conn
+                )
+                self.__upsert_into_redshift_table(
+                    table = 'backtest_trades',
+                    insert_str = insert_str_backtest_trades,
+                    cursor = cursor,
+                    conn = conn
+                )
+                self.__upsert_into_redshift_table(
+                    table = 'backtest_equity_curves',
+                    insert_str = insert_str_backtest_equity_curve,
+                    cursor = cursor,
+                    conn = conn
                 )
 
 if __name__ == '__main__': 
