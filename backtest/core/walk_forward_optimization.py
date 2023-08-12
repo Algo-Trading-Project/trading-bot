@@ -1,6 +1,7 @@
 import vectorbt as vbt
 import pandas as pd
 import numpy as np
+import itertools
 
 class WalkForwardOptimization:
 
@@ -84,10 +85,9 @@ class WalkForwardOptimization:
 
         self.custom_indicator = (vbt.IndicatorFactory(**strategy.indicator_factory_dict)
                                  .from_apply_func(strategy.indicator_func, 
-                                                  to_2d = False,
-                                                  **strategy.default_dict))
+                                                  to_2d = False))
         
-    def generate_signals(self, params: dict, optimize: bool, param_product: bool = False) -> (pd.DataFrame, pd.DataFrame):
+    def __generate_signals(self, params: dict, optimize: bool, param_product: bool = False) -> (pd.DataFrame, pd.DataFrame):
         """
         Generates and returns entry/exit signals by applying the strategy to the provided OHLCV data
         with a specific combination of parameters.
@@ -134,7 +134,7 @@ class WalkForwardOptimization:
 
         return entries, exits
     
-    def walk_forward(self, params: dict) -> (pd.DataFrame, pd.Series):
+    def walk_forward(self, params: dict, hyperparams: dict) -> (pd.DataFrame, pd.Series):
         """
         Performs an out-of-sample backtest w/ the given strategy.  Returns the trades and equity curve of
         the backtest.
@@ -143,6 +143,9 @@ class WalkForwardOptimization:
         ----------
         params : dict
             Dictionary of optimal strategy parameters to use in the out-of-sample backtest.
+
+        hyperparams : dict
+            Dictionary of optimal backtest hyperparameters to use in the out-of-sample backtest.
 
         Returns
         -------
@@ -153,7 +156,7 @@ class WalkForwardOptimization:
             Equity curve of out-of-sample backtest.
 
         """
-        entries, exits = self.generate_signals(params = params, optimize = False)
+        entries, exits = self.__generate_signals(params = params, optimize = False)
         
         backtest_data = self.backtest_data.iloc[self.oos_start_i:self.oos_end_i]
         
@@ -163,12 +166,19 @@ class WalkForwardOptimization:
         exits = exits.dropna()
         exits = exits[exits.index.isin(backtest_data.index)]
 
+        backtest_params_copy = self.backtest_params.copy()
+        
+        if not hyperparams == {}:
+            backtest_params_copy['sl_stop'] = hyperparams['sl_stop']
+            backtest_params_copy['tp_stop'] = hyperparams['tp_stop']
+            backtest_params_copy['size'] = hyperparams['size']
+
         portfolio = vbt.Portfolio.from_signals(
             close = self.backtest_data.iloc[self.oos_start_i:self.oos_end_i].price_close,
             entries = entries,
             exits = exits,
             freq = 'h',
-            **self.backtest_params
+            **backtest_params_copy
         )
 
         equity_curve = (1 + portfolio.returns()).cumprod() * self.backtest_params['init_cash']
@@ -206,44 +216,109 @@ class WalkForwardOptimization:
             in-sample data.
             
         """
-        entries, exits = self.generate_signals(
+        entries, exits = self.__generate_signals(
             params = self.strategy.optimize_dict,
             optimize = True,
             param_product = True
         )
 
-        portfolio = vbt.Portfolio.from_signals(
-            close = self.backtest_data.iloc[self.is_start_i:self.is_end_i].price_close,
-            entries = entries,
-            exits = exits,
-            freq = 'h',
-            **self.backtest_params
-        )
+        sl_stop_params = self.backtest_params.get('sl_stop')
+        tp_stop_params = self.backtest_params.get('tp_stop')
+        size_params = self.backtest_params.get('size')
 
         metric_attribute_path = self.metric_map.get(self.optimization_metric)
         split_path = metric_attribute_path.split('.')
+        
+        backtest_result_metrics_list = []
+        best_backtest_params = {}
 
-        if len(split_path) == 1:
-            backtest_result_metrics = getattr(portfolio, split_path[0])()
+        if type(sl_stop_params) == list and type(tp_stop_params) == list and type(size_params) == list:
+            combs = list(itertools.product(sl_stop_params, tp_stop_params, size_params))
+
+            for comb in combs:
+                sl_stop = comb[0]
+                tp_stop = comb[1]
+                size = comb[2]
+
+                backtest_params_copy = self.backtest_params.copy()
+                del backtest_params_copy['tp_stop']
+                del backtest_params_copy['sl_stop']
+                del backtest_params_copy['size']
+
+                portfolio = vbt.Portfolio.from_signals(
+                    close = self.backtest_data.iloc[self.is_start_i:self.is_end_i].price_close,
+                    entries = entries,
+                    exits = exits,
+                    freq = 'h',
+                    sl_stop = sl_stop,
+                    tp_stop = tp_stop,
+                    size = size,
+                    **backtest_params_copy
+                )
+
+                if len(split_path) == 1:
+                    backtest_result_metrics = getattr(portfolio, split_path[0])()
+                else:
+                    backtest_result_metrics = getattr(getattr(portfolio, split_path[0]), split_path[1])()
+
+                backtest_result_metrics.replace([np.inf, -np.inf], np.nan, inplace = True)
+                backtest_result_metrics.dropna(inplace = True)
+
+                backtest_result_metrics = pd.concat([backtest_result_metrics], keys = [sl_stop], names = ['sl_stop'])
+                backtest_result_metrics = pd.concat([backtest_result_metrics], keys = [tp_stop], names = ['tp_stop'])
+                backtest_result_metrics = pd.concat([backtest_result_metrics], keys = [size], names = ['size'])
+                
+                backtest_result_metrics_list.append(backtest_result_metrics)
+
+            backtest_result_metrics = pd.concat(backtest_result_metrics_list)
         else:
-            backtest_result_metrics = getattr(getattr(portfolio, split_path[0]), split_path[1])()
+            portfolio = vbt.Portfolio.from_signals(
+                close = self.backtest_data.iloc[self.is_start_i:self.is_end_i].price_close,
+                entries = entries,
+                exits = exits,
+                freq = 'h',
+                **self.backtest_params
+            )
 
-        backtest_result_metrics.replace([np.inf, -np.inf], np.nan, inplace = True)
-        backtest_result_metrics.dropna(inplace = True)
+            if len(split_path) == 1:
+                backtest_result_metrics = getattr(portfolio, split_path[0])()
+            else:
+                backtest_result_metrics = getattr(getattr(portfolio, split_path[0]), split_path[1])()
 
+            backtest_result_metrics.replace([np.inf, -np.inf], np.nan, inplace = True)
+            backtest_result_metrics.dropna(inplace = True)
+        
         best_param_comb = {}
 
         if self.metric_min_max_map.get(self.optimization_metric) == 'Max':
-            maximizing_index = backtest_result_metrics.idxmax()
+            if type(sl_stop_params) == list and type(tp_stop_params) == list and type(size_params) == list:
+                maximizing_index = backtest_result_metrics.idxmax()
+                
+                best_backtest_params['size'] = maximizing_index[0]
+                best_backtest_params['tp_stop'] = maximizing_index[1]
+                best_backtest_params['sl_stop'] = maximizing_index[2]
+
+                maximizing_index = maximizing_index[3:]
+            else:
+                maximizing_index = backtest_result_metrics.idxmax()
             
             for param_name, best_value in zip(self.strategy.optimize_dict.keys(), maximizing_index):
                 best_param_comb[param_name] = best_value
 
-            return best_param_comb, portfolio
+            return best_param_comb, portfolio, best_backtest_params
         else:
-            minimizing_index = backtest_result_metrics.idxmin()
+            if type(sl_stop_params) == list and type(tp_stop_params) == list and type(size_params) == list:
+                minimizing_index = backtest_result_metrics.idxmin()
+
+                best_backtest_params['size'] = maximizing_index[0]
+                best_backtest_params['tp_stop'] = maximizing_index[1]
+                best_backtest_params['sl_stop'] = maximizing_index[2]
+                
+                minimizing_index = minimizing_index[3:]
+            else:
+                minimizing_index = backtest_result_metrics.idxmin()
 
             for param_name, best_value in zip(self.strategy.optimize_dict.keys(), minimizing_index):
                 best_param_comb[param_name] = best_value
 
-            return best_param_comb, portfolio
+            return best_param_comb, portfolio, best_backtest_params

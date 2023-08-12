@@ -19,12 +19,6 @@ class ARIMAStrat:
         'q': [1]
     }
 
-    default_dict = {
-        'p': 1,
-        'd': 0,
-        'q': 1
-    }
-
     def indicator_func(open, high, low, close, volume, 
                        p, d, q):
         

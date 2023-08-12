@@ -30,6 +30,7 @@ from core.performance_metrics import compute_deflated_sharpe_ratio
 from strategies.base import Strategy
 from strategies.ma_crossover import MACrossOver
 from strategies.bollinger_bands import BollingerBands
+from strategies.ensemble import EnsembleStrategy
 
 class BackTester:
 
@@ -286,10 +287,8 @@ class BackTester:
             backtest_params = backtest_params
         )
 
-        optimal_params, portfolio = wfo.optimize()
-        oos_trades, oos_equity_curve = wfo.walk_forward(optimal_params)
-
-        annualization_factor = portfolio.returns_acc.ann_factor
+        optimal_params, portfolio, optimal_backtest_hyperparams = wfo.optimize()
+        oos_trades, oos_equity_curve = wfo.walk_forward(optimal_params, optimal_backtest_hyperparams)
 
         # Drop potential non-finite sharpe ratio values so we can calculate
         # Deflated Sharpe Ratio without issues
@@ -297,9 +296,18 @@ class BackTester:
         sharpes.replace([np.inf, -np.inf], np.nan, inplace = True)
         sharpes.dropna(inplace = True)
         
+        annualization_factor = portfolio.returns_acc.ann_factor
         estimated_sharpe = sharpes.max() / np.sqrt(annualization_factor)
         sharpe_variance = sharpes.var() / annualization_factor
-        nb_trials = len(sharpes)
+
+        if type(backtest_params.get('sl_stop')) == list:
+            nb_sl = len(backtest_params.get('sl_stop'))
+            nb_tp = len(backtest_params.get('tp_stop'))
+            nb_size = len(backtest_params.get('size'))
+            nb_trials = len(sharpes) * nb_sl * nb_tp * nb_size
+        else:
+            nb_trials = len(sharpes)
+
         backtest_horizon = is_end_i - is_start_i + 1
         skew = portfolio.loc[sharpes.idxmax()].returns().skew()
         kurtosis = portfolio.loc[sharpes.idxmax()].returns().kurt()
@@ -653,14 +661,23 @@ class BackTester:
 if __name__ == '__main__': 
 
     # Set backtest parameters
+    
+    # init_cash - Initial cash
+    # fees      - Comission percent
+    # sl_stop   - Stop-loss percent
+    # sl_trail  - Indicate whether or not want a trailing stop-loss
+    # tp_stop   - Take-profit percent
+    # size      - Percentage of capital to use for each trade
+    # size_type - Indicates the 'size' parameter represents a percent
 
     backtest_params = {
-        'init_cash': 10_000, # Initial cash
-        'fees': 0.00295, # Comission fee percent
-        'sl_stop': 0.2, # Stop-loss percentage
-        'sl_trail': True, # Indicate we want a trailing stop-loss
-        'size': 0.05, # Percentage of capital to use for each trade
-        'size_type':2 # Indicates the 'size' parameter represents a percent
+        'init_cash': 10_000,
+        'fees': 0.00295,
+        'sl_stop': [0.05, 0.1, np.inf],
+        'tp_stop': [0.05, 0.1, np.inf],
+        'sl_trail': True,
+        'size': [0.05, 0.1],
+        'size_type':2
     }
 
     # Initialize a BackTester instance w/ the intended strategies to backtest,
@@ -674,7 +691,7 @@ if __name__ == '__main__':
 
     # Execute a walk-forward optimization across all strategies
     # and log the results to Redshift
-
+    
     backtest_start = time.time()
     b.execute()
     backtest_end = time.time()
