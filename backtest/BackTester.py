@@ -153,6 +153,28 @@ class BackTester:
                                      insert_str: str, 
                                      cursor: redshift_connector.Cursor, 
                                      conn: redshift_connector.Connection) -> None:
+        
+        """
+        Performs an upsert on the specified Redshift table in the trading_bot database.
+
+        Parameters
+        ----------
+        table : str
+            Redshift table to upsert into
+
+        insert_str : str
+            Rows to upsert into Redshift represented as a string
+
+        cursor : Cursor
+            redshift_connector Cursor
+
+        conn : Connection
+            redshift_connector Connection
+
+        Returns
+        -------
+        None
+        """
 
         begin_transaction = """
         BEGIN TRANSACTION;
@@ -397,7 +419,7 @@ class BackTester:
 
         while start + in_sample_size + out_of_sample_size <= len(backtest_data):
             print()
-            print('Progress: {} / {} days...'.format(int(start / 24), int(len(backtest_data) / 24)))
+            print('Progress: {} / {} days...'.format(int((start + in_sample_size) / 24), int(len(backtest_data) / 24)))
             print()
             print('*** Starting Equity: ', starting_equity)
             print()
@@ -553,6 +575,9 @@ class BackTester:
                 
                 # Turn queried data into a DataFrame
                 df = pd.DataFrame(tuples, columns = ['asset_id_base', 'asset_id_quote', 'exchange_id'])
+
+                # Fill in any gaps in data with last seen value
+                df = df.asfreq(freq = 'H', method = 'ffill')
                 
         for i in range(len(df)):
             row = df.iloc[i]
@@ -673,11 +698,11 @@ if __name__ == '__main__':
     backtest_params = {
         'init_cash': 10_000,
         'fees': 0.00295,
-        'sl_stop': [0.05, 0.1, np.inf],
-        'tp_stop': [0.05, 0.1, np.inf],
+        'sl_stop': [0.05, np.inf],
+        'tp_stop': [0.05, np.inf],
         'sl_trail': True,
-        'size': [0.05, 0.1],
-        'size_type':2
+        'size': [0.05],# e.g. ATR, Std. Dev., Fixed Percent, Fixed Dollar Amount
+        'size_type':2 # e.g. 2 if 'size' is 'ATR', 'Std. Dev.', or 'Fixed Percent' and 0 otherwise
     }
 
     # Initialize a BackTester instance w/ the intended strategies to backtest,

@@ -35,8 +35,8 @@ class PairsTradingBacktest:
                  end_i,
                  backtest_params = {
                     'initial_capital':10_000, 
-                    'pct_capital_per_trade': 1,
-                    'comission': 0,
+                    'pct_capital_per_trade': 0.05,
+                    'comission': 0.00295,
                     'sl': float('inf'),
                     'tp':float('inf'),
                     'max_slippage':0.00
