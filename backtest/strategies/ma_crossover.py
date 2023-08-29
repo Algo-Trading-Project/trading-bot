@@ -15,26 +15,6 @@ class MACrossOver:
         'slow_window': [24 * 7, 24 * 14, 24 * 21, 24 * 30]
     }
 
-    default_dict = {
-        'fast_window':24,
-        'slow_window':24 * 7
-    }
-
-    def fetch_backtest_inputs():
-        """
-        User-defined funtion that collects & combines all input data
-        that is needed for the backtest as specified in indicator_factory_dict['input_names']
-
-        Parameters:
-        ___________
-        To Be Completed
-
-        Returns:
-        ________
-        To Be Completed 
-        """
-        pass
-
     def indicator_func(open, high, low, close, volume,
                        fast_window, slow_window):  
         
