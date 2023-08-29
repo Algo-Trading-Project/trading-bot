@@ -27,18 +27,15 @@ from core.walk_forward_optimization import WalkForwardOptimization
 from core.performance_metrics import calculate_performance_metrics
 from core.performance_metrics import compute_deflated_sharpe_ratio
 
-from strategies.base import Strategy
 from strategies.ma_crossover import MACrossOver
 from strategies.bollinger_bands import BollingerBands
-from strategies.ensemble import EnsembleStrategy
 
 class BackTester:
 
-    def __init__(self, 
-                 strategies: list,
-                 optimization_metric: str = 'Sharpe Ratio',
-                 backtest_params: dict = {'init_cash':10_000, 'fees':0.005}
-                 ):
+    def __init__(self,  
+                 strategies: list,                  
+                 optimization_metric: str = 'Sharpe Ratio',                 
+                 backtest_params: dict = {'init_cash':10_000, 'fees':0.005}):
         """
         Coordinates the walk-forward optimization of a set of strategies over a set of CoinAPI tokens, 
         utilizing the vectorbt package for efficient parameter optimization. The results of the walk-forward
@@ -88,7 +85,10 @@ class BackTester:
         elif isinstance(obj, np.floating):
             return float(obj)
              
-    def __fetch_OHLCV_df_from_redshift(self, base: str, quote: str, exchange: str) -> pd.DataFrame:
+    def __fetch_OHLCV_df_from_redshift(self, 
+                                       base: str, 
+                                       quote: str, 
+                                       exchange: str) -> pd.DataFrame:
         """
         Queries OHLCV data for {exchange}_SPOT_{base}_{quote} CoinAPI pair stored in
         Project Poseidon's Redshift cluster. Returns the queried data as a DataFrame 
@@ -245,13 +245,13 @@ class BackTester:
         conn.commit()
 
     def __walk_forward_optimization(self, 
-                                  strat, 
-                                  backtest_data: pd.DataFrame, 
-                                  is_start_i: int, 
-                                  is_end_i: int,
-                                  oos_start_i: int, 
-                                  oos_end_i: int, 
-                                  starting_equity: float) -> (pd.DataFrame, pd.DataFrame, float):
+                                    strat, 
+                                    backtest_data: pd.DataFrame, 
+                                    is_start_i: int, 
+                                    is_end_i: int, 
+                                    oos_start_i: int, 
+                                    oos_end_i: int, 
+                                    starting_equity: float) -> (pd.DataFrame, pd.DataFrame, float):
         
         """
         Optimizes the parameters of a Strategy (strat) on the in-sample data and performs 
@@ -346,12 +346,12 @@ class BackTester:
         return oos_trades, oos_equity_curve, deflated_sharpe_ratio
     
     def __execute_wfo(self, 
-                    base: str,
-                    quote: str, 
-                    exchange: str, 
-                    strat: Strategy,
-                    in_sample_size: int, 
-                    out_of_sample_size: int) -> (pd.DataFrame, pd.DataFrame, pd.DataFrame, list):
+                      base: str,
+                      quote: str,   
+                      exchange: str, 
+                      strat,                    
+                      in_sample_size: int,                 
+                      out_of_sample_size: int) -> (pd.DataFrame, pd.DataFrame, pd.DataFrame, list):
 
         """
         Executes a walk-forward optimization on an arbitrary trading strategy and a
