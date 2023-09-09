@@ -146,6 +146,9 @@ class BackTester:
                 df = pd.DataFrame(tuples, columns = cols).set_index('Date')
                 df = df.astype(float)
 
+                # Fill in any gaps in data with last seen value
+                df = df.asfreq(freq = 'H', method = 'ffill')
+
                 return df
             
     def __upsert_into_redshift_table(self, 
@@ -343,6 +346,10 @@ class BackTester:
             kurtosis = kurtosis
         )
 
+        # Return and aggregate optimal params to enable sensitivity analysis on our stategies
+        # after performing walk-forward analysis
+
+        
         return oos_trades, oos_equity_curve, deflated_sharpe_ratio
     
     def __execute_wfo(self, 
@@ -575,9 +582,6 @@ class BackTester:
                 
                 # Turn queried data into a DataFrame
                 df = pd.DataFrame(tuples, columns = ['asset_id_base', 'asset_id_quote', 'exchange_id'])
-
-                # Fill in any gaps in data with last seen value
-                df = df.asfreq(freq = 'H', method = 'ffill')
                 
         for i in range(len(df)):
             row = df.iloc[i]
