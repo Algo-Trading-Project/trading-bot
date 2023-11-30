@@ -181,8 +181,11 @@ class WalkForwardOptimization:
             **backtest_params_copy
         )
 
-        equity_curve = (1 + portfolio.returns()).cumprod() * self.backtest_params['init_cash']
+        equity_curve = portfolio.value().to_frame()
+        equity_curve = equity_curve.rename({equity_curve.columns[0]:'equity'}, axis = 1)
+        
         trades = portfolio.trades.records_readable
+
         trades = trades[['Entry Timestamp', 'Exit Timestamp', 'PnL', 'Return', 'Direction']]
         
         rename_dict = {
@@ -192,8 +195,6 @@ class WalkForwardOptimization:
 
         trades = trades.rename(rename_dict, axis = 1)
         trades['is_long'] = trades['is_long'] == 'Long'
-
-        equity_curve = equity_curve.to_frame().rename({0:'equity'}, axis = 1)
 
         return trades, equity_curve
 
@@ -261,8 +262,8 @@ class WalkForwardOptimization:
                 else:
                     backtest_result_metrics = getattr(getattr(portfolio, split_path[0]), split_path[1])()
 
-                backtest_result_metrics.replace([np.inf, -np.inf], np.nan, inplace = True)
-                backtest_result_metrics.dropna(inplace = True)
+                backtest_result_metrics.replace([np.inf, np.nan], -np.inf, inplace = True)
+                # backtest_result_metrics.dropna(inplace = True)
 
                 backtest_result_metrics = pd.concat([backtest_result_metrics], keys = [sl_stop], names = ['sl_stop'])
                 backtest_result_metrics = pd.concat([backtest_result_metrics], keys = [tp_stop], names = ['tp_stop'])
@@ -285,8 +286,8 @@ class WalkForwardOptimization:
             else:
                 backtest_result_metrics = getattr(getattr(portfolio, split_path[0]), split_path[1])()
 
-            backtest_result_metrics.replace([np.inf, -np.inf], np.nan, inplace = True)
-            backtest_result_metrics.dropna(inplace = True)
+            # backtest_result_metrics.replace([np.inf, -np.inf], np.nan, inplace = True)
+            # backtest_result_metrics.dropna(inplace = True)
         
         best_param_comb = {}
 

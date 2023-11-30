@@ -29,13 +29,22 @@ from core.performance_metrics import compute_deflated_sharpe_ratio
 
 from strategies.ma_crossover import MACrossOver
 from strategies.bollinger_bands import BollingerBands
+from strategies.momentum_vol import MomentumVol
 
 class BackTester:
+
+    # List of tokens to backtest
+    TOKENS_TO_BACKTEST = [
+        'BTC_USD_COINBASE', 'ETH_USD_COINBASE', 'BCH_USD_COINBASE',
+        'ETC_USD_COINBASE', 'BNB_USDC_BINANCE', 'LINK_USD_COINBASE',
+        'XRP_USDT_BINANCE', 'MATIC_USDT_BINANCE', 'EOS_USD_COINBASE', 
+        'ZRX_USD_COINBASE', 'LTC_USD_COINBASE', 'ATOM_USDT_BINANCE'
+    ]
 
     def __init__(self,  
                  strategies: list,                  
                  optimization_metric: str = 'Sharpe Ratio',                 
-                 backtest_params: dict = {'init_cash':10_000, 'fees':0.005}):
+                 backtest_params: dict = {'init_cash':100_000, 'fees':0.005}):
         """
         Coordinates the walk-forward optimization of a set of strategies over a set of CoinAPI tokens, 
         utilizing the vectorbt package for efficient parameter optimization. The results of the walk-forward
@@ -51,7 +60,7 @@ class BackTester:
             The full list of metrics available to use can be found in the file 
             backtest/core/walk_forward_optimization.py in the metric_map dictionary in the __init__ method.
 
-        backtest_params : dict, default = {'init_cash':10_000, 'fees':0.005}
+        backtest_params : dict, default = {'init_cash':100_000, 'fees':0.005}
             Dictionary containing miscellaneous parameters to configure the
             backtest.
 
@@ -349,7 +358,6 @@ class BackTester:
         # Return and aggregate optimal params to enable sensitivity analysis on our stategies
         # after performing walk-forward analysis
 
-        
         return oos_trades, oos_equity_curve, deflated_sharpe_ratio
     
     def __execute_wfo(self, 
@@ -422,7 +430,7 @@ class BackTester:
         price_data = []
         deflated_sharpe_ratios = []
 
-        starting_equity = 10_000
+        starting_equity = 100_000
 
         while start + in_sample_size + out_of_sample_size <= len(backtest_data):
             print()
@@ -497,195 +505,120 @@ class BackTester:
         --------
         None
         """
-
+        
         with redshift_connector.connect(
             host = 'project-poseidon.cpsnf8brapsd.us-west-2.redshift.amazonaws.com',
-            database = 'token_price',
+            database = 'trading_bot',
             user = 'administrator',
             password = 'Free2play2'
         ) as conn:
             with conn.cursor() as cursor:
-                # Get top 50 unique tokens in Redshift by average daily volume in
-                # the past 30 days since last candle
-                query = """
-                WITH num_days_data AS (
-                    SELECT 
-                        asset_id_base,
-                        asset_id_quote,
-                        exchange_id,
-                        COUNT(*) / 24.0 AS num_days
-                    FROM coinapi.price_data_1h
-                    WHERE 
-                        asset_id_base NOT LIKE '%USD%'
-                    GROUP BY 
-                        asset_id_base,
-                        asset_id_quote,
-                        exchange_id
-                ),
-                token_history_len_rank AS (
-                    SELECT
-                        asset_id_base,
-                        asset_id_quote,
-                        exchange_id,
-                        ROW_NUMBER() OVER (
-                            PARTITION BY asset_id_base
-                            ORDER BY num_days DESC
-                        ) AS rank
-                    FROM num_days_data
-                ),
-                tokens_w_longest_history AS (
-                    SELECT
-                        asset_id_base,
-                        asset_id_quote,
-                        exchange_id
-                    FROM token_history_len_rank
-                    WHERE 
-                        rank = 1
-                ),
-                last_month AS (
-                    SELECT  
-                        asset_id_base,
-                        asset_id_quote,
-                        exchange_id,
-                        MAX(time_period_start) - INTERVAL '30 DAYS' AS start_date
-                    FROM token_price.coinapi.price_data_1h
-                    WHERE 
-                        asset_id_base || '_' || asset_id_quote || '_' || exchange_id IN (
-                            SELECT 
-                                asset_id_base || '_' || asset_id_quote || '_' || exchange_id
-                            FROM tokens_w_longest_history
+                for strat in self.strategies:
+                    i = 0
+                    for token in self.TOKENS_TO_BACKTEST:
+                        base, quote, exchange = token.split('_')
+
+                        print()
+                        print('Backtesting the {} strategy on {} ({} / {})'.format(
+                        strat.indicator_factory_dict['class_name'],
+                        base + '_' + 'USD' + '_' + exchange,
+                        i + 1, len(self.TOKENS_TO_BACKTEST)
+                        ))
+
+                        i += 1
+
+                        oos_equity_curves, oos_trades, oos_price_data, deflated_sharpe_ratios = self.__execute_wfo(
+                            base = base,
+                            quote = quote, 
+                            exchange = exchange,
+                            strat = strat,
+                            in_sample_size = 24 * 30 * 4,
+                            out_of_sample_size = 24 * 30 * 2
                         )
-                    GROUP BY         
-                        asset_id_base,
-                        asset_id_quote,
-                        exchange_id
-                )
 
-                SELECT 
-                    o.asset_id_base,
-                    o.asset_id_quote,
-                    o.exchange_id
-                FROM token_price.coinapi.price_data_1h o INNER JOIN last_month l
-                    ON  o.asset_id_base = l.asset_id_base AND
-                        o.asset_id_quote = l.asset_id_quote AND
-                        o.exchange_id = l.exchange_id 
-                WHERE
-                    time_period_start >= start_date
-                GROUP BY o.asset_id_base, o.asset_id_quote, o.exchange_id
-                ORDER BY AVG(volume_traded / (1 / price_close)) * 24 DESC
-                LIMIT 50
-                """
+                        # If the walk-forward optimization failed, skip to the next token
+                        if (oos_equity_curves is None) or (oos_trades is None) or (oos_price_data is None):
+                            continue
 
-                # Execute query on Redshift and return result
-                cursor.execute(query)
-                tuples = cursor.fetchall()
-                
-                # Turn queried data into a DataFrame
-                df = pd.DataFrame(tuples, columns = ['asset_id_base', 'asset_id_quote', 'exchange_id'])
-                
-        for i in range(len(df)):
-            row = df.iloc[i]
-            base, quote, exchange = row['asset_id_base'], row['asset_id_quote'], row['exchange_id']
+                        oos_trades['entry_date'] = oos_trades['entry_date'].astype(str)
+                        oos_trades['exit_date'] = oos_trades['exit_date'].astype(str)
+                        oos_trades_dict = oos_trades.to_dict(orient = 'records')
+                        
+                        insert_str_backtest_trades = ''
 
-            for strat in self.strategies:
-                print()
-                print('Backtesting the {} strategy on {} ({} / {})'.format(
-                   strat.indicator_factory_dict['class_name'],
-                   base + '_' + 'USD' + '_' + exchange,
-                   i + 1, len(df)
-                ))
+                        for trade in oos_trades_dict:
+                            pnl = float(str(trade['pnl'])[:38])
+                            pnl_pct = float(str(trade['pnl_pct'])[:38])
 
-                oos_equity_curves, oos_trades, oos_price_data, deflated_sharpe_ratios = self.__execute_wfo(
-                    base = base,
-                    quote = quote, 
-                    exchange = exchange,
-                    strat = strat,
-                    in_sample_size = 24 * 30 * 6,
-                    out_of_sample_size = 24 * 30 * 3
-                )
+                            insert_str_backtest_trades += """('{}', '{}', '{}', '{}', '{}', '{}', '{}'), """.format(
+                                base + '_' + quote + '_' + exchange, 
+                                strat.indicator_factory_dict['class_name'],
+                                trade['entry_date'],
+                                trade['exit_date'],
+                                pnl,
+                                pnl_pct,
+                                trade['is_long']
+                            )
 
-                if (oos_equity_curves is None) or (oos_trades is None) or (oos_price_data is None):
-                    continue
+                        insert_str_backtest_trades = insert_str_backtest_trades[:-2]
 
-                oos_trades['entry_date'] = oos_trades['entry_date'].astype(str)
-                oos_trades['exit_date'] = oos_trades['exit_date'].astype(str)
-                oos_trades_dict = oos_trades.to_dict(orient = 'records')
-                
-                insert_str_backtest_trades = ''
+                        insert_str_backtest_equity_curve = ''
+                        
+                        for i in range(len(oos_equity_curves)):
+                            date = oos_equity_curves.index[i]
+                            equity = oos_equity_curves['equity'].iloc[i]
 
-                for trade in oos_trades_dict:
-                    pnl = float(str(trade['pnl'])[:38])
-                    pnl_pct = float(str(trade['pnl_pct'])[:38])
+                            insert_str_backtest_equity_curve += """('{}', '{}', '{}', {}), """.format(
+                                base + '_' + quote + '_' + exchange,
+                                strat.indicator_factory_dict['class_name'],
+                                date,
+                                equity
+                            )
 
-                    insert_str_backtest_trades += """('{}', '{}', '{}', '{}', '{}', '{}', '{}'), """.format(
-                        base + '_' + quote + '_' + exchange, 
-                        strat.indicator_factory_dict['class_name'],
-                        trade['entry_date'],
-                        trade['exit_date'],
-                        pnl,
-                        pnl_pct,
-                        trade['is_long']
-                    )
+                        insert_str_backtest_equity_curve = insert_str_backtest_equity_curve[:-2]
 
-                insert_str_backtest_trades = insert_str_backtest_trades[:-2]
+                        performance_metrics = calculate_performance_metrics(
+                            oos_equity_curves, 
+                            oos_trades, 
+                            oos_price_data
+                        ).to_dict(orient = 'records')[0]
 
-                insert_str_backtest_equity_curve = ''
-                
-                for i in range(len(oos_equity_curves)):
-                    date = oos_equity_curves.index[i]
-                    equity = oos_equity_curves['equity'].iloc[i]
+                        deflated_sharpe_ratios = [round(dsr, 4) for dsr in deflated_sharpe_ratios]
+                        deflated_sharpe_ratios = json.dumps(deflated_sharpe_ratios)
 
-                    insert_str_backtest_equity_curve += """('{}', '{}', '{}', {}), """.format(
-                        base + '_' + quote + '_' + exchange,
-                        strat.indicator_factory_dict['class_name'],
-                        date,
-                        equity
-                    )
+                        performance_metrics['deflated_sharpe_ratios'] = deflated_sharpe_ratios
+                        performance_metrics = json.dumps(performance_metrics, default = BackTester.__serialize_json_data)
+                        performance_metrics = performance_metrics.replace('NaN', 'null').replace('Infinity', 'null')
 
-                insert_str_backtest_equity_curve = insert_str_backtest_equity_curve[:-2]
+                        insert_str_backtest_result = """
+                        ('{}', '{}', '{}', '{}', '{}', '{}')
+                        """.format(
+                            strat.indicator_factory_dict['class_name'],
+                            base + '_' + quote + '_' + exchange,
+                            oos_price_data.index[0],
+                            oos_price_data.index[-1],
+                            performance_metrics,  
+                            self.optimization_metric
+                        )
 
-                performance_metrics = calculate_performance_metrics(
-                    oos_equity_curves, 
-                    oos_trades, 
-                    oos_price_data
-                ).to_dict(orient = 'records')[0]
-
-                deflated_sharpe_ratios = [round(dsr, 4) for dsr in deflated_sharpe_ratios]
-                deflated_sharpe_ratios = json.dumps(deflated_sharpe_ratios)
-
-                performance_metrics['deflated_sharpe_ratios'] = deflated_sharpe_ratios
-                performance_metrics = json.dumps(performance_metrics, default = BackTester.__serialize_json_data)
-                performance_metrics = performance_metrics.replace('NaN', 'null').replace('Infinity', 'null')
-
-                insert_str_backtest_result = """
-                ('{}', '{}', '{}', '{}', '{}', '{}')
-                """.format(
-                    strat.indicator_factory_dict['class_name'],
-                    base + '_' + quote + '_' + exchange,
-                    oos_price_data.index[0],
-                    oos_price_data.index[-1],
-                    performance_metrics,  
-                    self.optimization_metric
-                )
-
-                self.__upsert_into_redshift_table(
-                    table = 'backtest_results',
-                    insert_str = insert_str_backtest_result,
-                    cursor = cursor,
-                    conn = conn
-                )
-                self.__upsert_into_redshift_table(
-                    table = 'backtest_trades',
-                    insert_str = insert_str_backtest_trades,
-                    cursor = cursor,
-                    conn = conn
-                )
-                self.__upsert_into_redshift_table(
-                    table = 'backtest_equity_curves',
-                    insert_str = insert_str_backtest_equity_curve,
-                    cursor = cursor,
-                    conn = conn
-                )
+                        self.__upsert_into_redshift_table(
+                            table = 'backtest_results',
+                            insert_str = insert_str_backtest_result,
+                            cursor = cursor,
+                            conn = conn
+                        )
+                        self.__upsert_into_redshift_table(
+                            table = 'backtest_trades',
+                            insert_str = insert_str_backtest_trades,
+                            cursor = cursor,
+                            conn = conn
+                        )
+                        self.__upsert_into_redshift_table(
+                            table = 'backtest_equity_curves',
+                            insert_str = insert_str_backtest_equity_curve,
+                            cursor = cursor,
+                            conn = conn
+                        )
 
 if __name__ == '__main__': 
 
@@ -697,24 +630,24 @@ if __name__ == '__main__':
     # sl_trail  - Indicate whether or not want a trailing stop-loss
     # tp_stop   - Take-profit percent
     # size      - Percentage of capital to use for each trade
-    # size_type - Indicates the 'size' parameter represents a percent
+    # size_type - Indicatess the 'size' parameter represents a percent
 
     backtest_params = {
-        'init_cash': 10_000,
+        'init_cash': 100_000,
         'fees': 0.00295,
-        'sl_stop': [0.05, np.inf],
-        'tp_stop': [0.05, np.inf],
+        'sl_stop': [0.1, float('inf')],
+        'tp_stop': [0.1, float('inf')],
         'sl_trail': True,
-        'size': [0.05],# e.g. ATR, Std. Dev., Fixed Percent, Fixed Dollar Amount
-        'size_type':2 # e.g. 2 if 'size' is 'ATR', 'Std. Dev.', or 'Fixed Percent' and 0 otherwise
+        'size': [0.05, 0.1, 0.2],
+        'size_type':2 # e.g. 2 if 'size' is 'Fixed Percent' and 0 otherwise
     }
 
     # Initialize a BackTester instance w/ the intended strategies to backtest,
     # a performance metric to optimize on, and a dictionary of backtest hyperparameters
 
     b = BackTester(
-        strategies = [BollingerBands],
-        optimization_metric = 'Sharpe Ratio',
+        strategies = [MACrossOver, BollingerBands, MomentumVol],
+        optimization_metric = 'Sortino Ratio',
         backtest_params = backtest_params
     )
 

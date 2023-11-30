@@ -12,8 +12,8 @@ class BollingerBands:
     }
 
     optimize_dict = {
-        'bb_window': [6, 12, 24, 48, 24 * 7],
-        'bb_std_mult': [1.5, 2, 2.5],
+        'bb_window': [3, 6, 12, 24, 48, 24 * 7],
+        'bb_std_mult': [1, 1.5, 2],
     }
 
     def indicator_func(open, high, low, close, volume,

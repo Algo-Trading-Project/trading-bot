@@ -229,7 +229,7 @@ class PairsTradingBackTester:
         trades = []
         price_data = []
 
-        starting_curr_capital = 10_000
+        starting_curr_capital = 100_000
 
         while start + in_sample_size + out_of_sample_size <= len(backtest_data):
             print()
@@ -460,16 +460,16 @@ class PairsTradingBackTester:
 if __name__ == '__main__': 
    
     optimize_dict = {
-        'z_window':[24, 24 * 7, 24 * 14, 24 * 28],
-        'hedge_ratio_window':[24, 24 * 7, 24 * 14, 24 * 28],
+        'z_window':[24, 24 * 7, 24 * 14, 24 * 30, 24 * 60],
+        'hedge_ratio_window':[24, 24 * 7, 24 * 14, 24 * 30, 24 * 60],
         'z_thresh_upper':[1, 2, 3],
         'z_thresh_lower':[-1, -2, -3],
-        'max_holding_time': [24, 24 * 7, 24 * 28, float('inf')]
+        'max_holding_time': [24, 24 * 7, 24 * 30, float('inf')]
     }
 
     b = PairsTradingBackTester(
         optimize_dict = optimize_dict,
-        optimization_metric = 'sharpe_ratio'
+        optimization_metric = 'sortino_ratio'
     )
 
     print()

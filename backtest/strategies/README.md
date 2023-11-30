@@ -26,13 +26,6 @@ class Strategy:
         'pn': [...]
     }
 
-    default_dict = {
-        'p1': p1
-        'p2': p2
-        ...
-        'pn': pn
-    }
-
     def indicator_func(open, high, low, close, volume,
                        p1, p2, ..., pn):
 
@@ -60,9 +53,6 @@ Here are the descriptions for each component of the Strategy class skeleton:
 ## optimize_dict
 - A dictionary whose keys are the values in indicator_factory_dict['param_names'] and values are a list of values for that parameter to use in optimization.
 
-## default_dict
-- A dictionary whose keys are each of the param_names in indicator_factory_dict['param_names'] and values are a default value for that parameter.
-
 ## def indicator_func
 - A user-defined function that takes in the input data defined in input_names as well as values for parameters defined in param_names and executes the strategy on the input data with the given parameters.  Returns the entry and exit signals produced by the strategy.
 
@@ -85,11 +75,6 @@ class MACrossOver:
     optimize_dict = {
         'fast_window': [6, 12, 24, 48],
         'slow_window': [24 * 7, 24 * 14, 24 * 21, 24 * 30]
-    }
-
-    default_dict = {
-        'fast_window':24,
-        'slow_window':24 * 7
     }
 
     def indicator_func(open, high, low, close, volume,
@@ -116,7 +101,7 @@ if __name__ == '__main__':
     # fees to the average 'taker' fee across many well-known centralized
     # exchanges, which is 0.295 percent (or 0.00295)
 
-    backtest_params = {'init_cash': 10_000, 'fees': 0.00295}
+    backtest_params = {'init_cash': 100_000, 'fees': 0.00295}
 
     # Initialize a BackTester instance w/ the intended strategies to optimize,
     # an optimization metric to find the best combination of strategy parameters,

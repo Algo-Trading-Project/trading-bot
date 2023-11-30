@@ -11,8 +11,8 @@ class MACrossOver:
     }
 
     optimize_dict = {
-        'fast_window': [6, 12, 24, 48],
-        'slow_window': [24 * 7, 24 * 14, 24 * 21, 24 * 30]
+        'fast_window': [3, 6, 12, 24, 24 * 2],
+        'slow_window': [24 * 3, 24 * 4, 24 * 5, 24 * 6, 24 * 7]
     }
 
     def indicator_func(open, high, low, close, volume,
