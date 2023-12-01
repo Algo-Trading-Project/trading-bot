@@ -1,7 +1,9 @@
 import vectorbt as vbt
 import numpy as np
 
-class BollingerBands:
+from base_strategy import BaseStrategy
+
+class BollingerBands(BaseStrategy):
     
     indicator_factory_dict = {
         'class_name':'BollingerBands',

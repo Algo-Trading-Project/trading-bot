@@ -193,7 +193,7 @@ def calculate_performance_metrics(oos_equity_curve,
 
     return pd.DataFrame(metrics_dict).reset_index(drop = True)
 
-def approximate_expected_maximum_sharpe(mean_sharpe, 
+def _approximate_expected_maximum_sharpe(mean_sharpe, 
                                         var_sharpe, 
                                         nb_trials):
     # universal constants
@@ -210,7 +210,7 @@ def compute_deflated_sharpe_ratio(estimated_sharpe,
                                   skew, 
                                   kurtosis):
     
-    SR0 = approximate_expected_maximum_sharpe(0, sharpe_variance, nb_trials)
+    SR0 = _approximate_expected_maximum_sharpe(0, sharpe_variance, nb_trials)
     
     return norm.cdf(((estimated_sharpe - SR0) * np.sqrt(backtest_horizon - 1)) 
                     / np.sqrt(1 - skew * estimated_sharpe + ((kurtosis - 1) / 4) * estimated_sharpe**2))

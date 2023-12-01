@@ -23,9 +23,9 @@ import json
 ###############################################
 #      TRADING STRATEGIES / BACKTESTING       #
 ###############################################
-from core.walk_forward_optimization import WalkForwardOptimization
-from core.performance_metrics import calculate_performance_metrics
-from core.performance_metrics import compute_deflated_sharpe_ratio
+from core.wfo.walk_forward_optimization import WalkForwardOptimization
+from core.performance.performance_metrics import calculate_performance_metrics
+from core.performance.performance_metrics import compute_deflated_sharpe_ratio
 
 from strategies.ma_crossover import MACrossOver
 from strategies.bollinger_bands import BollingerBands
@@ -646,7 +646,7 @@ if __name__ == '__main__':
     # a performance metric to optimize on, and a dictionary of backtest hyperparameters
 
     b = BackTester(
-        strategies = [MACrossOver, BollingerBands, MomentumVol],
+        strategies = [MomentumVol],
         optimization_metric = 'Sortino Ratio',
         backtest_params = backtest_params
     )

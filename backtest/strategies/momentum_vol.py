@@ -2,7 +2,9 @@ import vectorbt as vbt
 import numpy as np
 import pandas as pd
 
-class MomentumVol:
+from base_strategy import BaseStrategy
+
+class MomentumVol(BaseStrategy):
 
     indicator_factory_dict = {
         'class_name':'MomentumVol',

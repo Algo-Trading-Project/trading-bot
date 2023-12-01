@@ -460,11 +460,11 @@ class PairsTradingBackTester:
 if __name__ == '__main__': 
    
     optimize_dict = {
-        'z_window':[24, 24 * 7, 24 * 14, 24 * 30, 24 * 60],
-        'hedge_ratio_window':[24, 24 * 7, 24 * 14, 24 * 30, 24 * 60],
-        'z_thresh_upper':[1, 2, 3],
-        'z_thresh_lower':[-1, -2, -3],
-        'max_holding_time': [24, 24 * 7, 24 * 30, float('inf')]
+        'z_window':[24, 24 * 7, 24 * 14, 24 * 30],
+        'hedge_ratio_window':[24, 24 * 7, 24 * 14, 24 * 30],
+        'z_thresh_upper':[1, 1.5, 2, 2.5, 3],
+        'z_thresh_lower':[-1, -1.5, -2, -2.5, -3],
+        'max_holding_time': [24, 48, 24 * 7]
     }
 
     b = PairsTradingBackTester(

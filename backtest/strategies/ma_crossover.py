@@ -1,6 +1,7 @@
 import vectorbt as vbt
+from base_strategy import BaseStrategy
 
-class MACrossOver:
+class MACrossOver(BaseStrategy):
     
     indicator_factory_dict = {
         'class_name':'MACrossOver',

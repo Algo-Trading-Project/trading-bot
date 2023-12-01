@@ -15,7 +15,7 @@ class WalkForwardOptimization:
                  optimization_metric: str,
                  backtest_params: dict
                  ):
-        
+                 
         """
         Performs a walk-forward optimization on an arbitrary strategy over an arbitrary token.  
         Logs the resulting trades and equity curve to Redshift for further dashboarding/analysis.

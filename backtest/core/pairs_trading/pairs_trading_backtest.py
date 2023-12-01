@@ -2,9 +2,9 @@ import pandas as pd
 import numpy as np
 import itertools
 
-from numba_funcs import *
+from pairs_trading_numba import *
 from statsmodels.tsa.vector_ar.vecm import coint_johansen
-from performance_metrics import calculate_performance_metrics
+from performance.performance_metrics import calculate_performance_metrics
 
 class PairsTradingBacktest:
     # BACKTESTING PARAMETERS
