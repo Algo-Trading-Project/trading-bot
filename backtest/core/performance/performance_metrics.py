@@ -189,10 +189,6 @@ def calculate_performance_metrics(oos_equity_curve,
     duration = pd.to_datetime(end) - pd.to_datetime(start)
 
     return_pct = (oos_equity_curve['equity'].iloc[-1] - oos_equity_curve['equity'].iloc[0]) / oos_equity_curve['equity'].iloc[0]
-
-    print('Max DD Duration: ', max_drawdown_duration(oos_equity_curve))
-    print('Avg DD Duration: ', avg_drawdown_duration(oos_equity_curve))
-    print()
     
     metrics_dict = {
         'duration':duration, 
