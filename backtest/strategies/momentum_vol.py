@@ -5,7 +5,6 @@ import pandas as pd
 from base_strategy import BaseStrategy
 
 class MomentumVol(BaseStrategy):
-
     indicator_factory_dict = {
         'class_name':'MomentumVol',
         'short_name':'MomentumVol',
@@ -30,65 +29,42 @@ class MomentumVol(BaseStrategy):
     }
 
     def indicator_func(open, high, low, close, volume,
-                    momentum_period = 24,
-                    atr_window = 14, 
-                    volatility_ratio_window = 168, 
-                    volume_window = 24, 
-                    volatility_threshold = 0.5, 
-                    high_volatility_threshold = 1.5, 
-                    time_exit_hours = 24,
-                    cooldown_period = 24):
-
-        df = pd.DataFrame({
-            'open': open,
-            'high': high,
-            'low': low,
-            'close': close,
-            'volume': volume
-        })
-
-        # Calculate indicators
-        df['momentum'] = df['close'].pct_change(momentum_period)
-        df['atr'] = vbt.ATR.run(df['high'], df['low'], df['close'], window = atr_window).atr
-        df['volatility_ratio'] = df['atr'] / df['atr'].rolling(window = volatility_ratio_window).mean()
-        df['volume_avg'] = df['volume'].rolling(window = volume_window).mean()
-
-        # Generate entry signals
-        df['long_entry'] = ((df['momentum'] > 0) & (df['momentum'].shift(1) < df['momentum']) &
-                            (df['volatility_ratio'] <= volatility_threshold) &
-                            (df['volume'] > df['volume_avg']))
-
-        # Initialize exit signals
-        df['volatility_exit'] = df['volatility_ratio'] > high_volatility_threshold
-        df['momentum_exit'] = df['momentum'] < 0
-
-        # Combine exit signals
-        df['long_exit'] = df[['volatility_exit', 'momentum_exit']].any(axis=1)
-
-        # Implement time-based exit logic
-        df['time_since_entry'] = 0
-        position_open = False
-
-        for i in range(1, len(df)):
-            if df['long_entry'].iloc[i] and not position_open:
-                df.loc[i, 'time_since_entry'] = 0
-                position_open = True
-            elif position_open and not df['long_exit'].iloc[i]:
-                df.loc[i, 'time_since_entry'] = df['time_since_entry'].iloc[i - 1] + 1
-            elif df['long_exit'].iloc[i]:
-                position_open = False
-
-        df['time_exit'] = df['time_since_entry'] >= time_exit_hours
-        df['long_exit'] |= df['time_exit']
+                       momentum_period=24, atr_window=14, 
+                       volatility_ratio_window=168, volume_window=24, 
+                       volatility_threshold=0.5, high_volatility_threshold=1.5, 
+                       time_exit_hours=24, cooldown_period=24):
         
-        # Implement cooldown logic
-        df['cooldown'] = 0
+        n = len(close)
+        entries = np.zeros(n, dtype=bool)
+        exits = np.zeros(n, dtype=bool)
+        cooldown_counter = 0
 
-        for i in range(len(df) - cooldown_period):
-            if df['long_exit'].iloc[i]:
-                df.loc[df.index[i+1:i+1+cooldown_period], 'cooldown'] = 1
+        # Calculate momentum and ATR
+        momentum = np.zeros(n)
+        np.divide(close[1:] - close[:-1], close[:-1], out=momentum[1:])
+        atr = vbt.ATR.run(high, low, close, window=atr_window).atr.to_numpy()
 
-        entries = (df['long_entry'] & (df['cooldown'] == 0)).values
-        exits = df['long_exit'].values
+        # Calculate volatility ratio
+        volatility_ratio = np.zeros(n)
+        atr_rolling_mean = np.convolve(atr, np.ones(volatility_ratio_window) / volatility_ratio_window, mode='valid')
+        np.divide(atr[volatility_ratio_window - 1:], atr_rolling_mean, out=volatility_ratio[volatility_ratio_window - 1:])
+
+        # Calculate volume average
+        volume_avg = np.convolve(volume, np.ones(volume_window) / volume_window, mode='valid')
+
+        for i in range(1, n):
+            # Entry logic
+            if (momentum[i] > 0) and (momentum[i - 1] < momentum[i]) \
+               and (volatility_ratio[i] <= volatility_threshold) \
+               and (volume[i] > volume_avg[i - volume_window]) \
+               and (cooldown_counter == 0):
+                entries[i] = True
+                cooldown_counter = cooldown_period
+            else:
+                cooldown_counter = max(0, cooldown_counter - 1)
+
+            # Exit logic
+            if (volatility_ratio[i] > high_volatility_threshold) or (momentum[i] < 0):
+                exits[i] = True
 
         return entries, exits

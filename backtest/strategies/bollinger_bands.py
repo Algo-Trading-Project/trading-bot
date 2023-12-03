@@ -1,7 +1,7 @@
 import vectorbt as vbt
 import numpy as np
 
-from base_strategy import BaseStrategy
+from .base_strategy import BaseStrategy
 
 class BollingerBands(BaseStrategy):
     

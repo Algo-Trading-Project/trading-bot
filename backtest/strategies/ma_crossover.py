@@ -1,5 +1,5 @@
 import vectorbt as vbt
-from base_strategy import BaseStrategy
+from .base_strategy import BaseStrategy
 
 class MACrossOver(BaseStrategy):
     

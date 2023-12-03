@@ -24,12 +24,12 @@ import json
 #      TRADING STRATEGIES / BACKTESTING       #
 ###############################################
 from core.wfo.walk_forward_optimization import WalkForwardOptimization
-from core.performance.performance_metrics import calculate_performance_metrics
-from core.performance.performance_metrics import compute_deflated_sharpe_ratio
+from core.performance.performance_metrics import *
+
+from core.simulation.monte_carlo import run_monte_carlo_simulation
 
 from strategies.ma_crossover import MACrossOver
 from strategies.bollinger_bands import BollingerBands
-from strategies.momentum_vol import MomentumVol
 
 class BackTester:
 
@@ -514,19 +514,16 @@ class BackTester:
         ) as conn:
             with conn.cursor() as cursor:
                 for strat in self.strategies:
-                    i = 0
                     for token in self.TOKENS_TO_BACKTEST:
                         base, quote, exchange = token.split('_')
 
                         print()
-                        print('Backtesting the {} strategy on {} ({} / {})'.format(
+                        print('Backtesting the {} strategy on {}'.format(
                         strat.indicator_factory_dict['class_name'],
-                        base + '_' + 'USD' + '_' + exchange,
-                        i + 1, len(self.TOKENS_TO_BACKTEST)
+                        base + '_' + 'USD' + '_' + exchange
                         ))
 
-                        i += 1
-
+                        # Execute walk-forward optimization
                         oos_equity_curves, oos_trades, oos_price_data, deflated_sharpe_ratios = self.__execute_wfo(
                             base = base,
                             quote = quote, 
@@ -535,6 +532,27 @@ class BackTester:
                             in_sample_size = 24 * 30 * 4,
                             out_of_sample_size = 24 * 30 * 2
                         )
+
+                        print('Starting 1000 Monte Carlo simulations...')
+                        print()
+
+                        time_start = time.time()
+                        # Perform Monte Carlo simulation on the out-of-sample equity curve
+                        monte_carlo_simulations = run_monte_carlo_simulation(oos_equity_curves)
+                        time_end = time.time()
+
+                        # Number of seconds elapsed during the monte carlo simulation
+                        time_elapsed = round(abs(time_end - time_start) / 60.0, 2)
+
+                        print('Performed 1000 Monte Carlo simulations on {} observations in {} mins'.format(len(monte_carlo_simulations), time_elapsed))
+                        print()
+
+                        # Calculate performance metrics for the monte carlo simulations
+                        performance_metrics_monte_carlo = calculate_monte_carlo_metrics(monte_carlo_simulations)
+                        
+                        # Serialize the monte carlo metrics to a JSON string
+                        performance_metrics_monte_carlo = json.dumps(performance_metrics_monte_carlo, default = BackTester.__serialize_json_data)
+                        performance_metrics_monte_carlo = performance_metrics_monte_carlo.replace('NaN', 'null').replace('Infinity', 'null')
 
                         # If the walk-forward optimization failed, skip to the next token
                         if (oos_equity_curves is None) or (oos_trades is None) or (oos_price_data is None):
@@ -591,14 +609,15 @@ class BackTester:
                         performance_metrics = performance_metrics.replace('NaN', 'null').replace('Infinity', 'null')
 
                         insert_str_backtest_result = """
-                        ('{}', '{}', '{}', '{}', '{}', '{}')
+                        ('{}', '{}', '{}', '{}', '{}', '{}', '{}')
                         """.format(
                             strat.indicator_factory_dict['class_name'],
                             base + '_' + quote + '_' + exchange,
                             oos_price_data.index[0],
                             oos_price_data.index[-1],
                             performance_metrics,  
-                            self.optimization_metric
+                            self.optimization_metric,
+                            performance_metrics_monte_carlo,
                         )
 
                         self.__upsert_into_redshift_table(
@@ -630,23 +649,23 @@ if __name__ == '__main__':
     # sl_trail  - Indicate whether or not want a trailing stop-loss
     # tp_stop   - Take-profit percent
     # size      - Percentage of capital to use for each trade
-    # size_type - Indicatess the 'size' parameter represents a percent
+    # size_type - Indicates the 'size' parameter represents a percent
 
     backtest_params = {
         'init_cash': 100_000,
         'fees': 0.00295,
-        'sl_stop': [0.1, float('inf')],
-        'tp_stop': [0.1, float('inf')],
+        'sl_stop': [0.05, 0.1, 0.2],
+        'tp_stop': [0.05, 0.1, 0.2],
         'sl_trail': True,
         'size': [0.05, 0.1, 0.2],
-        'size_type':2 # e.g. 2 if 'size' is 'Fixed Percent' and 0 otherwise
+        'size_type': 2 # e.g. 2 if 'size' is 'Fixed Percent' and 0 otherwise
     }
 
     # Initialize a BackTester instance w/ the intended strategies to backtest,
     # a performance metric to optimize on, and a dictionary of backtest hyperparameters
 
     b = BackTester(
-        strategies = [MomentumVol],
+        strategies = [MACrossOver, BollingerBands],
         optimization_metric = 'Sortino Ratio',
         backtest_params = backtest_params
     )

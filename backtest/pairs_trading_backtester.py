@@ -32,8 +32,8 @@ from typing import Tuple
 ###############################################
 #      TRADING STRATEGIES / BACKTESTING       #
 ###############################################
-from core.pairs_trading_backtest import PairsTradingBacktest
-from core.performance_metrics import calculate_performance_metrics
+from core.pairs_trading.pairs_trading_backtest import PairsTradingBacktest
+from core.performance.performance_metrics import calculate_performance_metrics
 
 class PairsTradingBackTester:
 
@@ -362,7 +362,7 @@ class PairsTradingBackTester:
                         asset_id_quote,
                         exchange_id,
                         MAX(time_period_start) - INTERVAL '30 DAYS' AS start_date
-                    FROM token_price.coinapi.price_data_1h
+                    FROM token_price.coinapi.price_data_1h o
                     GROUP BY         
                         asset_id_base,
                         asset_id_quote,
@@ -376,12 +376,14 @@ class PairsTradingBackTester:
                 FROM token_price.coinapi.price_data_1h o INNER JOIN last_month l
                     ON o.asset_id_base = l.asset_id_base AND
                         o.asset_id_quote = l.asset_id_quote AND
-                        o.exchange_id = l.exchange_id 
+                        o.exchange_id = l.exchange_id
                 WHERE
-                    time_period_start >= start_date
+                    o.asset_id_base NOT LIKE '%USD%' AND
+                    time_period_start >= start_date 
+
                 GROUP BY o.asset_id_base, o.asset_id_quote, o.exchange_id
-                ORDER BY AVG(volume_traded / (1 / price_close)) * 24 DESC
-                LIMIT 50
+                ORDER BY AVG(volume_traded / (1 / price_close)) * 24 * 0.005 DESC
+                LIMIT 10
                 """
                 cursor.execute(top_100_tokens_by_volume_query)
                 tuples = cursor.fetchall()
@@ -402,12 +404,15 @@ class PairsTradingBackTester:
                     if p1.split('_')[0] == p2.split('_')[0]:
                         continue
                         
-                    is_cointegrated, x_y_dict = self.__is_cointegrated(
+                    try:
+                        is_cointegrated, x_y_dict = self.__is_cointegrated(
                         symbol_id_1 = p1,
                         symbol_id_2 = p2,
                         p_val_thresh = 0.05,
                         correlation_thresh = 0.8
-                    )
+                        )
+                    except Exception as e:
+                        continue
 
                     print('({}/{}) ({}, {}) is cointegrated: {}'.format(i + 1, len(combs), p1, p2, is_cointegrated))
                     print()
@@ -460,10 +465,10 @@ class PairsTradingBackTester:
 if __name__ == '__main__': 
    
     optimize_dict = {
-        'z_window':[24, 24 * 7, 24 * 14, 24 * 30],
-        'hedge_ratio_window':[24, 24 * 7, 24 * 14, 24 * 30],
-        'z_thresh_upper':[1, 1.5, 2, 2.5, 3],
-        'z_thresh_lower':[-1, -1.5, -2, -2.5, -3],
+        'z_window':[24, 24 * 7, 24 * 30],
+        'hedge_ratio_window':[24, 24 * 7, 24 * 30],
+        'z_thresh_upper':[1, 1.5, 2],
+        'z_thresh_lower':[-1, -1.5, -2],
         'max_holding_time': [24, 48, 24 * 7]
     }
 

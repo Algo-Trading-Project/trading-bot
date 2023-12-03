@@ -2,9 +2,9 @@ import pandas as pd
 import numpy as np
 import itertools
 
-from pairs_trading_numba import *
+from .pairs_trading_numba import *
 from statsmodels.tsa.vector_ar.vecm import coint_johansen
-from performance.performance_metrics import calculate_performance_metrics
+from ..performance.performance_metrics import calculate_performance_metrics
 
 class PairsTradingBacktest:
     # BACKTESTING PARAMETERS
@@ -35,10 +35,10 @@ class PairsTradingBacktest:
                  end_i,
                  backtest_params = {
                     'initial_capital':100_000, 
-                    'pct_capital_per_trade': 0.05,
+                    'pct_capital_per_trade': 0.1,
                     'comission': 0.00295,
-                    'sl': float('inf'),
-                    'tp':float('inf'),
+                    'sl': float(0.05),
+                    'tp':float(0.05),
                     'max_slippage':0.00
                     }
                 ):
