@@ -2,6 +2,7 @@
 Repository for Project Poseidon's trading bot.
 
 Trading bot has the following structure:
+```
 .
 ├── README.md
 ├── backtest
@@ -27,13 +28,16 @@ Trading bot has the following structure:
 │       ├── __init__.py
 │       ├── base_strategy.py
 │       ├── bollinger_bands.py
-│       └── ma_crossover.py
+│       ├── ma_crossover.py
+│       └── momentum_vol.py
+├── market_data
+│   ├── __init__.py
+│   ├── order_book_snapshot.py
+│   └── order_book_snapshot_processor.py
 ├── notebooks
-│   ├── eda.ipynb
-│   ├── simple_ml.ipynb
-│   └── simulated_curves.csv
-├── simulated_curves.csv
+│   └── eda.ipynb
 └── trading_bot
     └── __init__.py
-    
-10 directories, 23 files
+
+11 directories, 24 files
+```
