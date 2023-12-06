@@ -30,6 +30,7 @@ from core.simulation.monte_carlo import run_monte_carlo_simulation
 
 from strategies.ma_crossover import MACrossOver
 from strategies.bollinger_bands import BollingerBands
+from strategies.momentum_vol import MomentumVol
 
 class BackTester:
 
@@ -654,10 +655,10 @@ if __name__ == '__main__':
     backtest_params = {
         'init_cash': 100_000,
         'fees': 0.00295,
-        'sl_stop': [0.05, 0.1, 0.2],
-        'tp_stop': [0.05, 0.1, 0.2],
+        'sl_stop': [0.1],
+        'tp_stop': [0.1],
         'sl_trail': True,
-        'size': [0.05, 0.1, 0.2],
+        'size': [0.1],
         'size_type': 2 # e.g. 2 if 'size' is 'Fixed Percent' and 0 otherwise
     }
 
@@ -665,7 +666,7 @@ if __name__ == '__main__':
     # a performance metric to optimize on, and a dictionary of backtest hyperparameters
 
     b = BackTester(
-        strategies = [MACrossOver, BollingerBands],
+        strategies = [MomentumVol],
         optimization_metric = 'Sortino Ratio',
         backtest_params = backtest_params
     )
