@@ -26,8 +26,6 @@ import json
 from core.wfo.walk_forward_optimization import WalkForwardOptimization
 from core.performance.performance_metrics import *
 
-from core.simulation.monte_carlo import run_monte_carlo_simulation
-
 from strategies.ma_crossover import MACrossOver
 from strategies.bollinger_bands import BollingerBands
 from strategies.momentum_vol import MomentumVol
@@ -264,13 +262,13 @@ class BackTester:
                                     is_end_i: int, 
                                     oos_start_i: int, 
                                     oos_end_i: int, 
-                                    starting_equity: float) -> (pd.DataFrame, pd.DataFrame, float):
+                                    starting_equity: float) -> (pd.DataFrame, pd.DataFrame):
         
         """
         Optimizes the parameters of a Strategy (strat) on the in-sample data and performs 
         a backtest on the out-of-sample data w/ the optimized parameters. Returns the 
-        out-of-sample trades, out-of-sample equity curve, and the deflated sharpe ratio (DSR) 
-        so that it can be logged to Redshift for further dashboarding/analysis.
+        out-of-sample trades and out-of-sample equity curve so that it can be logged to 
+        Redshift for further dashboarding/analysis.
 
         Parameters:
         -----------
@@ -302,10 +300,6 @@ class BackTester:
 
         DataFrame:
             DataFrame containing the equity curve from the out-of-sample backtest.
-
-        float:
-            Deflated sharpe ratio (DSR) for the in-sample optimization period.
-
         """
                 
         backtest_params = self.backtest_params.copy()
@@ -325,16 +319,6 @@ class BackTester:
         optimal_params, portfolio, optimal_backtest_hyperparams = wfo.optimize()
         oos_trades, oos_equity_curve = wfo.walk_forward(optimal_params, optimal_backtest_hyperparams)
 
-        # Drop potential non-finite sharpe ratio values so we can calculate
-        # Deflated Sharpe Ratio without issues
-        sharpes = portfolio.returns_acc.sharpe_ratio()
-        sharpes.replace([np.inf, -np.inf], np.nan, inplace = True)
-        sharpes.dropna(inplace = True)
-        
-        annualization_factor = portfolio.returns_acc.ann_factor
-        estimated_sharpe = sharpes.max() / np.sqrt(annualization_factor)
-        sharpe_variance = sharpes.var() / annualization_factor
-
         if type(backtest_params.get('sl_stop')) == list:
             nb_sl = len(backtest_params.get('sl_stop'))
             nb_tp = len(backtest_params.get('tp_stop'))
@@ -343,31 +327,15 @@ class BackTester:
         else:
             nb_trials = len(sharpes)
 
-        backtest_horizon = is_end_i - is_start_i + 1
-        skew = portfolio.loc[sharpes.idxmax()].returns().skew()
-        kurtosis = portfolio.loc[sharpes.idxmax()].returns().kurt()
+        return oos_trades, oos_equity_curve
 
-        deflated_sharpe_ratio = compute_deflated_sharpe_ratio(
-            estimated_sharpe = estimated_sharpe,
-            sharpe_variance = sharpe_variance,
-            nb_trials = nb_trials,
-            backtest_horizon = backtest_horizon,
-            skew = skew, 
-            kurtosis = kurtosis
-        )
-
-        # Return and aggregate optimal params to enable sensitivity analysis on our stategies
-        # after performing walk-forward analysis
-
-        return oos_trades, oos_equity_curve, deflated_sharpe_ratio
-    
     def __execute_wfo(self, 
                       base: str,
                       quote: str,   
                       exchange: str, 
                       strat,                    
                       in_sample_size: int,                 
-                      out_of_sample_size: int) -> (pd.DataFrame, pd.DataFrame, pd.DataFrame, list):
+                      out_of_sample_size: int) -> (pd.DataFrame, pd.DataFrame, pd.DataFrame):
 
         """
         Executes a walk-forward optimization on an arbitrary trading strategy and a
@@ -409,11 +377,6 @@ class BackTester:
         DataFrame:
             DataFrame containing the combined token price data from all of the
             out-of-sample periods, sorted by date.
-
-        list:
-            List of Deflated Sharpe Ratios (DSR) across all in-sample
-            optimization periods.
-
         """
 
         # Walk-forward analysis
@@ -429,7 +392,6 @@ class BackTester:
         equity_curves = []
         trades = []
         price_data = []
-        deflated_sharpe_ratios = []
 
         starting_equity = 100_000
 
@@ -453,7 +415,7 @@ class BackTester:
                 oos_start_i = start + in_sample_size
                 oos_end_i = start + in_sample_size + out_of_sample_size
 
-            oos_trades, oos_equity_curve, deflated_sharpe_ratio = self.__walk_forward_optimization(
+            oos_trades, oos_equity_curve = self.__walk_forward_optimization(
                 strat = strat,
                 backtest_data = backtest_data,
                 is_start_i = is_start_i,
@@ -477,18 +439,17 @@ class BackTester:
             equity_curves.append(oos_equity_curve)
             trades.append(oos_trades)
             price_data.append(backtest_data.iloc[oos_start_i:oos_end_i])
-            deflated_sharpe_ratios.append(deflated_sharpe_ratio)
             
             start += out_of_sample_size
 
         if len(equity_curves) == 0 or len(trades) == 0 or len(price_data) == 0:
-            return None, None, None, None
+            return None, None, None
 
         equity_curves = pd.concat(equity_curves).sort_index()
         trades = pd.concat(trades, ignore_index = True)
         price_data = pd.concat(price_data).sort_index()
 
-        return equity_curves, trades, price_data, deflated_sharpe_ratios
+        return equity_curves, trades, price_data
                                     
     def execute(self) -> None:
         """
@@ -525,7 +486,7 @@ class BackTester:
                         ))
 
                         # Execute walk-forward optimization
-                        oos_equity_curves, oos_trades, oos_price_data, deflated_sharpe_ratios = self.__execute_wfo(
+                        oos_equity_curves, oos_trades, oos_price_data = self.__execute_wfo(
                             base = base,
                             quote = quote, 
                             exchange = exchange,
@@ -533,27 +494,6 @@ class BackTester:
                             in_sample_size = 24 * 30 * 4,
                             out_of_sample_size = 24 * 30 * 2
                         )
-
-                        print('Starting 1000 Monte Carlo simulations...')
-                        print()
-
-                        time_start = time.time()
-                        # Perform Monte Carlo simulation on the out-of-sample equity curve
-                        monte_carlo_simulations = run_monte_carlo_simulation(oos_equity_curves)
-                        time_end = time.time()
-
-                        # Number of seconds elapsed during the monte carlo simulation
-                        time_elapsed = round(abs(time_end - time_start) / 60.0, 2)
-
-                        print('Performed 1000 Monte Carlo simulations on {} observations in {} mins'.format(len(monte_carlo_simulations), time_elapsed))
-                        print()
-
-                        # Calculate performance metrics for the monte carlo simulations
-                        performance_metrics_monte_carlo = calculate_monte_carlo_metrics(monte_carlo_simulations)
-                        
-                        # Serialize the monte carlo metrics to a JSON string
-                        performance_metrics_monte_carlo = json.dumps(performance_metrics_monte_carlo, default = BackTester.__serialize_json_data)
-                        performance_metrics_monte_carlo = performance_metrics_monte_carlo.replace('NaN', 'null').replace('Infinity', 'null')
 
                         # If the walk-forward optimization failed, skip to the next token
                         if (oos_equity_curves is None) or (oos_trades is None) or (oos_price_data is None):
@@ -602,23 +542,18 @@ class BackTester:
                             oos_price_data
                         ).to_dict(orient = 'records')[0]
 
-                        deflated_sharpe_ratios = [round(dsr, 4) for dsr in deflated_sharpe_ratios]
-                        deflated_sharpe_ratios = json.dumps(deflated_sharpe_ratios)
-
-                        performance_metrics['deflated_sharpe_ratios'] = deflated_sharpe_ratios
                         performance_metrics = json.dumps(performance_metrics, default = BackTester.__serialize_json_data)
                         performance_metrics = performance_metrics.replace('NaN', 'null').replace('Infinity', 'null')
 
                         insert_str_backtest_result = """
-                        ('{}', '{}', '{}', '{}', '{}', '{}', '{}')
+                        ('{}', '{}', '{}', '{}', '{}', '{}')
                         """.format(
                             strat.indicator_factory_dict['class_name'],
                             base + '_' + quote + '_' + exchange,
                             oos_price_data.index[0],
                             oos_price_data.index[-1],
                             performance_metrics,  
-                            self.optimization_metric,
-                            performance_metrics_monte_carlo,
+                            self.optimization_metric
                         )
 
                         self.__upsert_into_redshift_table(

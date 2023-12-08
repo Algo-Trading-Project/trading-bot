@@ -265,30 +265,6 @@ def conditional_value_at_risk(equity_curve, holding_period, confidence_level):
 
     return cvar_pct
 
-# CALCULATES DEFLATED SHARPE RATIO
-
-def _approximate_expected_maximum_sharpe(mean_sharpe, 
-                                        var_sharpe, 
-                                        nb_trials):
-    # universal constants
-    gamma = 0.5772156649015328606
-    e = np.exp(1)
-
-    return mean_sharpe + np.sqrt(var_sharpe) * (
-        (1 - gamma) * norm.ppf(1 - 1 / nb_trials) + gamma * norm.ppf(1 - 1 / (nb_trials * e)))
-
-def compute_deflated_sharpe_ratio(estimated_sharpe,
-                                  sharpe_variance,
-                                  nb_trials,
-                                  backtest_horizon, 
-                                  skew, 
-                                  kurtosis):
-    
-    SR0 = _approximate_expected_maximum_sharpe(0, sharpe_variance, nb_trials)
-    
-    return (norm.cdf(((estimated_sharpe - SR0) * np.sqrt(backtest_horizon - 1))) 
-            / np.sqrt(1 - skew * estimated_sharpe + ((kurtosis - 1) / 4) * estimated_sharpe**2))
-
 # PERFORMANCE METRICS FOR MONTE CARLO SIMULATIONS
 
 def calculate_monte_carlo_metrics(simulated_curves_df):

@@ -64,7 +64,6 @@ class WalkForwardOptimization:
             'Profit Factor':'trades.profit_factor',
             'Expectancy':'trades.expectancy',
             'Sharpe Ratio':'returns_acc.sharpe_ratio',
-            'Deflated Sharpe Ratio':'returns_acc.deflated_sharpe_ratio',
             'Calmar Ratio':'returns_acc.calmar_ratio',
             'Omega Ratio':'returns_acc.omega_ratio',
             'Sortino Ratio':'returns_acc.sortino_ratio'
