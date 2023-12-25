@@ -54,5 +54,5 @@ Trading bot has the following structure:
 └── trading_bot
     └── __init__.py
 
-11 directories, 25 files
+11 directories, 25 files, 4188 lines of code
 ```
