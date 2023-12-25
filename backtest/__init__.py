@@ -1,5 +1,3 @@
-import vectorbt
-
 from .core.wfo.walk_forward_optimization import WalkForwardOptimization
 from .core.simulation.pbo import pbo
 from .core.performance.performance_metrics import *
