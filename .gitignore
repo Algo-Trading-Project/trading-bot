@@ -10,3 +10,4 @@ __pycache__/
 .empty/
 *.empty/
 *.xml
+walk_forward_model.pkl

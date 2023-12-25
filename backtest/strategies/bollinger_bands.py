@@ -14,7 +14,7 @@ class BollingerBands(BaseStrategy):
     }
 
     optimize_dict = {
-        'bb_window': [3, 6, 12, 24, 48, 24 * 7],
+        'bb_window': [12, 24, 48, 24 * 7],
         'bb_std_mult': [1, 1.5, 2],
     }
 

@@ -24,26 +24,33 @@ import json
 #      TRADING STRATEGIES / BACKTESTING       #
 ###############################################
 from core.wfo.walk_forward_optimization import WalkForwardOptimization
+from core.simulation.pbo import pbo
+
 from core.performance.performance_metrics import *
+from core.performance.performance_metrics_pbo import sortino
 
 from strategies.ma_crossover import MACrossOver
 from strategies.bollinger_bands import BollingerBands
-from strategies.momentum_vol import MomentumVol
+from strategies.linear_regression import LogisticRegressionStrategy
 
 class BackTester:
 
     # List of tokens to backtest
     TOKENS_TO_BACKTEST = [
-        'BTC_USD_COINBASE', 'ETH_USD_COINBASE', 'BCH_USD_COINBASE',
-        'ETC_USD_COINBASE', 'BNB_USDC_BINANCE', 'LINK_USD_COINBASE',
-        'XRP_USDT_BINANCE', 'MATIC_USDT_BINANCE', 'EOS_USD_COINBASE', 
-        'ZRX_USD_COINBASE', 'LTC_USD_COINBASE', 'ATOM_USDT_BINANCE'
+        'BTC_USD_COINBASE', 'ETH_USD_COINBASE', 'ADA_USDT_BINANCE',
+        'ALGO_USD_COINBASE', 'ATOM_USDT_BINANCE', 'BCH_USD_COINBASE',
+        'BNB_USDC_BINANCE', 'DOGE_USDT_BINANCE', 'ETC_USD_COINBASE',
+        'FET_USDT_BINANCE', 'FTM_USDT_BINANCE', 'HOT_USDT_BINANCE',
+        'IOTA_USDT_BINANCE', 'LINK_USD_COINBASE', 'LTC_USD_COINBASE',
+        'MATIC_USDT_BINANCE',
     ]
 
-    def __init__(self,  
-                 strategies: list,                  
-                 optimization_metric: str = 'Sharpe Ratio',                 
-                 backtest_params: dict = {'init_cash':100_000, 'fees':0.005}):
+    def __init__(
+        self,  
+        strategies: list,                  
+        optimization_metric: str = 'Sharpe Ratio',                 
+        backtest_params: dict = {'init_cash':100_000, 'fees':0.005}
+    ):
         """
         Coordinates the walk-forward optimization of a set of strategies over a set of CoinAPI tokens, 
         utilizing the vectorbt package for efficient parameter optimization. The results of the walk-forward
@@ -92,11 +99,15 @@ class BackTester:
             return int(obj)
         elif isinstance(obj, np.floating):
             return float(obj)
+        else:
+            raise TypeError('Object of type {} is not JSON serializable'.format(type(obj)))
              
-    def __fetch_OHLCV_df_from_redshift(self, 
-                                       base: str, 
-                                       quote: str, 
-                                       exchange: str) -> pd.DataFrame:
+    def __fetch_OHLCV_df_from_redshift(
+        self, 
+        base: str, 
+        quote: str, 
+        exchange: str
+    ) -> pd.DataFrame:
         """
         Queries OHLCV data for {exchange}_SPOT_{base}_{quote} CoinAPI pair stored in
         Project Poseidon's Redshift cluster. Returns the queried data as a DataFrame 
@@ -159,11 +170,13 @@ class BackTester:
 
                 return df
             
-    def __upsert_into_redshift_table(self, 
-                                     table: str, 
-                                     insert_str: str, 
-                                     cursor: redshift_connector.Cursor, 
-                                     conn: redshift_connector.Connection) -> None:
+    def __upsert_into_redshift_table(
+        self, 
+        table: str, 
+        insert_str: str, 
+        cursor: redshift_connector.Cursor,
+        conn: redshift_connector.Connection
+    ) -> None:
         
         """
         Performs an upsert on the specified Redshift table in the trading_bot database.
@@ -255,14 +268,16 @@ class BackTester:
                     
         conn.commit()
 
-    def __walk_forward_optimization(self, 
-                                    strat, 
-                                    backtest_data: pd.DataFrame, 
-                                    is_start_i: int, 
-                                    is_end_i: int, 
-                                    oos_start_i: int, 
-                                    oos_end_i: int, 
-                                    starting_equity: float) -> (pd.DataFrame, pd.DataFrame):
+    def __walk_forward_optimization(
+        self, 
+        strat, 
+        backtest_data: pd.DataFrame,
+        is_start_i: int, 
+        is_end_i: int, 
+        oos_start_i: int, 
+        oos_end_i: int, 
+        starting_equity: float
+    ) -> (pd.DataFrame, pd.DataFrame):
         
         """
         Optimizes the parameters of a Strategy (strat) on the in-sample data and performs 
@@ -316,26 +331,20 @@ class BackTester:
             backtest_params = backtest_params
         )
 
-        optimal_params, portfolio, optimal_backtest_hyperparams = wfo.optimize()
-        oos_trades, oos_equity_curve = wfo.walk_forward(optimal_params, optimal_backtest_hyperparams)
-
-        if type(backtest_params.get('sl_stop')) == list:
-            nb_sl = len(backtest_params.get('sl_stop'))
-            nb_tp = len(backtest_params.get('tp_stop'))
-            nb_size = len(backtest_params.get('size'))
-            nb_trials = len(sharpes) * nb_sl * nb_tp * nb_size
-        else:
-            nb_trials = len(sharpes)
+        optimal_params, in_sample_portfolio = wfo.optimize()
+        oos_trades, oos_equity_curve = wfo.walk_forward(optimal_params)
 
         return oos_trades, oos_equity_curve
 
-    def __execute_wfo(self, 
-                      base: str,
-                      quote: str,   
-                      exchange: str, 
-                      strat,                    
-                      in_sample_size: int,                 
-                      out_of_sample_size: int) -> (pd.DataFrame, pd.DataFrame, pd.DataFrame):
+    def __execute_wfo(
+        self, 
+        base: str,
+        quote: str,   
+        exchange: str,
+        strat,       
+        in_sample_size: int, 
+        out_of_sample_size: int
+    ) -> (pd.DataFrame, pd.DataFrame, pd.DataFrame):
 
         """
         Executes a walk-forward optimization on an arbitrary trading strategy and a
@@ -392,8 +401,9 @@ class BackTester:
         equity_curves = []
         trades = []
         price_data = []
+        oos_returns = []
 
-        starting_equity = 100_000
+        starting_equity = self.backtest_params['init_cash']
 
         while start + in_sample_size + out_of_sample_size <= len(backtest_data):
             print()
@@ -439,6 +449,7 @@ class BackTester:
             equity_curves.append(oos_equity_curve)
             trades.append(oos_trades)
             price_data.append(backtest_data.iloc[oos_start_i:oos_end_i])
+            oos_returns.append(oos_equity_curve['equity'].pct_change().fillna(0))
             
             start += out_of_sample_size
 
@@ -448,8 +459,11 @@ class BackTester:
         equity_curves = pd.concat(equity_curves).sort_index()
         trades = pd.concat(trades, ignore_index = True)
         price_data = pd.concat(price_data).sort_index()
+        
+        # Combine the OOS returns into a matrix
+        oos_returns_matrix = pd.concat(oos_returns, axis = 1).fillna(0).values
 
-        return equity_curves, trades, price_data
+        return equity_curves, trades, price_data, oos_returns_matrix
                                     
     def execute(self) -> None:
         """
@@ -475,6 +489,7 @@ class BackTester:
             password = 'Free2play2'
         ) as conn:
             with conn.cursor() as cursor:
+
                 for strat in self.strategies:
                     for token in self.TOKENS_TO_BACKTEST:
                         base, quote, exchange = token.split('_')
@@ -486,14 +501,25 @@ class BackTester:
                         ))
 
                         # Execute walk-forward optimization
-                        oos_equity_curves, oos_trades, oos_price_data = self.__execute_wfo(
+                        oos_equity_curves, oos_trades, oos_price_data, oos_returns_matrix = self.__execute_wfo(
                             base = base,
                             quote = quote, 
                             exchange = exchange,
                             strat = strat,
-                            in_sample_size = 24 * 30 * 4,
+                            in_sample_size = 24 * 30 * 2,
                             out_of_sample_size = 24 * 30 * 2
                         )
+
+                        # Perform PBO analysis for each (Strategy, Token) combination
+                        pbo_results = pbo(
+                            M=oos_returns_matrix,
+                            S=10,
+                            metric_func=sortino,  # Define or import your metric function
+                            threshold=0,
+                            n_jobs=1,
+                            verbose=True,
+                            plot=False  # No plot here, as it will be done on the dashboard
+                        )._asdict()
 
                         # If the walk-forward optimization failed, skip to the next token
                         if (oos_equity_curves is None) or (oos_trades is None) or (oos_price_data is None):
@@ -541,6 +567,9 @@ class BackTester:
                             oos_trades, 
                             oos_price_data
                         ).to_dict(orient = 'records')[0]
+                        
+                        # Serialize PBO results and add them to performance metrics
+                        # performance_metrics['pbo_results'] = json.dumps(pbo_results._asdict(), default=BackTester.__serialize_json_data)
 
                         performance_metrics = json.dumps(performance_metrics, default = BackTester.__serialize_json_data)
                         performance_metrics = performance_metrics.replace('NaN', 'null').replace('Infinity', 'null')
@@ -555,6 +584,9 @@ class BackTester:
                             performance_metrics,  
                             self.optimization_metric
                         )
+
+                        print('Backtest Results: ', performance_metrics)
+                        print()
 
                         self.__upsert_into_redshift_table(
                             table = 'backtest_results',
@@ -575,6 +607,8 @@ class BackTester:
                             conn = conn
                         )
 
+        return pbo_results
+
 if __name__ == '__main__': 
 
     # Set backtest parameters
@@ -590,10 +624,10 @@ if __name__ == '__main__':
     backtest_params = {
         'init_cash': 100_000,
         'fees': 0.00295,
-        'sl_stop': [0.1],
-        'tp_stop': [0.1],
+        'sl_stop': 0.1,
+        'tp_stop': 0.1,
         'sl_trail': True,
-        'size': [0.1],
+        'size': 0.05,
         'size_type': 2 # e.g. 2 if 'size' is 'Fixed Percent' and 0 otherwise
     }
 
@@ -601,7 +635,7 @@ if __name__ == '__main__':
     # a performance metric to optimize on, and a dictionary of backtest hyperparameters
 
     b = BackTester(
-        strategies = [MomentumVol],
+        strategies = [MACrossOver, BollingerBands],
         optimization_metric = 'Sortino Ratio',
         backtest_params = backtest_params
     )

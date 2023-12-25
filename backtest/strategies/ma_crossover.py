@@ -16,6 +16,7 @@ class MACrossOver(BaseStrategy):
         'slow_window': [24 * 3, 24 * 4, 24 * 5, 24 * 6, 24 * 7]
     }
 
+    @staticmethod
     def indicator_func(open, high, low, close, volume,
                        fast_window, slow_window):  
         
@@ -26,4 +27,3 @@ class MACrossOver(BaseStrategy):
         exits = sma_fast.ma_crossed_below(sma_slow).values
 
         return entries, exits
-        

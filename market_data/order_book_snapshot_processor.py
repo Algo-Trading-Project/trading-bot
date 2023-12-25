@@ -99,8 +99,6 @@ def test_order_book_processing():
     processor = OrderBookDataProcessor()
     df = processor.process_snapshots()
 
-    print(df)
-
     # Check if the DataFrame is not empty and has the expected columns
     assert not df.empty, "DataFrame is empty"
 
