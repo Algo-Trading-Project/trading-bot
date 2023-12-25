@@ -1,2 +1,1 @@
-from . import core
-from . import strategies
+from .backtester import BackTester
