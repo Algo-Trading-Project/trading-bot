@@ -1,2 +1,2 @@
-import .core
-import .strategies
+from . import core
+from . import strategies
