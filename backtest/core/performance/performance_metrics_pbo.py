@@ -237,7 +237,6 @@ def omega_empirical(returns, target_rtn=0, log=True, plot=False, steps=1000):
     if not log:
         returns = pct_to_log_return(returns)
 
-    # TODO
     ecdf = sde.ECDF(returns)
 
     # Generate computation space
@@ -256,8 +255,6 @@ def omega_empirical(returns, target_rtn=0, log=True, plot=False, steps=1000):
         ax.legend(loc="best")
         plt.show(fig)
         plt.close(fig)
-
-    # TODO calculate omega ratio
 
 def sortino(returns, target_rtn=0, factor=trading_hours, log=False):
     """
