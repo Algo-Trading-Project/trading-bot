@@ -2,13 +2,15 @@ from setuptools import setup, find_packages
 
 setup(
     name='Trading-Bot',
-    version='0.1',
-    packages=find_packages(),
-    url='https://github.com/Project-Poseidon/trading_bot',
-    license='MIT',
+    version='0.1.0',
     author='Louis Spencer',
-    author_email='louisspencer87@gmail.comd',
-    description="Repository for Project Poseidon's trading bot.",
+    author_email='louis@projectposeidon.io',
+    description='An automated trading bot for cryptocurrencies',
+    long_description=open('README.md').read(),
+    long_description_content_type='text/markdown',
+    url='https://github.com/Project-Poseidon/trading_bot',
+    packages=find_packages(),
+    include_package_data=True,
     install_requires=[
         'numpy',
         'pandas',
@@ -24,8 +26,11 @@ setup(
     ],
     classifiers=[
         'Development Status :: 3 - Alpha',
-        'Intended Audience :: Financial and Insurance Industry',
+        'Intended Audience :: Developers',
         'License :: OSI Approved :: MIT License',
+        'Programming Language :: Python :: 3',
         'Programming Language :: Python :: 3.8',
+        'Operating System :: OS Independent',
     ],
+    python_requires='>=3.8',
 )
