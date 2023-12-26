@@ -98,65 +98,58 @@ def pbo_core_calc(Cs, Ms, Ms_values, Ms_index, metric_func, verbose=False):
     return core
 
 def plot_pbo(pbo_result, hist=False):
+    lm_dict = pbo_result['linear_model']
+    dom_df_dict = pbo_result['stochastic']
 
-    lm = pbo_result.linear_model
+    # Create a DataFrame from dom_df_dict
+    dom_df = pd.DataFrame(dom_df_dict)
 
     wid, h = plt.rcParams.get("fig.figsize", (10, 5))
     nplots = 3
     fig, axarr = plt.subplots(nplots, 1, sharex=False)
     fig.set_size_inches((wid, h * nplots))
 
-    r2 = lm.rvalue ** 2
-
+    # Extract R^2 value and other statistics from lm_dict
+    r2 = lm_dict['rvalue'] ** 2
     line_label = (
-        "slope: {:.4f}\n".format(lm.slope)
-        + "p: {:.4E}\n".format(lm.pvalue)
-        + "$R^2$: {:.4f}\n".format(r2)
-        + "Prob. OOS Loss: {:.1%}".format(pbo_result.prob_oos_loss)
+        f"slope: {lm_dict['slope']:.4f}\n"
+        f"p: {lm_dict['pvalue']:.4E}\n"
+        f"$R^2$: {r2:.4f}\n"
+        f"Prob. OOS Loss: {pbo_result['prob_oos_loss']:.1%}"
     )
 
+    # Performance Degradation Plot
     sns.regplot(
         x="SR_IS",
         y="SR_OOS",
-        # sns.lmplot(x='SR_IS', y='SR_OOS',
-        data=pd.DataFrame(
-            dict(SR_IS=pbo_result.R_n_star, SR_OOS=pbo_result.R_bar_n_star)
-        ),
+        data=pd.DataFrame({
+            'SR_IS': pbo_result['R_n_star'], 
+            'SR_OOS': pbo_result['R_bar_n_star']
+        }),
         scatter_kws={"alpha": 0.3, "color": "g"},
-        line_kws={
-            "alpha": 0.8,
-            "label": line_label,
-            "linewidth": 1.0,
-            "color": "r",
-        },
-        ax=axarr[0],
+        line_kws={"alpha": 0.8, "label": line_label, "linewidth": 1.0, "color": "r"},
+        ax=axarr[0]
     )
     axarr[0].set_title("Performance Degradation, IS vs. OOS")
     axarr[0].legend(loc="best")
 
-    # TODO hist is turned off at the moment. Error occurs when S is set to
-    # a relatively large number, such as 16.
+    # Histogram of Rank Logits
     sns.distplot(
-        pbo_result.logits,
+        pbo_result['logits'],
         rug=True,
-        #bins=10,  # default might be more useful
         ax=axarr[1],
         rug_kws={"color": "r", "alpha": 0.5},
         kde_kws={"color": "k", "lw": 2.0, "label": "KDE"},
         hist=hist,
-        hist_kws={
-            "histtype": "step",
-            "linewidth": 2.0,
-            "alpha": 0.7,
-            "color": "g",
-        },
+        hist_kws={"histtype": "step", "linewidth": 2.0, "alpha": 0.7, "color": "g"},
     )
     axarr[1].axvline(0, c="r", ls="--")
     axarr[1].set_title("Hist. of Rank Logits")
     axarr[1].set_xlabel("Logits")
     axarr[1].set_ylabel("Frequency")
 
-    pbo_result.stochastic.plot(secondary_y="SD2", ax=axarr[2])
+    # Stochastic Dominance Plot
+    dom_df.plot(secondary_y="SD2", ax=axarr[2])
     axarr[2].right_ax.axhline(0, c="r")
     axarr[2].set_title("Stochastic Dominance")
     axarr[2].set_ylabel("Frequency")
@@ -549,9 +542,22 @@ def pbo(
         dict(optimized_IS=optimized, non_optimized_OOS=non_optimized)
     )
     dom_df.index = y
+
     # visually, non_optimized curve above optimized curve indicates good
     # backtest with low overfitting.
     dom_df["SD2"] = dom_df.non_optimized_OOS - dom_df.optimized_IS
+
+    # convert dom_df to dict for plotting
+    dom_df = dom_df.to_dict(orient = 'records')
+
+    # convert linear model to dict for plotting
+    lm = {
+        'slope': lm.slope,
+        'intercept': lm.intercept,
+        'rvalue': lm.rvalue,
+        'pvalue': lm.pvalue,
+        'stderr': lm.stderr,
+    }
 
     result = PBO(
         pbo_test,

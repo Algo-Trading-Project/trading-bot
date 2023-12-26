@@ -19,6 +19,7 @@ import redshift_connector
 import pandas as pd
 import numpy as np
 import json
+import boto3
 
 from typing import Union
 
@@ -77,7 +78,7 @@ class BackTester:
         self.backtest_params = backtest_params
         self.strategies = strategies
 
-    def __serialize_json_data(obj: Union[pd.Timedelta, int, float]) -> Union[int, float]:
+    def __serialize_json_data(obj: Union[pd.Timedelta, int, float, dict, list]) -> Union[int, float, dict, list]:
         """
         Converts obj into a form that can be JSON serialized.
 
@@ -100,6 +101,10 @@ class BackTester:
             return int(obj)
         elif isinstance(obj, np.floating):
             return float(obj)
+        elif isinstance(obj, dict):
+            return {k: BackTester.__serialize_json_data(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return obj
         else:
             raise TypeError('Object of type {} is not JSON serializable'.format(type(obj)))
              
@@ -487,6 +492,7 @@ class BackTester:
                 for strat in self.strategies:
                     for token in self.TOKENS_TO_BACKTEST:
                         base, quote, exchange = token.split('_')
+                        pbo_results_key = base + '_' + quote + '_' + exchange + '/' + strat.indicator_factory_dict['class_name']
 
                         print()
                         print('Backtesting the {} strategy on {}'.format(
@@ -514,6 +520,11 @@ class BackTester:
                             verbose=True,
                             plot=False  # No plot here, as it will be done on the dashboard
                         )._asdict()
+
+                        # Add asset_id_base, asset_id_quote, and exchange_id to PBO results
+                        pbo_results['asset_id_base'] = base
+                        pbo_results['asset_id_quote'] = quote
+                        pbo_results['exchange_id'] = exchange
 
                         # If the walk-forward optimization failed, skip to the next token
                         if (oos_equity_curves is None) or (oos_trades is None) or (oos_price_data is None):
@@ -562,9 +573,6 @@ class BackTester:
                             oos_price_data
                         ).to_dict(orient = 'records')[0]
                         
-                        # Serialize PBO results and add them to performance metrics
-                        # performance_metrics['pbo_results'] = json.dumps(pbo_results._asdict(), default=BackTester.__serialize_json_data)
-
                         performance_metrics = json.dumps(performance_metrics, default = BackTester.__serialize_json_data)
                         performance_metrics = performance_metrics.replace('NaN', 'null').replace('Infinity', 'null')
 
@@ -598,7 +606,20 @@ class BackTester:
                             conn = conn
                         )
 
-        return pbo_results
+                        # Upload PBO results to S3
+                        s3 = boto3.resource(
+                            service_name = 's3',
+                            region_name = 'us-west-2',
+                            aws_access_key_id = 'AKIAQL2UJY5V5O4NYS7G',
+                            aws_secret_access_key = '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'
+                        )
+                        bucket_name = 'project-poseidon-data'
+                        key = 'backtest_data/pbo_analysis_results/{}.json'.format(pbo_results_key)
+                        
+                        s3_object = s3.Object('poseidon-poseidon-data', key)
+                        json_data = json.dumps(pbo_results, default = BackTester.__serialize_json_data)
+                        s3_object.put(Body = json_data)
+
 
 if __name__ == '__main__': 
 
