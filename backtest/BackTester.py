@@ -507,7 +507,7 @@ class BackTester:
                         # Perform PBO analysis for each (Strategy, Token) combination
                         pbo_results = pbo(
                             M=oos_returns_matrix,
-                            S=6,
+                            S=10,
                             metric_func=sortino,  # Define or import your metric function
                             threshold=0,
                             n_jobs=1,
