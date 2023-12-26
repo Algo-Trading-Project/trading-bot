@@ -408,7 +408,7 @@ class BackTester:
 
         while start + in_sample_size + out_of_sample_size <= len(backtest_data):
             
-            print('\r Progress: {} / {} days...'.format(int((start + in_sample_size) / 24), int(len(backtest_data) / 24), end = '', flush = True))
+            # print('\rProgress: {} / {} days...'.format(int((start + in_sample_size) / 24), int(len(backtest_data) / 24), end = '', flush = True))
 
             # print('*** Starting Equity: ', starting_equity)
             # print()
@@ -438,13 +438,6 @@ class BackTester:
 
             tr = round(1 + ((oos_equity_curve['equity'].iloc[-1] - oos_equity_curve['equity'].iloc[0]) / oos_equity_curve['equity'].iloc[0]), 3)
             
-            # print('*** Num. Trades: {}'.format(len(oos_trades)))
-            # print()
-            # print('*** Avg. Trade: {}'.format(round(oos_trades['pnl_pct'].mean(), 3)))
-            # print()
-            # print('*** Total Return: {}'.format(tr))
-            # print()
-
             starting_equity = oos_equity_curve.iloc[-1]['equity']
             
             equity_curves.append(oos_equity_curve)
@@ -514,7 +507,7 @@ class BackTester:
                         # Perform PBO analysis for each (Strategy, Token) combination
                         pbo_results = pbo(
                             M=oos_returns_matrix,
-                            S=10,
+                            S=6,
                             metric_func=sortino,  # Define or import your metric function
                             threshold=0,
                             n_jobs=1,
@@ -585,9 +578,6 @@ class BackTester:
                             performance_metrics,  
                             self.optimization_metric
                         )
-
-                        print('Backtest Results: ', performance_metrics)
-                        print()
 
                         self.__upsert_into_redshift_table(
                             table = 'backtest_results',
