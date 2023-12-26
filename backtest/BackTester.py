@@ -78,7 +78,7 @@ class BackTester:
         self.backtest_params = backtest_params
         self.strategies = strategies
 
-    def __serialize_json_data(obj: Union[pd.Timedelta, int, float, dict, list]) -> Union[int, float, dict, list]:
+    def __serialize_json_data(obj):
         """
         Converts obj into a form that can be JSON serialized.
 
@@ -90,21 +90,27 @@ class BackTester:
 
         Returns:
         --------
-        int or float:
             Result of converting obj into a JSON serializable format.
-
         """
 
         if isinstance(obj, pd.Timedelta):
             return obj.total_seconds()
+
         elif isinstance(obj, np.integer):
             return int(obj)
+
         elif isinstance(obj, np.floating):
             return float(obj)
+
         elif isinstance(obj, dict):
             return {k: BackTester.__serialize_json_data(v) for k, v in obj.items()}
+
         elif isinstance(obj, list):
             return obj
+
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+
         else:
             raise TypeError('Object of type {} is not JSON serializable'.format(type(obj)))
              
@@ -619,7 +625,6 @@ class BackTester:
                         s3_object = s3.Object('poseidon-poseidon-data', key)
                         json_data = json.dumps(pbo_results, default = BackTester.__serialize_json_data)
                         s3_object.put(Body = json_data)
-
 
 if __name__ == '__main__': 
 
