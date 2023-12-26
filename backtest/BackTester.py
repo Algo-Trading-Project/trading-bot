@@ -20,6 +20,8 @@ import pandas as pd
 import numpy as np
 import json
 
+from typing import Union
+
 ###############################################
 #      TRADING STRATEGIES / BACKTESTING       #
 ###############################################
@@ -75,7 +77,7 @@ class BackTester:
         self.backtest_params = backtest_params
         self.strategies = strategies
 
-    def __serialize_json_data(obj: pd.Timedelta | int | float) -> int | float:
+    def __serialize_json_data(obj: Union[pd.Timedelta, int, float]) -> Union[int, float]:
         """
         Converts obj into a form that can be JSON serialized.
 
