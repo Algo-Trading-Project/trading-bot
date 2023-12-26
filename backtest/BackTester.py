@@ -407,11 +407,11 @@ class BackTester:
         starting_equity = self.backtest_params['init_cash']
 
         while start + in_sample_size + out_of_sample_size <= len(backtest_data):
-            print()
-            print('Progress: {} / {} days...'.format(int((start + in_sample_size) / 24), int(len(backtest_data) / 24)))
-            print()
-            print('*** Starting Equity: ', starting_equity)
-            print()
+            
+            print('\r Progress: {} / {} days...'.format(int((start + in_sample_size) / 24), int(len(backtest_data) / 24), end = '', flush = True))
+
+            # print('*** Starting Equity: ', starting_equity)
+            # print()
 
             if len(backtest_data.iloc[start:]) - (in_sample_size + out_of_sample_size) < out_of_sample_size:
                 is_start_i = start
@@ -438,12 +438,12 @@ class BackTester:
 
             tr = round(1 + ((oos_equity_curve['equity'].iloc[-1] - oos_equity_curve['equity'].iloc[0]) / oos_equity_curve['equity'].iloc[0]), 3)
             
-            print('*** Num. Trades: {}'.format(len(oos_trades)))
-            print()
-            print('*** Avg. Trade: {}'.format(round(oos_trades['pnl_pct'].mean(), 3)))
-            print()
-            print('*** Total Return: {}'.format(tr))
-            print()
+            # print('*** Num. Trades: {}'.format(len(oos_trades)))
+            # print()
+            # print('*** Avg. Trade: {}'.format(round(oos_trades['pnl_pct'].mean(), 3)))
+            # print()
+            # print('*** Total Return: {}'.format(tr))
+            # print()
 
             starting_equity = oos_equity_curve.iloc[-1]['equity']
             
@@ -466,7 +466,7 @@ class BackTester:
 
         return equity_curves, trades, price_data, oos_returns_matrix
                                     
-    def execute(self) -> None:
+    def execute(self):
         """
         Runs a walk-forward optimization on each (token, Strategy) combination, where token
         is a CoinAPI token and Strategy is a trading strategy in backtest/strategies. Performance 
@@ -645,7 +645,7 @@ if __name__ == '__main__':
     # and log the results to Redshift
     
     backtest_start = time.time()
-    b.execute()
+    pbo_results = b.execute()
     backtest_end = time.time()
 
     print()
