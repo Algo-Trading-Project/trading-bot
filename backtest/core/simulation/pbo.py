@@ -112,10 +112,10 @@ def plot_pbo(pbo_result, hist=False):
     # Extract R^2 value and other statistics from lm_dict
     r2 = lm_dict['rvalue'] ** 2
     line_label = (
-        f"slope: {lm_dict['slope']:.4f}\n"
-        f"p: {lm_dict['pvalue']:.4E}\n"
-        f"$R^2$: {r2:.4f}\n"
-        f"Prob. OOS Loss: {pbo_result['prob_oos_loss']:.1%}"
+          f"slope: {lm_dict['slope']:.4f}\n"
+        + f"p: {lm_dict['pvalue']:.4E}\n"
+        + f"$R^2$: {r2:.4f}\n"
+        + f"Prob. OOS Loss: {pbo_result['prob_oos_loss']:.1%}"
     )
 
     # Performance Degradation Plot

@@ -22,7 +22,8 @@ setup(
         'joblib',
         'psutil',
         'vectorbt',
-        'numba'
+        'numba',
+        'boto3'
     ],
     classifiers=[
         'Development Status :: 3 - Alpha',
