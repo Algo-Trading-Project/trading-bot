@@ -622,7 +622,7 @@ class BackTester:
                         bucket_name = 'project-poseidon-data'
                         key = 'backtest_data/pbo_analysis_results/{}.json'.format(pbo_results_key)
                         
-                        s3_object = s3.Object('poseidon-poseidon-data', key)
+                        s3_object = s3.Object(bucket_name, key)
                         json_data = json.dumps(pbo_results, default = BackTester.__serialize_json_data)
                         s3_object.put(Body = json_data)
 
