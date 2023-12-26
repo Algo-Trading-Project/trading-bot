@@ -244,7 +244,9 @@ class WalkForwardOptimization:
                 for param_name, best_value in zip(self.strategy.optimize_dict.keys(), maximizing_index):
                     best_param_comb[param_name] = best_value
 
-                return best_param_comb, portfolio
+                # Return the best parameter combination and the portfolio of the backtest that
+                # maximizes the selected performance metric over the in-sample data
+                return best_param_comb, portfolio.loc[maximizing_index]
             else:
                 return {}, portfolio
 
@@ -256,6 +258,6 @@ class WalkForwardOptimization:
                 for param_name, best_value in zip(self.strategy.optimize_dict.keys(), minimizing_index):
                     best_param_comb[param_name] = best_value
 
-                return best_param_comb, portfolio
+                return best_param_comb, portfolio.loc[minimizing_index]
             else:
                 return {}, portfolio

@@ -22,7 +22,6 @@ Trading bot has the following structure:
 |   |   |  
 │   │   ├── performance
 │   │   │   ├── __init__.py
-│   │   │   ├── pbo.py
 │   │   │   └── performance_metrics.py
 |   |   |  
 │   │   ├── simulation
