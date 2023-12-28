@@ -1,57 +1,18 @@
+
 # Trading Bot
 Repository for Project Poseidon's trading bot.
 
-Trading bot has the following structure:
-```
-.
-├── README.md
-|
-├── backtest
-|   |   
-│   ├── backtester.py
-|   |   
-│   ├── core
-|   |   |  
-│   │   ├── __init__.py
-|   |   |  
-│   │   ├── pairs_trading
-|   |   |   |
-│   │   │   ├── __init__.py
-│   │   │   ├── pairs_trading_backtest.py
-│   │   │   └── pairs_trading_numba.py
-|   |   |  
-│   │   ├── performance
-│   │   │   ├── __init__.py
-│   │   │   └── performance_metrics.py
-|   |   |  
-│   │   ├── simulation
-│   │   │   ├── __init__.py
-│   │   │   └── monte_carlo.py
-|   |   |
-│   │   └── wfo
-│   │       ├── __init__.py
-│   │       └── walk_forward_optimization.py
-|   |
-│   ├── pairs_trading_backtester.py
-|   |   
-│   └── strategies
-│       ├── README.md
-│       ├── __init__.py
-│       ├── base_strategy.py
-│       ├── bollinger_bands.py
-│       ├── linear_regression.py
-│       └── ma_crossover.py
-|
-├── market_data
-│   ├── __init__.py
-│   ├── order_book_snapshot.py
-│   └── order_book_snapshot_processor.py
-|
-├── notebooks
-│   └── eda.ipynb
-|
-└── trading_bot
-    └── __init__.py
+# Usage
 
-11 directories, 25 files, 4188 lines of code
+To perform walk-forward optimizations on a set of custom trading strategies, 
+run the following command at the root of the package:
+<br></br>
+<br></br>
+
+```shell
+python -m main
 ```
+<br></br>
+
+This runs the main.py file located in the root directory, which performs walk-forward optimization on 
+all the strategies passed into the BackTester object.  The results are uploaded to Redshift for further analysis.

@@ -8,7 +8,7 @@ class MACrossOver(BaseStrategy):
         'short_name':'ma_crossover',
         'input_names':['open', 'high', 'low', 'close', 'volume'],
         'param_names':['fast_window', 'slow_window'],
-        'output_names':['entries', 'exits']
+        'output_names':['entries', 'exits', 'tp', 'sl', 'size']
     }
 
     optimize_dict = {
@@ -16,14 +16,30 @@ class MACrossOver(BaseStrategy):
         'slow_window': [24 * 3, 24 * 4, 24 * 5, 24 * 6, 24 * 7]
     }
 
+    backtest_params = {
+        'init_cash': 100_000,
+        'fees': 0.00295,
+        'sl_stop': 'std',
+        'sl_trail': True,
+        'tp_stop': 'std',
+        'size': 0.05,
+        'size_type': 2
+    }
+
     @staticmethod
     def indicator_func(open, high, low, close, volume,
-                       fast_window, slow_window):  
+                       fast_window, slow_window): 
+
+        backtest_params = MACrossOver.backtest_params
         
+        tp = MACrossOver.calculate_tp(open, high, low, close, volume, backtest_params)
+        sl = MACrossOver.calculate_sl(open, high, low, close, volume, backtest_params)
+        size = MACrossOver.calculate_size(open, high, low, close, volume, backtest_params)
+
         sma_slow = vbt.MA.run(close, window = slow_window, ewm = True)       
         sma_fast = vbt.MA.run(close, window = fast_window, ewm = True)      
         
         entries = sma_fast.ma_crossed_above(sma_slow).values
         exits = sma_fast.ma_crossed_below(sma_slow).values
 
-        return entries, exits
+        return entries, exits, tp, sl, size

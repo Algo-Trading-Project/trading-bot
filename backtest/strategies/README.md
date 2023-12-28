@@ -97,20 +97,13 @@ Once we have defined our trading strategy in the required template, we can final
 ```py
 if __name__ == '__main__': 
 
-    # Set initial capital of backtest to $10,000 and set the trading
-    # fees to the average 'taker' fee across many well-known centralized
-    # exchanges, which is 0.295 percent (or 0.00295)
-
-    backtest_params = {'init_cash': 100_000, 'fees': 0.00295}
-
-    # Initialize a BackTester instance w/ the intended strategies to optimize,
-    # an optimization metric to find the best combination of strategy parameters,
-    # and a dictionary of backtest hyperparameters
+    # Initialize a BackTester instance w/ the intended strategies to optimize
+    # and an optimization metric to find the best combination of strategy
+    # parameters with
 
     b = BackTester(
         strategies = [MACrossOver, ARIMAStrat],
-        optimization_metric = 'Sharpe Ratio',
-        backtest_params = backtest_params
+        optimization_metric = 'Sharpe Ratio'
     )
 
     # Execute a walk-forward optimization across all strategies

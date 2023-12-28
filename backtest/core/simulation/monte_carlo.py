@@ -2,10 +2,18 @@ import numpy as np
 import pandas as pd
 from numba import njit, prange
 
+from numba import njit
+import numpy as np
+
 @njit
-def simulate_equity_curves(returns, initial_equity, num_simulations):
+def simulate_equity_curves_with_block_bootstrap(
+    returns, 
+    initial_equity, 
+    n, 
+    block_size
+):
     """
-    Simulates multiple equity curves by randomly sampling historical returns with replacement.
+    Simulates multiple equity curves by block bootstrapping historical returns.
 
     Parameters:
     ----------
@@ -18,6 +26,9 @@ def simulate_equity_curves(returns, initial_equity, num_simulations):
     num_simulations : int
         The number of simulated equity curves to generate.
 
+    block_size : int
+        The size of each block to sample. 
+
     Returns:
     -------
     numpy.ndarray
@@ -25,18 +36,28 @@ def simulate_equity_curves(returns, initial_equity, num_simulations):
         to a time point in the simulation.
     """
     num_days = len(returns)
+    num_blocks = num_days // block_size
     simulated_curves = np.empty((num_days, num_simulations))
 
     for sim in range(num_simulations):
-        # Randomly select returns with replacement
-        sampled_indices = np.random.randint(0, num_days, num_days)
-        sampled_returns = returns[sampled_indices]
-
-        # Generate an equity curve for this simulation
+        # Initialize equity curve for this simulation
         equity_curve = np.empty(num_days)
-        equity_curve[0] = initial_equity * (1 + sampled_returns[0])
-        for i in range(1, num_days):
-            equity_curve[i] = equity_curve[i - 1] * (1 + sampled_returns[i])
+        equity_curve[0] = initial_equity
+
+        # Perform block bootstrapping
+        for block_start in range(0, num_days, block_size):
+            block_end = min(block_start + block_size, num_days)
+            sampled_block_start = np.random.randint(0, num_days - block_size + 1)
+            sampled_block_end = sampled_block_start + block_end - block_start
+
+            sampled_returns = returns[sampled_block_start:sampled_block_end]
+
+            # Compute the equity values for this block
+            for i in range(block_start, block_end):
+                if i == 0:
+                    equity_curve[i] = initial_equity * (1 + sampled_returns[i - block_start])
+                else:
+                    equity_curve[i] = equity_curve[i - 1] * (1 + sampled_returns[i - block_start])
 
         simulated_curves[:, sim] = equity_curve
 
@@ -73,7 +94,12 @@ def run_monte_carlo_simulation(equity_curve, num_simulations = 1000):
     initial_equity = equity_curve['equity'].iloc[0]
 
     # Generate simulated equity curves
-    simulated_curves_np = simulate_equity_curves(equity_curve['returns'].values, initial_equity, num_simulations)
+    simulated_curves_np = simulate_equity_curves_with_block_bootstrap(
+        returns = equity_curve['returns'].values, 
+        initial_equity = initial_equity, 
+        n = num_simulations,
+        block_size = 24
+    )
 
     # Convert the numpy array of simulated curves to a pandas DataFrame
     dates = equity_curve.index

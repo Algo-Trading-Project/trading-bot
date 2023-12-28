@@ -3,7 +3,6 @@
 #################################
 import sys
 import os
-# sys.path.append(os.getcwd())
 
 #################################
 #             MISC              #
@@ -20,20 +19,15 @@ import redshift_connector
 import pandas as pd
 import numpy as np
 import json
-import boto3
-import gzip
-
-from typing import Union
-
 ###############################################
 #      TRADING STRATEGIES / BACKTESTING       #
 ###############################################
-from core.wfo.walk_forward_optimization import WalkForwardOptimization
-from core.performance.performance_metrics import *
+from .core.wfo.walk_forward_optimization import WalkForwardOptimization
+from .core.performance.performance_metrics import *
 
-from strategies.ma_crossover import MACrossOver
-from strategies.bollinger_bands import BollingerBands
-from strategies.linear_regression import LogisticRegressionStrategy
+from .strategies.ma_crossover import MACrossOver
+from .strategies.bollinger_bands import BollingerBands
+from .strategies.linear_regression import LogisticRegressionStrategy
 
 class BackTester:
 
@@ -50,8 +44,7 @@ class BackTester:
     def __init__(
         self,  
         strategies: list,                  
-        optimization_metric: str = 'Sharpe Ratio',                 
-        backtest_params: dict = {'init_cash':100_000, 'fees':0.005}
+        optimization_metric: str = 'Sharpe Ratio'                
     ):
         """
         Coordinates the walk-forward optimization of a set of strategies over a set of CoinAPI tokens, 
@@ -67,15 +60,9 @@ class BackTester:
             Performance metric to maximize/minimize during the in-sample parameter optimizations. 
             The full list of metrics available to use can be found in the file 
             backtest/core/walk_forward_optimization.py in the metric_map dictionary in the __init__ method.
-
-        backtest_params : dict, default = {'init_cash':100_000, 'fees':0.005}
-            Dictionary containing miscellaneous parameters to configure the
-            backtest.
-
         """
 
         self.optimization_metric = optimization_metric
-        self.backtest_params = backtest_params
         self.strategies = strategies
 
     def __serialize_json_data(obj):
@@ -287,8 +274,7 @@ class BackTester:
         is_start_i: int, 
         is_end_i: int, 
         oos_start_i: int, 
-        oos_end_i: int, 
-        starting_equity: float
+        oos_end_i: int
     ) -> (pd.DataFrame, pd.DataFrame):
         
         """
@@ -317,9 +303,6 @@ class BackTester:
         oos_end_i: int
             End index of the out-of-sample test period in backtest_data.
 
-        starting_equity: float
-            Amount of capital to initiate the backtest with.
-
         Returns:
         --------
         DataFrame:
@@ -329,9 +312,6 @@ class BackTester:
             DataFrame containing the equity curve from the out-of-sample backtest.
         """
                 
-        backtest_params = self.backtest_params.copy()
-        backtest_params['init_cash'] = starting_equity
-
         wfo = WalkForwardOptimization(
             strategy = strat,
             backtest_data = backtest_data,
@@ -339,8 +319,7 @@ class BackTester:
             is_end_i = is_end_i,
             oos_start_i = oos_start_i,
             oos_end_i = oos_end_i,
-            optimization_metric = self.optimization_metric,
-            backtest_params = backtest_params
+            optimization_metric = self.optimization_metric
         )
 
         optimal_params, optimal_is_portfolio = wfo.optimize()
@@ -417,7 +396,7 @@ class BackTester:
         is_sharpes = []
         oos_sharpes = []
 
-        starting_equity = self.backtest_params['init_cash']
+        starting_equity = strat.backtest_params['init_cash']
 
         while start + in_sample_size + out_of_sample_size <= len(backtest_data):
             
@@ -446,8 +425,7 @@ class BackTester:
                 is_start_i = is_start_i,
                 is_end_i = is_end_i,
                 oos_start_i = oos_start_i,
-                oos_end_i = oos_end_i,
-                starting_equity = starting_equity
+                oos_end_i = oos_end_i
             )
 
             is_sharpe = optimal_is_portfolio.returns_acc.sharpe_ratio()
@@ -467,6 +445,7 @@ class BackTester:
             print()
             
             starting_equity = oos_equity_curve.iloc[-1]['equity']
+            strat.backtest_params['init_cash'] = starting_equity
             
             equity_curves.append(oos_equity_curve)
             trades.append(oos_trades)
@@ -525,9 +504,12 @@ class BackTester:
                             quote = quote, 
                             exchange = exchange,
                             strat = strat,
-                            in_sample_size = 24 * 30 * 2,
-                            out_of_sample_size = 24 * 30 * 2
+                            in_sample_size = 24 * 30 * 3,
+                            out_of_sample_size = 24 * 30 * 1
                         )
+
+                        # Reset starting equity for next token
+                        strat.backtest_params['init_cash'] = 100_000
 
                         # If the walk-forward optimization failed, skip to the next token
                         if (oos_equity_curves is None) or (oos_trades is None) or (oos_price_data is None):
@@ -611,44 +593,3 @@ class BackTester:
                             cursor = cursor,
                             conn = conn
                         )
-
-if __name__ == '__main__': 
-
-    # Set backtest parameters
-    
-    # init_cash - Initial cash
-    # fees      - Comission percent
-    # sl_stop   - Stop-loss percent
-    # sl_trail  - Indicate whether or not want a trailing stop-loss
-    # tp_stop   - Take-profit percent
-    # size      - Percentage of capital to use for each trade
-    # size_type - Indicates the 'size' parameter represents a percent
-
-    backtest_params = {
-        'init_cash': 100_000,
-        'fees': 0.00295,
-        'sl_stop': 0.1,
-        'tp_stop': 0.1,
-        'sl_trail': True,
-        'size': 0.05,
-        'size_type': 2 # e.g. 2 if 'size' is 'Fixed Percent' and 0 otherwise
-    }
-
-    # Initialize a BackTester instance w/ the intended strategies to backtest,
-    # a performance metric to optimize on, and a dictionary of backtest hyperparameters
-
-    b = BackTester(
-        strategies = [MACrossOver, BollingerBands],
-        optimization_metric = 'Sharpe Ratio',
-        backtest_params = backtest_params
-    )
-
-    # Execute a walk-forward optimization across all strategies
-    # and log the results to Redshift
-    
-    backtest_start = time.time()
-    b.execute()
-    backtest_end = time.time()
-
-    print()
-    print('Total Time Elapsed: {} mins'.format(round(abs(backtest_end - backtest_start) / 60.0, 2)))

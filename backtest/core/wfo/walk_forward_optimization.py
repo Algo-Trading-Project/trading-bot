@@ -5,17 +5,17 @@ import itertools
 
 class WalkForwardOptimization:
 
-    def __init__(self, 
-                 strategy,
-                 backtest_data: pd.DataFrame,
-                 is_start_i: int,
-                 is_end_i: int,
-                 oos_start_i: int,
-                 oos_end_i: int,
-                 optimization_metric: str,
-                 backtest_params: dict
-                 ):
-                 
+    def __init__(
+        self, 
+        strategy,
+        backtest_data: pd.DataFrame,
+        is_start_i: int,
+        is_end_i: int,
+        oos_start_i: int,
+        oos_end_i: int,
+        optimization_metric: str
+    ):
+                
         """
         Performs a walk-forward optimization on an arbitrary strategy over an arbitrary token.  
         Logs the resulting trades and equity curve to Redshift for further dashboarding/analysis.
@@ -42,9 +42,6 @@ class WalkForwardOptimization:
 
         optimization_metric : str
             Performance metric to optimize backtests on.
-
-        backtest_params : dict     
-            Dictionary of parameters to configure the backtest.
         """
         
         self.strategy = strategy
@@ -54,7 +51,6 @@ class WalkForwardOptimization:
         self.oos_start_i = oos_start_i
         self.oos_end_i = oos_end_i
         self.optimization_metric = optimization_metric
-        self.backtest_params = backtest_params
 
         self.metric_map = {
             'Total Return':'total_return',
@@ -130,8 +126,11 @@ class WalkForwardOptimization:
 
         entries = res.entries
         exits = res.exits
+        tp = res.tp
+        sl = res.sl
+        size = res.size
 
-        return entries, exits
+        return entries, exits, tp, sl, size
     
     def walk_forward(self, params: dict) -> (pd.DataFrame, pd.Series):
         """
@@ -152,7 +151,7 @@ class WalkForwardOptimization:
             Equity curve of out-of-sample backtest.
 
         """
-        entries, exits = self.__generate_signals(params = params, optimize = False)
+        entries, exits, tp, sl, size  = self.__generate_signals(params = params, optimize = False)
         
         backtest_data = self.backtest_data.iloc[self.oos_start_i:self.oos_end_i]
         
@@ -162,14 +161,23 @@ class WalkForwardOptimization:
         exits = exits.dropna()
         exits = exits[exits.index.isin(backtest_data.index)]
 
+        tp = tp[tp.index.isin(backtest_data.index)]
+        sl = sl[sl.index.isin(backtest_data.index)]
+        size = size[size.index.isin(backtest_data.index)]
+
         portfolio = vbt.Portfolio.from_signals(
             close = self.backtest_data.iloc[self.oos_start_i:self.oos_end_i].price_close,
             entries = entries,
             exits = exits,
             freq = 'h',
-            **self.backtest_params
+            init_cash = self.strategy.backtest_params['init_cash'],
+            fees = self.strategy.backtest_params['fees'],
+            sl_trail = self.strategy.backtest_params['sl_trail'],
+            size_type = self.strategy.backtest_params['size_type'],
+            sl_stop = sl,
+            tp_stop = tp,
+            size = size
         )
-
         equity_curve = portfolio.value().to_frame()
         equity_curve = equity_curve.rename({equity_curve.columns[0]:'equity'}, axis = 1)
         
@@ -206,7 +214,7 @@ class WalkForwardOptimization:
             in-sample data.
             
         """
-        entries, exits = self.__generate_signals(
+        entries, exits, tp, sl, size = self.__generate_signals(
             params = self.strategy.optimize_dict,
             optimize = True,
             param_product = True
@@ -220,7 +228,13 @@ class WalkForwardOptimization:
             entries = entries,
             exits = exits,
             freq = 'h',
-            **self.backtest_params
+            init_cash = self.strategy.backtest_params['init_cash'],
+            fees = self.strategy.backtest_params['fees'],
+            sl_trail = self.strategy.backtest_params['sl_trail'],
+            size_type = self.strategy.backtest_params['size_type'],
+            sl_stop = sl,
+            tp_stop = tp,
+            size = size
         )
 
         if len(split_path) == 1:
