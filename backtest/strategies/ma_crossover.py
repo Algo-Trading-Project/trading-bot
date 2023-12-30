@@ -1,4 +1,6 @@
 import vectorbt as vbt
+import numpy as np
+
 from .base_strategy import BaseStrategy
 
 class MACrossOver(BaseStrategy):
@@ -19,9 +21,9 @@ class MACrossOver(BaseStrategy):
     backtest_params = {
         'init_cash': 100_000,
         'fees': 0.00295,
-        'sl_stop': 'std',
+        'sl_stop': np.inf,
         'sl_trail': True,
-        'tp_stop': 'std',
+        'tp_stop': np.inf,
         'size': 0.05,
         'size_type': 2
     }
@@ -35,7 +37,7 @@ class MACrossOver(BaseStrategy):
         tp = MACrossOver.calculate_tp(open, high, low, close, volume, backtest_params)
         sl = MACrossOver.calculate_sl(open, high, low, close, volume, backtest_params)
         size = MACrossOver.calculate_size(open, high, low, close, volume, backtest_params)
-
+        
         sma_slow = vbt.MA.run(close, window = slow_window, ewm = True)       
         sma_fast = vbt.MA.run(close, window = fast_window, ewm = True)      
         

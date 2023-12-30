@@ -30,14 +30,14 @@ class BaseStrategy:
             tp = np.full(len(close), backtest_params['tp_stop'])
             return tp
 
-        return calculate_tp(
+        return np.abs(calculate_tp(
             open, 
             high, 
             low, 
             close,
             volume, 
             method = backtest_params['tp_stop']
-        )
+        ) - 1)
 
     def calculate_sl(open, high, low, close, volume, backtest_params):
         
@@ -45,14 +45,14 @@ class BaseStrategy:
             sl = np.full(len(close), backtest_params['sl_stop'])
             return sl
 
-        return calculate_sl(
+        return np.abs(calculate_sl(
             open, 
             high, 
             low, 
             close, 
             volume, 
             method = backtest_params['sl_stop']
-        )
+        ) - 1)
 
     def calculate_size(open, high, low, close, volume, backtest_params):
         
@@ -66,7 +66,7 @@ class BaseStrategy:
             low, 
             close, 
             volume, 
-            method = backtest_params['size']
+            backtest_params
         )
     
         

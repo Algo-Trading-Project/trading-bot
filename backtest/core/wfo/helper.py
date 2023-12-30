@@ -47,7 +47,7 @@ def calculate_tp(open, high, low, close, volume, method):
 
         # Calculate the take-profit price as close price plus 1.5 times
         # the rolling standard deviation
-        tp = np.nan_to_num(close + 1.5 * rolling_std, nan = 0.05)
+        tp = np.nan_to_num(close + 2 * rolling_std, nan = 0.05)
 
         # The take-profit as a percentage of the close price
         tp = tp / close
@@ -60,7 +60,7 @@ def calculate_tp(open, high, low, close, volume, method):
 
         # Calculate the take-profit price as close price plus 1.5 times
         # the rolling average true range
-        tp = np.nan_to_num(close + 1.5 * rolling_atr, nan = 0.05)
+        tp = np.nan_to_num(close + 2 * rolling_atr, nan = 0.05)
 
         # The take-profit as a percentage of the close price
         tp = tp / close
@@ -69,8 +69,8 @@ def calculate_tp(open, high, low, close, volume, method):
     else:
         raise ValueError('Invalid take-profit method')
 
-def calculate_size(open, high, low, close, volume, method):
-    if method == 'atr':
+def calculate_size(open, high, low, close, volume, backtest_params):
+    if backtest_params['size'] == 'atr':
         # Calculate the rolling average true range of the close price
         # over the last week
         rolling_atr = vbt.ATR.run(high, low, close, window = 24 * 7).atr
@@ -80,10 +80,10 @@ def calculate_size(open, high, low, close, volume, method):
 
         # Calculate the position size as the percentage of the account
         # that should be risked on each trade divided by the average true range
-        size = 0.1 / rolling_atr
+        size = 0.25 / rolling_atr
 
         return size
-    elif method == 'std':
+    elif backtest_params['size'] == 'std':
         # Calculate the rolling standard deviation of the close price
         # over the last week
         rolling_std = pd.Series(close).rolling(24 * 7).std().values
@@ -93,7 +93,7 @@ def calculate_size(open, high, low, close, volume, method):
 
         # Calculate the position size as the percentage of the account
         # that should be risked on each trade divided by the standard deviation
-        size = 0.1 / rolling_std
+        size = 0.25 / rolling_std
 
         return size
     else:

@@ -4,7 +4,7 @@ import numpy as np
 import itertools
 
 class WalkForwardOptimization:
-
+ 
     def __init__(
         self, 
         strategy,
@@ -222,7 +222,7 @@ class WalkForwardOptimization:
 
         metric_attribute_path = self.metric_map.get(self.optimization_metric)
         split_path = metric_attribute_path.split('.')
-        
+
         portfolio = vbt.Portfolio.from_signals(
             close = self.backtest_data.iloc[self.is_start_i:self.is_end_i].price_close,
             entries = entries,

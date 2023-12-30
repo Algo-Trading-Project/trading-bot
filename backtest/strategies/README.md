@@ -26,13 +26,23 @@ class Strategy:
         'pn': [...]
     }
 
+    backtest_params = {
+        'init_cash': 100_000,
+        'fees': 0.00295,
+        'sl_stop': 'atr',
+        'sl_trail': True,
+        'tp_stop': 'atr',
+        'size': 0.05,
+        'size_type': 2
+    }
+
     def indicator_func(open, high, low, close, volume,
                        p1, p2, ..., pn):
 
         # Execute arbitrary code
         ...
         
-        return entries, exits
+        return entries, exits, tp, sl, size
 ```
 
 Here are the descriptions for each component of the Strategy class skeleton:
