@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 from sklearn.metrics import classification_report
 from sklearn.metrics import accuracy_score, precision_score, recall_score, roc_auc_score, f1_score
+from sklearn.metrics import roc_curve
 
 import matplotlib.pyplot as plt
 import vectorbt as vbt
@@ -140,11 +141,11 @@ def calculate_train_performance(X_train, y_train, model):
         edgecolor = 'black',
         linewidth = 1.2
     )
-    plt.show()
 
 def calculate_test_performance(X_test, y_test, model):
     # Test predictions
     y_pred = model.predict(X_test)
+    y_pred_probs = model.predict_proba(X_test)[:,1]
 
     # Classification report
     print('Test Classification Report')
@@ -164,3 +165,14 @@ def calculate_test_performance(X_test, y_test, model):
     print('Test Recall: ', recall)
     print('Test F1 Score: ', f1)
     print('Test ROC AUC Score: ', roc_auc)
+
+    # Plot ROC curve
+    fpr, tpr, thresholds = roc_curve(y_test, y_pred_probs)
+    plt.figure(figsize = (10, 6))
+    plt.plot(fpr, tpr, color = 'green', label = 'ROC')
+    plt.plot([0, 1], [0, 1], color = 'red', linestyle = '--', label = 'ROC curve (area = %0.3f)' % roc_auc)
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('ROC Curve')
+    plt.legend()
+    plt.show()
