@@ -225,7 +225,7 @@ def calculate_test_performance(X_test, y_test, model, price_data, atr_data):
     plt.fill_between(recall, precision, step='post', alpha=0.2, color='blue')
 
     plt.scatter(optimal_recall, optimal_precision, marker='o', color='red', 
-                label=f'Optimal Prediction % Threshold = {optimal_threshold:.4f}', s = 50)
+                label=f'Optimal Prediction Threshold = {optimal_threshold:.4f}', s = 50)
 
     plt.xlabel('Recall')
     plt.ylabel('Precision')
