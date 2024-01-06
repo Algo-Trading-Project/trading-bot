@@ -168,7 +168,7 @@ def calculate_test_performance(X_test, y_test, model):
 
     # Plot ROC curve
     fpr, tpr, thresholds = roc_curve(y_test, y_pred_probs)
-    plt.figure(figsize = (10, 5))
+    plt.figure(figsize = (10, 4))
     plt.plot(fpr, tpr, color = 'green', label = 'ROC curve (area = %0.3f)' % roc_auc)
     plt.plot([0, 1], [0, 1], color = 'red', linestyle = '--', label = 'Random Baseline')
     plt.xlabel('False Positive Rate')
