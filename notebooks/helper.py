@@ -1,13 +1,12 @@
 import pandas as pd
 import numpy as np
 from sklearn.metrics import classification_report
-from sklearn.metrics import accuracy_score, precision_score, recall_score, roc_auc_score, f1_score
-from sklearn.metrics import roc_curve
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, auc
+from sklearn.metrics import precision_recall_curve
 
 import matplotlib.pyplot as plt
 import vectorbt as vbt
 import redshift_connector
-
 
 
 def calculate_triple_barrier_labels(ohlcv_df, atr_window, max_holding_time):
@@ -119,14 +118,12 @@ def calculate_train_performance(X_train, y_train, model):
     precision = round(precision_score(y_train, y_pred, average = 'weighted'), 4)
     recall = round(recall_score(y_train, y_pred, average = 'weighted'), 4)
     f1 = round(f1_score(y_train, y_pred, average = 'weighted'), 4)
-    roc_auc = round(roc_auc_score(y_train, y_pred, average = 'weighted'), 4)
 
     # Print various metrics
     print('Train Accuracy: ', accuracy)
     print('Train Precision: ', precision)
     print('Train Recall: ', recall)
     print('Train F1 Score: ', f1)
-    print('Train ROC AUC Score: ', roc_auc)
 
     # Plot horizontal bar plot of top 20 most important features
     feature_importances = pd.Series(model.feature_importances_, index = X_train.columns)
@@ -157,22 +154,24 @@ def calculate_test_performance(X_test, y_test, model):
     precision = round(precision_score(y_test, y_pred, average = 'weighted'), 4)
     recall = round(recall_score(y_test, y_pred, average = 'weighted'), 4)
     f1 = round(f1_score(y_test, y_pred, average = 'weighted'), 4)
-    roc_auc = round(roc_auc_score(y_test, y_pred, average = 'weighted'), 4)
 
     # Print various metrics
     print('Test Accuracy: ', accuracy)
     print('Test Precision: ', precision)
     print('Test Recall: ', recall)
     print('Test F1 Score: ', f1)
-    print('Test ROC AUC Score: ', roc_auc)
 
-    # Plot ROC curve
-    fpr, tpr, thresholds = roc_curve(y_test, y_pred_probs)
-    plt.figure(figsize = (10, 4))
-    plt.plot(fpr, tpr, color = 'green', label = 'ROC curve (area = %0.3f)' % roc_auc)
-    plt.plot([0, 1], [0, 1], color = 'red', linestyle = '--', label = 'Random Baseline')
-    plt.xlabel('False Positive Rate')
-    plt.ylabel('True Positive Rate')
-    plt.title('ROC Curve')
+    # Calculate precision-recall pairs for different probability thresholds
+    precision, recall, thresholds = precision_recall_curve(y_test, y_pred_probs)
+    pr_auc = auc(recall, precision)
+
+    # Plot Precision-Recall curve
+    plt.figure(figsize=(10, 4))
+    plt.plot(recall, precision, color='blue', label='Precision-Recall curve (area = %0.3f)' % pr_auc)
+    plt.fill_between(recall, precision, step='post', alpha=0.2, color='blue')
+    plt.xlabel('Recall')
+    plt.ylabel('Precision')
+    plt.title('Precision-Recall Curve')
     plt.legend()
+    plt.grid(True)
     plt.show()
