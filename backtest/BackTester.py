@@ -44,7 +44,7 @@ class BackTester:
     def __init__(
         self,  
         strategies: list,                  
-        optimization_metric: str = 'Sharpe Ratio'                
+        optimization_metric: str = 'Sortino Ratio'                
     ):
         """
         Coordinates the walk-forward optimization of a set of strategies over a set of CoinAPI tokens, 

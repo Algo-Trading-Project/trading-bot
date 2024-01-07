@@ -8,7 +8,6 @@ import matplotlib.pyplot as plt
 import vectorbt as vbt
 import redshift_connector
 
-
 def calculate_triple_barrier_labels(ohlcv_df, atr_window, max_holding_time):
     # Calculate ATR using vectorbt
     high = ohlcv_df['price_high']
@@ -197,9 +196,12 @@ def calculate_test_performance(X_test, y_test, model, price_data, atr_data):
         if emv > max_emv:
             max_emv = emv
             optimal_threshold = threshold
-
+    
+    # Calculate precision and recall at optimal threshold
     optimal_recall = recall[np.where(thresholds == optimal_threshold)]
     optimal_precision = precision[np.where(thresholds == optimal_threshold)]
+
+    # Calculate predictions using optimal threshold
     y_pred = np.where(y_pred_probs >= optimal_threshold, 1, -1)
 
     # Classification report
@@ -219,7 +221,7 @@ def calculate_test_performance(X_test, y_test, model, price_data, atr_data):
     print('Test F1 Score: ', f1)
 
     # Plot Precision-Recall curve
-    plt.figure(figsize=(10, 6))
+    plt.figure(figsize=(10, 5))
 
     plt.plot(recall, precision, color='blue', label=f'Precision-Recall curve (area = {pr_auc:.3f})')
     plt.fill_between(recall, precision, step='post', alpha=0.2, color='blue')
