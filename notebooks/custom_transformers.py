@@ -1,6 +1,8 @@
 from sklearn.base import BaseEstimator, TransformerMixin
 from helper import execute_query
 import pandas as pd
+import ta
+import numpy as np
 
 class RollingMinMaxScaler(BaseEstimator, TransformerMixin):
     
@@ -70,11 +72,11 @@ class LagFeatures(BaseEstimator, TransformerMixin):
         for col in X_copy.columns:
             for lag in self.lags:
                 col_name = col + '_lag_' + str(lag)
-                cols.append(pd.Series(X_copy[col].shift(lag), name = col_name))
+                cols.append(pd.Series(X_copy[col].shift(lag), name = col_name).fillna(0))
 
         X_copy = pd.concat([X_copy] + cols, axis = 1)
 
-        return X_copy.dropna()
+        return X_copy
 
 class BlockFeatures(BaseEstimator, TransformerMixin):
     
@@ -163,26 +165,43 @@ class OrderBookFeatures(BaseEstimator, TransformerMixin):
         base, quote, exchange = symbol_id.split('_')
         query = f"""
         SELECT *
-        FROM token_price.coinapi.order_book_data_1h
+        FROM token_price.metrics.order_book_metrics
         WHERE
             asset_id_base = '{base}' AND
             asset_id_quote = '{quote}' AND
             exchange_id = '{exchange}'
-        ORDER BY time_exchange ASC
+        ORDER BY timestamp ASC
         """
-        order_book_cols = ['symbol_id', 'time_exchange', 'time_coinapi', 'asks', 'bids', 'asset_id_base', 'asset_id_quote', 'exchange_id']
+        order_book_cols = [
+            'timestamp', 'asset_id_base', 'asset_id_quote', 'exchange_id', 
+            'bid_ask_spread', 'bid_volume_std', 'ask_volume_std', 'bid_volume_skew',
+            'ask_volume_skew', 'bid_volume_kurtosis', 'ask_volume_kurtosis', 'mid_price',
+            'vwap_bids', 'vwap_asks', 'vwap_diff_bids_asks', 'order_book_imbalance'
+        ]
+
+        bid_depth_cols = [f'bid_depth_level_{i}' for i in range(1, 21)]
+        ask_depth_cols = [f'ask_depth_level_{i}' for i in range(1, 21)]
+        cumulative_bid_depth_cols = [f'cumulative_bid_depth_level_{i}' for i in range(1, 21)]
+        cumulative_ask_depth_cols = [f'cumulative_ask_depth_level_{i}' for i in range(1, 21)]
+
+        order_book_cols += bid_depth_cols + ask_depth_cols + cumulative_bid_depth_cols + cumulative_ask_depth_cols
+
         order_book_data = execute_query(
             query = query,
             cols = order_book_cols,
-            date_col = 'time_exchange'
+            date_col = 'timestamp'
         )
-        self.snapshot = OrderBookSnapshot(order_book_data)
+
+        # Drop asset_id_base, asset_id_quote, and exchange_id columns
+        order_book_data = order_book_data.drop(['asset_id_base', 'asset_id_quote', 'exchange_id'], axis = 1)
+        
+        self.order_book_data = order_book_data
         
     def fit(self, X, y=None):
         return self
 
     def transform(self, X):
-        merged = pd.merge(X, self.transaction_data, how = 'inner', left_index = True, right_index = True)
+        merged = pd.merge(X, self.order_book_data, how = 'inner', left_index = True, right_index = True)
         return merged
      
 class NetworkFeatures(BaseEstimator, TransformerMixin):
@@ -267,14 +286,22 @@ class WalletFeatures(BaseEstimator, TransformerMixin):
     
 class PriceFeatures(BaseEstimator, TransformerMixin):
     
-    def __init__(self, symbol_id):
-        self.symbol_id = symbol_id
+    def __init__(self):
+        pass
 
     def fit(self, X, y=None):
         return self
 
     def transform(self, X):
-        pass
+        # Calculate TA features
+        X_copy = X.copy()
+        X_copy = ta.add_all_ta_features(X_copy, open = 'price_open', high = 'price_high', low = 'price_low', close = 'price_close', volume = 'volume_traded', fillna = True)
+        
+        # Drop columns that are not needed and replace inf values with nan
+        X_copy = X_copy.drop(['price_open', 'price_high', 'price_low', 'price_close', 'volume_traded'], axis = 1)
+        X_copy = X_copy.replace([np.inf, -np.inf], 0)
+
+        return X_copy
 
 class TimeFeatures(BaseEstimator, TransformerMixin):
     
@@ -303,7 +330,7 @@ class TimeFeatures(BaseEstimator, TransformerMixin):
 
         return X_copy
 
-class DropColumns(BaseEstimator, TransformerMixin):
+class FillNaN(BaseEstimator, TransformerMixin):
     
     def __init__(self):
         pass
@@ -313,12 +340,12 @@ class DropColumns(BaseEstimator, TransformerMixin):
 
     def transform(self, X):
         X_copy = X.copy()
-        # cols_to_drop = [col for col in X.columns if not ('_rmm_' in col or '_rz_' in col)]
-        # X_copy = X_copy.drop(columns = cols_to_drop, axis = 1)
 
-        # Fill nan values for each column with the rolling mean of that column
+        # Fill nan or infinity values for each column with the rolling mean of that column
         for col in X_copy.columns:
             try:
+                # Replace inf values with nan
+                X_copy[col] = X_copy[col].replace([np.inf, -np.inf], np.nan)
                 X_copy[col] = X_copy[col].fillna(X_copy[col].rolling(window = 24).mean().fillna(0))
             except:
                 continue

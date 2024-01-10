@@ -126,10 +126,10 @@ def calculate_train_performance(X_train, y_train, model):
 
     # Plot horizontal bar plot of top 20 most important features
     feature_importances = pd.Series(model.feature_importances_, index = X_train.columns)
-    feature_importances.nlargest(20).sort_values().plot(
+    feature_importances.nlargest(30).sort_values().plot(
         kind = 'barh', 
-        figsize = (10, 6), 
-        title = 'Top 20 Most Important Features',
+        figsize = (10, 8), 
+        title = 'Top 30 Most Important Features',
         color = 'green',
         xlabel = 'Feature Importance',
         fontsize = 14,
