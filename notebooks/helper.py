@@ -142,7 +142,6 @@ def simulate_trading(y_test, y_pred_probs, threshold, price_data, atr_data, max_
     # Assume price_data is a DataFrame with 'open', 'high', 'low', 'close'
     # and atr_data is a Series with the ATR values for the corresponding price_data
     emv = 0
-    num_trades = 0
     in_position = False
     position_entry_index = None
     position_entry_price = None
@@ -151,9 +150,8 @@ def simulate_trading(y_test, y_pred_probs, threshold, price_data, atr_data, max_
     
     for i in range(len(y_test)):
         # Check if we can take a new position
-        if not in_position and y_pred_probs[i] > threshold:
+        if not in_position and y_pred_probs[i] >= threshold:
             in_position = True
-            num_trades += 1
             position_entry_index = i
             position_entry_price = price_data.iloc[i]['price_close']
             position_upper_barrier = position_entry_price + atr_data[i]
@@ -178,21 +176,21 @@ def simulate_trading(y_test, y_pred_probs, threshold, price_data, atr_data, max_
                     emv -= 1  # Loss as price is below entry after holding period
                 in_position = False
 
-    return emv, num_trades
+    return emv
 
 def calculate_test_performance(X_test, y_test, model, price_data, atr_data):
     # Test predictions
     y_pred_probs = model.predict_proba(X_test)[:,1]
 
-    # Calculate precision-recall pairs for different probability thresholds
+    # Calculate precision-recall pairs for different prediction thresholds
     precision, recall, thresholds = precision_recall_curve(y_test, y_pred_probs)
     pr_auc = auc(recall, precision)
 
-    # Find the threshold that maximizes EMV
+    # Find the threshold that maximizes EMV (Expected Monetary Value) on the test set
     max_emv = -np.inf
     optimal_threshold = 0.0
     for threshold in thresholds:
-        emv, num_trades = simulate_trading(y_test, y_pred_probs, threshold, price_data, atr_data)
+        emv = simulate_trading(y_test, y_pred_probs, threshold, price_data, atr_data)
         if emv > max_emv:
             max_emv = emv
             optimal_threshold = threshold
