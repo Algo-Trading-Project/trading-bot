@@ -8,11 +8,11 @@ stop-loss, take-profit, and position size during the walk-forward optimization
 process.
 """
 
-def calculate_sl(open, high, low, close, volume, method):
+def calculate_sl(open, high, low, close, volume, method, window):
     if method == 'std':
         # Calculate the rolling standard deviation of the close price
-        # over the last week
-        rolling_std = pd.Series(close).rolling(24 * 7).std().values
+        # over the window
+        rolling_std = pd.Series(close).rolling(window).std().values
 
         # Calculate the stop-loss price as close price minus 1 times
         # the rolling standard deviation
@@ -25,8 +25,8 @@ def calculate_sl(open, high, low, close, volume, method):
 
     elif method == 'atr':
         # Calculate the rolling average true range of the close price
-        # over the last week
-        rolling_atr = vbt.ATR.run(high, low, close, window = 24 * 7).atr
+        # over the window
+        rolling_atr = vbt.ATR.run(high, low, close, window = window).atr
 
         # Calculate the stop-loss price as close price minus 1 times
         # the rolling average true range
@@ -39,15 +39,15 @@ def calculate_sl(open, high, low, close, volume, method):
     else:
         raise ValueError('Invalid stop-loss method')
 
-def calculate_tp(open, high, low, close, volume, method):
+def calculate_tp(open, high, low, close, volume, method, window):
     if method == 'std':
         # Calculate the rolling standard deviation of the close price
-        # over the last week
-        rolling_std = pd.Series(close).rolling(24 * 7).std().values
+        # over the window
+        rolling_std = pd.Series(close).rolling(window).std().values
 
-        # Calculate the take-profit price as close price plus 1.5 times
+        # Calculate the take-profit price as close price plus 2 times
         # the rolling standard deviation
-        tp = np.nan_to_num(close + 2 * rolling_std, nan = 0.05)
+        tp = np.nan_to_num(close + rolling_std, nan = 0.05)
 
         # The take-profit as a percentage of the close price
         tp = tp / close
@@ -55,12 +55,12 @@ def calculate_tp(open, high, low, close, volume, method):
         return tp
     elif method == 'atr':
         # Calculate the rolling average true range of the close price
-        # over the last week
-        rolling_atr = vbt.ATR.run(high, low, close, window = 24 * 7).atr
+        # over the window
+        rolling_atr = vbt.ATR.run(high, low, close, window = window).atr
 
-        # Calculate the take-profit price as close price plus 1.5 times
+        # Calculate the take-profit price as close price plus 2 times
         # the rolling average true range
-        tp = np.nan_to_num(close + 2 * rolling_atr, nan = 0.05)
+        tp = np.nan_to_num(close + rolling_atr, nan = 0.05)
 
         # The take-profit as a percentage of the close price
         tp = tp / close

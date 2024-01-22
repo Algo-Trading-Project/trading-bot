@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import vectorbt as vbt
 import redshift_connector
 
-def calculate_triple_barrier_labels(ohlcv_df, atr_window, max_holding_time):
+def calculate_triple_barrier_labels(ohlcv_df, atr_window, max_holding_time, transaction_cost_percent=0.29):
     # Calculate ATR using vectorbt
     high = ohlcv_df['price_high']
     low = ohlcv_df['price_low']
@@ -19,10 +19,14 @@ def calculate_triple_barrier_labels(ohlcv_df, atr_window, max_holding_time):
     # Initialize labels array with zeros
     labels = np.zeros(len(close))
 
+    # Convert transaction cost percentage to a multiplier
+    transaction_cost_multiplier = 1 + transaction_cost_percent / 100
+
     # Loop through the close price series
     for i in range(len(close) - max_holding_time):
-        # Set the upper and lower barriers
-        upper_barrier = close[i] + atr[i]
+        # Set the upper barrier (take-profit), adjusted for transaction costs
+        upper_barrier = close[i] * transaction_cost_multiplier + atr[i]
+        # Set the lower barrier (stop-loss) without transaction cost adjustment
         lower_barrier = close[i] - atr[i]
         barrier_hit = False
 
@@ -37,13 +41,17 @@ def calculate_triple_barrier_labels(ohlcv_df, atr_window, max_holding_time):
                 barrier_hit = True
                 break
             elif low[j] <= lower_barrier:
-                labels[i] = -1  # Lower barrier hit
+                labels[i] = 0  # Lower barrier hit
                 barrier_hit = True
                 break
 
         # If no barriers are hit, determine label based on closing price after max holding time
         if not barrier_hit:
-            labels[i] = 1 if close[j] > close[i] else -1
+            final_price = close[min(j, len(close) - 1)]
+            labels[i] = 1 if final_price > close[i] else 0
+
+    # Turn every 0 label into -1
+    # labels[labels == 0] = -1
 
     # Create a Pandas Series from the labels array
     label_series = pd.Series(labels, index=ohlcv_df.index)
@@ -149,6 +157,7 @@ def simulate_trading(y_test, y_pred_probs, threshold, price_data, atr_data, max_
     position_lower_barrier = None
     
     for i in range(len(y_test)):
+
         # Check if we can take a new position
         if not in_position and y_pred_probs[i] >= threshold:
             in_position = True
@@ -183,24 +192,25 @@ def calculate_test_performance(X_test, y_test, model, price_data, atr_data):
     y_pred_probs = model.predict_proba(X_test)[:,1]
 
     # Calculate precision-recall pairs for different prediction thresholds
-    precision, recall, thresholds = precision_recall_curve(y_test, y_pred_probs)
-    pr_auc = auc(recall, precision)
+    # precision, recall, thresholds = precision_recall_curve(y_test, y_pred_probs)
+    # pr_auc = auc(recall, precision)
 
     # Find the threshold that maximizes EMV (Expected Monetary Value) on the test set
-    max_emv = -np.inf
-    optimal_threshold = 0.0
-    for threshold in thresholds:
-        emv = simulate_trading(y_test, y_pred_probs, threshold, price_data, atr_data)
-        if emv > max_emv:
-            max_emv = emv
-            optimal_threshold = threshold
+    # max_emv = -np.inf
+    # optimal_threshold = 0.0
     
-    # Calculate precision and recall at optimal threshold
-    optimal_recall = recall[np.where(thresholds == optimal_threshold)]
-    optimal_precision = precision[np.where(thresholds == optimal_threshold)]
+    # for threshold in thresholds:
+    #     emv = simulate_trading(y_test, y_pred_probs, threshold, price_data, atr_data)
+    #     if emv > max_emv:
+    #         max_emv = emv
+    #         optimal_threshold = threshold
+    
+    # # Calculate precision and recall at optimal threshold
+    # optimal_recall = recall[np.where(thresholds == optimal_threshold)]
+    # optimal_precision = precision[np.where(thresholds == optimal_threshold)]
 
     # Calculate predictions using optimal threshold
-    y_pred = np.where(y_pred_probs >= optimal_threshold, 1, -1)
+    y_pred = np.where(y_pred_probs >= 0.5, 1, -1)
 
     # Classification report
     print('Test Classification Report\n')
@@ -219,17 +229,17 @@ def calculate_test_performance(X_test, y_test, model, price_data, atr_data):
     print('Test F1 Score: ', f1)
 
     # Plot Precision-Recall curve
-    plt.figure(figsize=(10, 5))
+    # plt.figure(figsize=(10, 5))
 
-    plt.plot(recall, precision, color='blue', label=f'Precision-Recall curve (area = {pr_auc:.3f})')
-    plt.fill_between(recall, precision, step='post', alpha=0.2, color='blue')
+    # plt.plot(recall, precision, color='blue', label=f'Precision-Recall curve (area = {pr_auc:.3f})')
+    # plt.fill_between(recall, precision, step='post', alpha=0.2, color='blue')
 
-    plt.scatter(optimal_recall, optimal_precision, marker='o', color='red', 
-                label=f'Optimal Prediction Threshold = {optimal_threshold:.4f}', s = 50)
+    # plt.scatter(optimal_recall, optimal_precision, marker='o', color='red', 
+    #             label=f'Optimal Prediction Threshold = {optimal_threshold:.4f}', s = 50)
 
-    plt.xlabel('Recall')
-    plt.ylabel('Precision')
-    plt.title('Precision-Recall Curve')
-    plt.legend()
-    plt.grid(True)
-    plt.show()
+    # plt.xlabel('Recall')
+    # plt.ylabel('Precision')
+    # plt.title('Precision-Recall Curve')
+    # plt.legend()
+    # plt.grid(True)
+    # plt.show()

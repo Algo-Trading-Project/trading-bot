@@ -16,7 +16,7 @@ class BaseStrategy:
 
     backtest_params = {
         'init_cash': 100_000,
-        'fees': 0.00295,
+        'fees': 0.0029,
         'sl_stop': 0.1,
         'sl_trail': True,
         'tp_stop': 0.1,
@@ -24,7 +24,7 @@ class BaseStrategy:
         'size_type': 2 # e.g. 2 if 'size' is 'Fixed Percent' and 0 otherwise
     }
 
-    def calculate_tp(open, high, low, close, volume, backtest_params):
+    def calculate_tp(open, high, low, close, volume, backtest_params, window):
         
         if type(backtest_params['tp_stop']) == float:
             tp = np.full(len(close), backtest_params['tp_stop'])
@@ -36,10 +36,11 @@ class BaseStrategy:
             low, 
             close,
             volume, 
-            method = backtest_params['tp_stop']
+            method = backtest_params['tp_stop'],
+            window = window
         ) - 1)
 
-    def calculate_sl(open, high, low, close, volume, backtest_params):
+    def calculate_sl(open, high, low, close, volume, backtest_params, window):
         
         if type(backtest_params['sl_stop']) == float:
             sl = np.full(len(close), backtest_params['sl_stop'])
@@ -51,7 +52,8 @@ class BaseStrategy:
             low, 
             close, 
             volume, 
-            method = backtest_params['sl_stop']
+            method = backtest_params['sl_stop'],
+            window = window
         ) - 1)
 
     def calculate_size(open, high, low, close, volume, backtest_params):

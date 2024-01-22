@@ -1,16 +1,16 @@
 from backtest.strategies.ma_crossover import MACrossOver
-from backtest.strategies.bollinger_bands import BollingerBands
-from backtest.backtester import BackTester
+from backtest.strategies.ml_strategy import MLStrategy
+from backtest.BackTester import BackTester
 
 import time
 
-if __name__ == '__main__': 
+if __name__ == '__main__':
 
     # Initialize a BackTester instance w/ the intended strategies to backtest,
     # a performance metric to optimize on, and a dictionary of backtest hyperparameters
 
     b = BackTester(
-        strategies = [MACrossOver, BollingerBands],
+        strategies = [MLStrategy()],
         optimization_metric = 'Sortino Ratio'
     )
 

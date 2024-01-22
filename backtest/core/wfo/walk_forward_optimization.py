@@ -80,7 +80,11 @@ class WalkForwardOptimization:
 
         self.custom_indicator = (vbt.IndicatorFactory(**strategy.indicator_factory_dict)
                                  .from_apply_func(strategy.indicator_func, 
+                                                  keep_pd = True,
                                                   to_2d = False))
+
+        # Turn off vectorization to keep pd.Series index of inputs
+        self.custom_indicator.custom_apply = False
         
     def __generate_signals(self, params: dict, optimize: bool, param_product: bool = False) -> (pd.DataFrame, pd.DataFrame):
         """
@@ -243,7 +247,7 @@ class WalkForwardOptimization:
             backtest_result_metrics = getattr(getattr(portfolio, split_path[0]), split_path[1])()
 
         if type(backtest_result_metrics) == pd.DataFrame or type(backtest_result_metrics) == pd.Series:
-            backtest_result_metrics.replace([np.inf, -np.inf, np.nan], 0, inplace = True)
+            backtest_result_metrics.replace([np.inf, -np.inf, np.nan], -10, inplace = True)
         else:
             if backtest_result_metrics == np.inf or backtest_result_metrics == -np.inf or backtest_result_metrics == np.nan:
                 backtest_result_metrics = 0
@@ -253,9 +257,15 @@ class WalkForwardOptimization:
         if self.metric_min_max_map.get(self.optimization_metric) == 'Max':
 
             if type(backtest_result_metrics) == pd.DataFrame or type(backtest_result_metrics) == pd.Series:
+
                 maximizing_index = backtest_result_metrics.idxmax()
-                
-                for param_name, best_value in zip(self.strategy.optimize_dict.keys(), maximizing_index):
+
+                try:
+                    maximizing_index_list = list(maximizing_index)
+                except:
+                    maximizing_index_list = [maximizing_index]
+
+                for param_name, best_value in zip(self.strategy.optimize_dict.keys(), maximizing_index_list):
                     best_param_comb[param_name] = best_value
 
                 # Return the best parameter combination and the portfolio of the backtest that
@@ -267,9 +277,15 @@ class WalkForwardOptimization:
         else:
 
             if type(backtest_result_metrics) == pd.DataFrame or type(backtest_result_metrics) == pd.Series:
-                minimizing_index = backtest_result_metrics.idxmin()
                 
-                for param_name, best_value in zip(self.strategy.optimize_dict.keys(), minimizing_index):
+                minimizing_index = backtest_result_metrics.idxmin()
+
+                try:
+                    minimizing_index_list = list(minimizing_index)
+                except:
+                    minimizing_index_list = [minimizing_index]
+                
+                for param_name, best_value in zip(self.strategy.optimize_dict.keys(), minimizing_index_list):
                     best_param_comb[param_name] = best_value
 
                 return best_param_comb, portfolio.loc[minimizing_index]

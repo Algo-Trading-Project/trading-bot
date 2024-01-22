@@ -25,20 +25,11 @@ import json
 from .core.wfo.walk_forward_optimization import WalkForwardOptimization
 from .core.performance.performance_metrics import *
 
-from .strategies.ma_crossover import MACrossOver
-from .strategies.bollinger_bands import BollingerBands
-from .strategies.linear_regression import LogisticRegressionStrategy
-
 class BackTester:
 
     # List of tokens to backtest
     TOKENS_TO_BACKTEST = [
-        'BTC_USD_COINBASE', 'ETH_USD_COINBASE', 'ADA_USDT_BINANCE',
-        'ALGO_USD_COINBASE', 'ATOM_USDT_BINANCE', 'BCH_USD_COINBASE',
-        'BNB_USDC_BINANCE', 'DOGE_USDT_BINANCE', 'ETC_USD_COINBASE',
-        'FET_USDT_BINANCE', 'FTM_USDT_BINANCE', 'HOT_USDT_BINANCE',
-        'IOTA_USDT_BINANCE', 'LINK_USD_COINBASE', 'LTC_USD_COINBASE',
-        'MATIC_USDT_BINANCE',
+        'BTC_USD_COINBASE'
     ]
 
     def __init__(
@@ -151,7 +142,11 @@ class BackTester:
                 WHERE 
                     asset_id_base = '{}' AND
                     asset_id_quote = '{}' AND
-                    exchange_id = '{}'
+                    exchange_id = '{}' AND
+                    time_period_end <= (
+                        SELECT MAX("timestamp")
+                        FROM token_price.metrics.tick_metrics
+                    )
                 ORDER BY time_period_start ASC
                 """.format(base, quote, exchange)
 
@@ -504,8 +499,8 @@ class BackTester:
                             quote = quote, 
                             exchange = exchange,
                             strat = strat,
-                            in_sample_size = 24 * 30 * 3,
-                            out_of_sample_size = 24 * 30 * 1
+                            in_sample_size = 8760,
+                            out_of_sample_size = 24 * 30 * 6
                         )
 
                         # Reset starting equity for next token

@@ -1,5 +1,5 @@
 from sklearn.base import BaseEstimator, TransformerMixin
-from helper import execute_query
+from .helper import execute_query
 import pandas as pd
 import ta
 import numpy as np
@@ -116,10 +116,10 @@ class TransactionFeatures(BaseEstimator, TransformerMixin):
         ORDER BY "timestamp" ASC
         """
         transaction_cols = [
-            'timestamp', 'transaction_volume', 'avg_transaction_size', 'num_transactions', 
-            'num_transactions_gt_1000_eth', 'num_transactions_gt_10000_eth', 'num_transactions_gt_100000_eth',
-            'transaction_failure_rate', 'avg_gas_used', 'total_gas_used', 'avg_gas_price', 'avg_gas_fee',
-            'total_gas_fees'
+            'timestamp', 'hourly_transaction_volume', 'daily_transaction_volume', 'weekly_transaction_volume', 'monthly_transaction_volume', 
+            'avg_transaction_size', 'num_transactions', 'num_transactions_gt_100_eth', 'num_transactions_gt_1000_eth',
+            'num_transactions_gt_10000_eth', 'num_transactions_gt_100000_eth', 'transaction_failure_rate', 'avg_gas_used', 
+            'total_gas_used', 'avg_gas_price', 'avg_gas_fee', 'total_gas_fees'
             ]
         
         transaction_data = execute_query(
@@ -204,29 +204,6 @@ class OrderBookFeatures(BaseEstimator, TransformerMixin):
         merged = pd.merge(X, self.order_book_data, how = 'inner', left_index = True, right_index = True)
         return merged
      
-class NetworkFeatures(BaseEstimator, TransformerMixin):
-    
-    def __init__(self):
-        query = f"""
-        SELECT *
-        FROM metrics.eth.network_metrics
-        ORDER BY "timestamp" ASC
-        """
-        network_cols = ['timestamp', 'liquidity_ratio']
-        network_data = execute_query(
-            query = query,
-            cols = network_cols,
-            date_col = 'timestamp'
-        )
-        self.network_data = network_data
-
-    def fit(self, X, y=None):
-        return self
-
-    def transform(self, X):
-        merged = pd.merge(X, self.network_data, how = 'inner', left_index = True, right_index = True)
-        return merged
-
 class TickFeatures(BaseEstimator, TransformerMixin):
     
     def __init__(self, symbol_id):
@@ -271,18 +248,41 @@ class TickFeatures(BaseEstimator, TransformerMixin):
 
     def transform(self, X):
         merged = pd.merge(X, self.tick_data, how = 'inner', left_index = True, right_index = True)
+        merged['vwap_deviation_pct'] = (merged['vwap'] - merged['price_close']) / merged['price_close']
         return merged
     
 class WalletFeatures(BaseEstimator, TransformerMixin):
     
     def __init__(self):
-        pass
+        query = """
+        SELECT *
+        FROM administrator.metrics.active_addresses
+        ORDER BY "timestamp" ASC
+        """
+        wallet_cols = [
+            'timestamp', 'hourly_active_addresses', 'daily_active_addresses', 
+            'weekly_active_addresses', 'monthly_active_addresses'
+        ]
+
+        wallet_data = execute_query(
+            query = query,
+            cols = wallet_cols,
+            date_col = 'timestamp'
+        )
+        self.wallet_data = wallet_data
 
     def fit(self, X, y=None):
         return self
 
     def transform(self, X):
-        pass
+        merged = pd.merge(X, self.wallet_data, how = 'inner', left_index = True, right_index = True)
+
+        merged['hourly_liquidity_ratio'] = merged['hourly_active_addresses'] / merged['hourly_transaction_volume']
+        merged['daily_liquidity_ratio'] = merged['daily_active_addresses'] / merged['daily_transaction_volume']
+        merged['weekly_liquidity_ratio'] = merged['weekly_active_addresses'] / merged['weekly_transaction_volume']
+        merged['monthly_liquidity_ratio'] = merged['monthly_active_addresses'] / merged['monthly_transaction_volume']
+        
+        return merged
     
 class PriceFeatures(BaseEstimator, TransformerMixin):
     

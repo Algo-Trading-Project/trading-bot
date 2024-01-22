@@ -28,6 +28,9 @@ class MACrossOver(BaseStrategy):
         'size_type': 2
     }
 
+    def __init__(self):
+        pass
+
     @staticmethod
     def indicator_func(open, high, low, close, volume,
                        fast_window, slow_window): 
