@@ -1,5 +1,10 @@
 from sklearn.base import BaseEstimator, TransformerMixin
-from .helper import execute_query
+
+try:
+    from .helper import execute_query
+except:
+    from helper import execute_query
+    
 import pandas as pd
 import ta
 import numpy as np
@@ -127,6 +132,10 @@ class TransactionFeatures(BaseEstimator, TransformerMixin):
             cols = transaction_cols,
             date_col = 'timestamp'
         )
+
+        # Add an hour to the index to prevent data leakage
+        transaction_data.index = transaction_data.index + pd.Timedelta(hours = 1)
+
         self.transaction_data = transaction_data
 
     def fit(self, X, y=None):
@@ -191,6 +200,9 @@ class OrderBookFeatures(BaseEstimator, TransformerMixin):
             cols = order_book_cols,
             date_col = 'timestamp'
         )
+
+        # Add an hour to the index to prevent data leakage
+        order_book_data.index = order_book_data.index + pd.Timedelta(hours = 1)
 
         # Drop asset_id_base, asset_id_quote, and exchange_id columns
         order_book_data = order_book_data.drop(['asset_id_base', 'asset_id_quote', 'exchange_id'], axis = 1)
@@ -269,6 +281,10 @@ class WalletFeatures(BaseEstimator, TransformerMixin):
             cols = wallet_cols,
             date_col = 'timestamp'
         )
+
+        # Add an hour to the index to prevent data leakage
+        wallet_data.index = wallet_data.index + pd.Timedelta(hours = 1)
+        
         self.wallet_data = wallet_data
 
     def fit(self, X, y=None):
@@ -277,10 +293,10 @@ class WalletFeatures(BaseEstimator, TransformerMixin):
     def transform(self, X):
         merged = pd.merge(X, self.wallet_data, how = 'inner', left_index = True, right_index = True)
 
-        merged['hourly_liquidity_ratio'] = merged['hourly_active_addresses'] / merged['hourly_transaction_volume']
-        merged['daily_liquidity_ratio'] = merged['daily_active_addresses'] / merged['daily_transaction_volume']
-        merged['weekly_liquidity_ratio'] = merged['weekly_active_addresses'] / merged['weekly_transaction_volume']
-        merged['monthly_liquidity_ratio'] = merged['monthly_active_addresses'] / merged['monthly_transaction_volume']
+        # merged['hourly_liquidity_ratio'] = merged['hourly_active_addresses'] / merged['hourly_transaction_volume']
+        # merged['daily_liquidity_ratio'] = merged['daily_active_addresses'] / merged['daily_transaction_volume']
+        # merged['weekly_liquidity_ratio'] = merged['weekly_active_addresses'] / merged['weekly_transaction_volume']
+        # merged['monthly_liquidity_ratio'] = merged['monthly_active_addresses'] / merged['monthly_transaction_volume']
         
         return merged
     

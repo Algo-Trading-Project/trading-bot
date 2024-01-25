@@ -81,7 +81,7 @@ class MLStrategy(BaseStrategy):
             # ('order_book_features', OrderBookFeatures(symbol_id = symbol_id)),
 
             # Add wallet-based features to the dataset
-            # ('wallet_features', WalletFeatures()),
+            ('wallet_features', WalletFeatures()),
 
             # Add rolling min-max scaled features to the dataset
             ('rolling_min_max_scaler', RollingMinMaxScaler(window_sizes)),
@@ -116,6 +116,9 @@ class MLStrategy(BaseStrategy):
         
         # calculate triple-barrier labels
         y = calculate_triple_barrier_labels(price_data, atr_window = 24, max_holding_time = 24)
+
+        # Turn every non 1 label into 0
+        y = pd.Series(np.where(y != 1, 0, y), index = y.index)
 
         # Align X and y
         X = X[X.index.isin(y.index)]
@@ -210,6 +213,9 @@ class MLStrategy(BaseStrategy):
             # Create a series of the same length as entries and exits with the position size
             size = pd.Series(f, index = entries.index)
 
+            # Turn negative sizes into 0
+            size = size.where(size >= 0, 0)
+            
             # Switch is_train after each iteration
             MLStrategy.is_train = not MLStrategy.is_train
 
@@ -224,6 +230,7 @@ class MLStrategy(BaseStrategy):
 
         # If is_train is False, generate predictions for the test set
         else:
+            
             # Generate predictions for the test set
             y_pred = MLStrategy.model.predict_proba(X)[:,1]
             y_pred = np.where(y_pred >= prediction_threshold, 1, 0)
@@ -294,6 +301,9 @@ class MLStrategy(BaseStrategy):
 
             # Create a series of the same length as entries and exits with the position size
             size = pd.Series(f, index = entries.index)
+
+            # Turn negative sizes into 0
+            size = size.where(size >= 0, 0)
 
             # Switch is_train after each iteration
             MLStrategy.is_train = not MLStrategy.is_train

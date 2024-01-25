@@ -146,6 +146,10 @@ class BackTester:
                     time_period_end <= (
                         SELECT MAX("timestamp")
                         FROM token_price.metrics.tick_metrics
+                    ) AND
+                    time_period_end >= (
+                        SELECT MIN("timestamp")
+                        FROM token_price.metrics.tick_metrics
                     )
                 ORDER BY time_period_start ASC
                 """.format(base, quote, exchange)

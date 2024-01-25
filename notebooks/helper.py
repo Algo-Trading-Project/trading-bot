@@ -41,17 +41,17 @@ def calculate_triple_barrier_labels(ohlcv_df, atr_window, max_holding_time, tran
                 barrier_hit = True
                 break
             elif low[j] <= lower_barrier:
-                labels[i] = 0  # Lower barrier hit
+                labels[i] = -1  # Lower barrier hit
                 barrier_hit = True
                 break
 
         # If no barriers are hit, determine label based on closing price after max holding time
         if not barrier_hit:
             final_price = close[min(j, len(close) - 1)]
-            labels[i] = 1 if final_price > close[i] else 0
+            labels[i] = 1 if final_price > close[i] else -1
 
     # Turn every 0 label into -1
-    # labels[labels == 0] = -1
+    labels[labels == 0] = -1
 
     # Create a Pandas Series from the labels array
     label_series = pd.Series(labels, index=ohlcv_df.index)
@@ -192,8 +192,8 @@ def calculate_test_performance(X_test, y_test, model, price_data, atr_data):
     y_pred_probs = model.predict_proba(X_test)[:,1]
 
     # Calculate precision-recall pairs for different prediction thresholds
-    # precision, recall, thresholds = precision_recall_curve(y_test, y_pred_probs)
-    # pr_auc = auc(recall, precision)
+    precision, recall, thresholds = precision_recall_curve(y_test, y_pred_probs)
+    pr_auc = auc(recall, precision)
 
     # Find the threshold that maximizes EMV (Expected Monetary Value) on the test set
     # max_emv = -np.inf
@@ -229,17 +229,17 @@ def calculate_test_performance(X_test, y_test, model, price_data, atr_data):
     print('Test F1 Score: ', f1)
 
     # Plot Precision-Recall curve
-    # plt.figure(figsize=(10, 5))
+    plt.figure(figsize=(10, 5))
 
-    # plt.plot(recall, precision, color='blue', label=f'Precision-Recall curve (area = {pr_auc:.3f})')
-    # plt.fill_between(recall, precision, step='post', alpha=0.2, color='blue')
+    plt.plot(recall, precision, color='blue', label=f'Precision-Recall curve (area = {pr_auc:.3f})')
+    plt.fill_between(recall, precision, step='post', alpha=0.2, color='blue')
 
     # plt.scatter(optimal_recall, optimal_precision, marker='o', color='red', 
     #             label=f'Optimal Prediction Threshold = {optimal_threshold:.4f}', s = 50)
 
-    # plt.xlabel('Recall')
-    # plt.ylabel('Precision')
-    # plt.title('Precision-Recall Curve')
-    # plt.legend()
-    # plt.grid(True)
-    # plt.show()
+    plt.xlabel('Recall')
+    plt.ylabel('Precision')
+    plt.title('Precision-Recall Curve')
+    plt.legend()
+    plt.grid(True)
+    plt.show()

@@ -14,5 +14,4 @@ python -m main
 ```
 <br></br>
 
-This runs the main.py file located in the root directory, which performs walk-forward optimization on 
-all the strategies passed into the BackTester object.  The results are uploaded to Redshift for further analysis.
+This runs the main.py file located in the root directory, which performs walk-forward optimization on all the strategies passed into the BackTester object.  The results are uploaded to Redshift for further analysis.
