@@ -29,7 +29,9 @@ class BackTester:
 
     # List of tokens to backtest
     TOKENS_TO_BACKTEST = [
-        'BTC_USD_COINBASE'
+        'BTC_USD_COINBASE', 'ETH_USD_COINBASE', 'ALGO_USD_COINBASE',
+        'ADA_USDT_BINANCE', 'BNB_USDC_COINBASE', 'LINK_USD_COINBASE',
+        'LTC_USD_COINBASE', 'MATIC_USDT_BINANCE', 'FTM_USDT_BINANCE',
     ]
 
     def __init__(
@@ -143,14 +145,6 @@ class BackTester:
                     asset_id_base = '{}' AND
                     asset_id_quote = '{}' AND
                     exchange_id = '{}' AND
-                    time_period_end <= (
-                        SELECT MAX("timestamp")
-                        FROM token_price.metrics.tick_metrics
-                    ) AND
-                    time_period_end >= (
-                        SELECT MIN("timestamp")
-                        FROM token_price.metrics.tick_metrics
-                    )
                 ORDER BY time_period_start ASC
                 """.format(base, quote, exchange)
 
