@@ -19,6 +19,7 @@ import redshift_connector
 import pandas as pd
 import numpy as np
 import json
+
 ###############################################
 #      TRADING STRATEGIES / BACKTESTING       #
 ###############################################

@@ -267,13 +267,20 @@ class WalletFeatures(BaseEstimator, TransformerMixin):
     
     def __init__(self):
         query = """
-        SELECT *
-        FROM administrator.metrics.active_addresses
+        SELECT
+            a."timestamp",
+            a.hourly_active_addresses,
+            a.daily_active_addresses,
+            a.weekly_active_addresses,
+            a.monthly_active_addresses,
+            t.top_10_percent_eth_balance
+        FROM administrator.metrics.active_addresses a INNER JOIN administrator.metrics.top_10_percent_eth_balances t
+             ON a."timestamp" = t."timestamp"
         ORDER BY "timestamp" ASC
         """
         wallet_cols = [
             'timestamp', 'hourly_active_addresses', 'daily_active_addresses', 
-            'weekly_active_addresses', 'monthly_active_addresses'
+            'weekly_active_addresses', 'monthly_active_addresses', 'top_10_percent_eth_balance'
         ]
 
         wallet_data = execute_query(
@@ -293,10 +300,10 @@ class WalletFeatures(BaseEstimator, TransformerMixin):
     def transform(self, X):
         merged = pd.merge(X, self.wallet_data, how = 'inner', left_index = True, right_index = True)
 
-        # merged['hourly_liquidity_ratio'] = merged['hourly_active_addresses'] / merged['hourly_transaction_volume']
-        # merged['daily_liquidity_ratio'] = merged['daily_active_addresses'] / merged['daily_transaction_volume']
-        # merged['weekly_liquidity_ratio'] = merged['weekly_active_addresses'] / merged['weekly_transaction_volume']
-        # merged['monthly_liquidity_ratio'] = merged['monthly_active_addresses'] / merged['monthly_transaction_volume']
+        merged['hourly_liquidity_ratio'] = merged['hourly_active_addresses'] / merged['hourly_transaction_volume']
+        merged['daily_liquidity_ratio'] = merged['daily_active_addresses'] / merged['daily_transaction_volume']
+        merged['weekly_liquidity_ratio'] = merged['weekly_active_addresses'] / merged['weekly_transaction_volume']
+        merged['monthly_liquidity_ratio'] = merged['monthly_active_addresses'] / merged['monthly_transaction_volume']
         
         return merged
     
@@ -314,7 +321,7 @@ class PriceFeatures(BaseEstimator, TransformerMixin):
         X_copy = ta.add_all_ta_features(X_copy, open = 'price_open', high = 'price_high', low = 'price_low', close = 'price_close', volume = 'volume_traded', fillna = True)
         
         # Drop columns that are not needed and replace inf values with nan
-        X_copy = X_copy.drop(['price_open', 'price_high', 'price_low', 'price_close', 'volume_traded'], axis = 1)
+        # X_copy = X_copy.drop(['price_open', 'price_high', 'price_low', 'price_close', 'volume_traded'], axis = 1)
         X_copy = X_copy.replace([np.inf, -np.inf], 0)
 
         return X_copy

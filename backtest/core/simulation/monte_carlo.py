@@ -9,7 +9,7 @@ import numpy as np
 def simulate_equity_curves_with_block_bootstrap(
     returns, 
     initial_equity, 
-    n, 
+    num_simulations, 
     block_size
 ):
     """
@@ -21,19 +21,20 @@ def simulate_equity_curves_with_block_bootstrap(
         An array of historical returns.
 
     initial_equity : float
-        The initial value of equity at the start of the simulation.
+        The initial equity value for the simulated curves.
         
     num_simulations : int
         The number of simulated equity curves to generate.
 
     block_size : int
-        The size of each block to sample. 
+        The size of each contiguous block of returns the returns array will be partitioned
+        into for bootstrapping.
 
     Returns:
     -------
     numpy.ndarray
-        A 2D array where each column represents a simulated equity curve and each row corresponds 
-        to a time point in the simulation.
+        A 2D array where each column represents a simulated equity curve and each row represents 
+        a time step in the simulation.
     """
     num_days = len(returns)
     num_blocks = num_days // block_size
@@ -67,13 +68,14 @@ def run_monte_carlo_simulation(equity_curve, num_simulations = 1000):
     """
     Runs a Monte Carlo simulation on an equity curve.
 
-    Given an equity curve, this function calculates daily returns and then uses these returns
-    to simulate multiple possible future equity curve trajectories.
+    Given an equity curve, this function calculates returns at each timestep and then samples blocks of returns
+    to generate multiple simulated equity curves.  This is useful for estimating the distribution of possible
+    outcomes for the equity curve over time.
 
     Parameters:
     ----------
     equity_curve : pandas.DataFrame
-        A DataFrame with a column 'equity' representing the value of an equity over time.
+        A DataFrame with a column 'equity' representing the equity curve to simulate. The index should be a datetime index.
     num_simulations : int, default 1000
         The number of simulated equity curves to generate.
 
@@ -87,7 +89,7 @@ def run_monte_carlo_simulation(equity_curve, num_simulations = 1000):
     - The initial equity value for simulations is taken from the first value of the 'equity' column in the input DataFrame.
     """
 
-    # Calculate daily returns from the equity curve
+    # Calculate returns from the equity curve
     equity_curve['returns'] = equity_curve['equity'].pct_change().fillna(0)
 
     # Extract the initial equity value for the simulation
@@ -97,14 +99,12 @@ def run_monte_carlo_simulation(equity_curve, num_simulations = 1000):
     simulated_curves_np = simulate_equity_curves_with_block_bootstrap(
         returns = equity_curve['returns'].values, 
         initial_equity = initial_equity, 
-        n = num_simulations,
+        num_simulations = num_simulations,
         block_size = 24
     )
 
     # Convert the numpy array of simulated curves to a pandas DataFrame
     dates = equity_curve.index
     simulated_curves_df = pd.DataFrame(simulated_curves_np, index=dates)
-
-    c = simulated_curves_df.columns
 
     return simulated_curves_df
