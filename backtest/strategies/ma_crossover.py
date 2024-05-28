@@ -14,17 +14,17 @@ class MACrossOver(BaseStrategy):
     }
 
     optimize_dict = {
-        'fast_window': [3, 6, 12, 24, 24 * 2],
-        'slow_window': [24 * 3, 24 * 4, 24 * 5, 24 * 6, 24 * 7]
+        'fast_window': [15, 30, 60, 60 * 12, 60 * 24],
+        'slow_window': [60 * 24, 60 * 24 * 7, 60 * 24 * 30]
     }
 
     backtest_params = {
-        'init_cash': 100_000,
+        'init_cash': 10_000,
         'fees': 0.00295,
         'sl_stop': np.inf,
         'sl_trail': True,
         'tp_stop': np.inf,
-        'size': 0.05,
+        'size': 'atr',
         'size_type': 2
     }
 
@@ -37,8 +37,8 @@ class MACrossOver(BaseStrategy):
 
         backtest_params = MACrossOver.backtest_params
         
-        tp = MACrossOver.calculate_tp(open, high, low, close, volume, backtest_params)
-        sl = MACrossOver.calculate_sl(open, high, low, close, volume, backtest_params)
+        tp = MACrossOver.calculate_tp(open, high, low, close, volume, backtest_params, window = 60 * 24)
+        sl = MACrossOver.calculate_sl(open, high, low, close, volume, backtest_params, window = 60 * 24)
         size = MACrossOver.calculate_size(open, high, low, close, volume, backtest_params)
         
         sma_slow = vbt.MA.run(close, window = slow_window, ewm = True)       

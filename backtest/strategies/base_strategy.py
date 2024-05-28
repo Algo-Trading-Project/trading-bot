@@ -15,7 +15,7 @@ class BaseStrategy:
     # size_type - Indicates the 'size' parameter represents a percent
 
     backtest_params = {
-        'init_cash': 100_000,
+        'init_cash': 10_000,
         'fees': 0.0029,
         'sl_stop': 0.1,
         'sl_trail': True,

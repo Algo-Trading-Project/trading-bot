@@ -14,11 +14,10 @@ warnings.simplefilter('ignore', ConvergenceWarning)
 warnings.simplefilter('ignore', UserWarning)
 warnings.simplefilter('ignore', RuntimeWarning)
 
-import time
-import redshift_connector
 import pandas as pd
 import numpy as np
 import json
+import duckdb
 
 ###############################################
 #      TRADING STRATEGIES / BACKTESTING       #
@@ -30,9 +29,7 @@ class BackTester:
 
     # List of tokens to backtest
     TOKENS_TO_BACKTEST = [
-        'BTC_USD_COINBASE', 'ETH_USD_COINBASE', 'ALGO_USD_COINBASE',
-        'ADA_USDT_BINANCE', 'BNB_USDC_COINBASE', 'LINK_USD_COINBASE',
-        'LTC_USD_COINBASE', 'MATIC_USDT_BINANCE', 'FTM_USDT_BINANCE',
+        'BTC_USD_COINBASE', 'ETH_USD_COINBASE'
     ]
 
     def __init__(
@@ -58,6 +55,11 @@ class BackTester:
 
         self.optimization_metric = optimization_metric
         self.strategies = strategies
+
+        self.conn = duckdb.connect(
+            database = '/Users/louisspencer/Desktop/Trading-Bot-Data-Pipelines/data/database.db',
+            read_only = False
+        )
 
     def __serialize_json_data(obj):
         """
@@ -123,54 +125,38 @@ class BackTester:
             DataFrame of queried OHLCV data, indexed by timestamp.
 
         """
-        # Connect to Redshift cluster containing price data
-        with redshift_connector.connect(
-            host = 'project-poseidon.cpsnf8brapsd.us-west-2.redshift.amazonaws.com',
-            database = 'token_price',
-            user = 'administrator',
-            password = 'Free2play2'
-        ) as conn:
-            with conn.cursor() as cursor:
-                # Query to fetch OHLCV data for a token & exchange of interest
-                title = base + '-' + quote
-                query = """
-                SELECT 
-                    time_period_end,
-                    price_open,
-                    price_high,
-                    price_low,
-                    price_close,
-                    volume_traded
-                FROM token_price.coinapi.price_data_1h
-                WHERE 
-                    asset_id_base = '{}' AND
-                    asset_id_quote = '{}' AND
-                    exchange_id = '{}' AND
-                ORDER BY time_period_start ASC
-                """.format(base, quote, exchange)
+        # Query to fetch OHLCV data for a token & exchange of interest
+        query = """
+        SELECT 
+            time_period_end,
+            price_open,
+            price_high,
+            price_low,
+            price_close,
+            volume_traded
+        FROM market_data.price_data_1m
+        WHERE 
+            asset_id_base = '{}' AND
+            asset_id_quote = '{}' AND
+            exchange_id = '{}'
+        ORDER BY time_period_end ASC
+        """.format(base, quote, exchange)
 
-                # Execute query on Redshift and return result
-                cursor.execute(query)
-                tuples = cursor.fetchall()
-                
-                # Return queried data as a DataFrame
-                cols = ['Date', 'price_open', 'price_high', 'price_low', 'price_close', 'volume_traded']
-                df = pd.DataFrame(tuples, columns = cols).set_index('Date')
-                df = df.astype(float)
+        # Execute query on DuckDB and return result as a DataFrame
+        df = self.conn.sql(query).df().set_index('time_period_end').astype(float)
+        
+        # Fill in any gaps in data with last seen value
+        df = df.asfreq(freq = 'min', method = 'ffill')
 
-                # Fill in any gaps in data with last seen value
-                df = df.asfreq(freq = 'H', method = 'ffill')
-
-                return df
+        return df
             
     def __upsert_into_redshift_table(
-        self, 
+        self,
+        symbol_id: str,
+        strat: str,
         table: str, 
-        insert_str: str, 
-        cursor: redshift_connector.Cursor,
-        conn: redshift_connector.Connection
+        insert_str: str
     ) -> None:
-        
         """
         Performs an upsert on the specified Redshift table in the trading_bot database.
 
@@ -192,74 +178,34 @@ class BackTester:
         -------
         None
         """
+        
+        if table == 'backtest_results':
+            upsert_query = f"""
+            INSERT OR REPLACE INTO backtest.{table} VALUES {insert_str} 
+            """
+            self.conn.sql(upsert_query)
 
-        begin_transaction = """
-        BEGIN TRANSACTION;
-        """
+        elif table == 'backtest_equity_curves':
+            upsert_query = f"""
+            INSERT OR REPLACE INTO backtest.{table} VALUES {insert_str} 
+            """
+            self.conn.sql(upsert_query)
+        
+        elif table == 'backtest_trades':
+            delete_query = f"""
+            DELETE FROM backtest.{table}
+            WHERE 
+                symbol_id = '{symbol_id}' AND 
+                strat = '{strat}'
+            """
+            insert_query = f"""
+            INSERT INTO backtest.{table} VALUES {insert_str}
+            """
 
-        create_staging_table = """
-        CREATE TABLE IF NOT EXISTS trading_bot.eth.stg_{table} (LIKE trading_bot.eth.{table})
-        """.format(table = table)
+            self.conn.sql(delete_query)
+            self.conn.sql(insert_query)
 
-        insert_into_staging_table = """
-        INSERT INTO trading_bot.eth.stg_{table} VALUES {insert_str}
-        """.format(table = table, insert_str = insert_str)
-
-        delete_from_target_table = """
-        DELETE FROM trading_bot.eth.{table} 
-        USING trading_bot.eth.stg_{table}
-        WHERE
-            {table}.symbol_id = stg_{table}.symbol_id AND
-            {table}.strat = stg_{table}.strat
-        """.format(table = table)
-
-        insert_into_target_table = """
-        INSERT INTO trading_bot.eth.{table} 
-        SELECT * FROM trading_bot.eth.stg_{table};
-        """.format(table = table)
-
-        drop_staging_table = """
-        DROP TABLE trading_bot.eth.stg_{table}
-        """.format(table = table)
-
-        end_transaction = """
-        END TRANSACTION;
-        """
-
-        queries = [
-            begin_transaction,
-
-            create_staging_table, 
-
-            insert_into_staging_table,
-
-            delete_from_target_table, 
-
-            insert_into_target_table, 
-
-            drop_staging_table,
-
-            end_transaction
-        ]
-
-        for query in queries:
-            try:
-                cursor.execute(query)
-            except redshift_connector.InterfaceError as err:
-                with redshift_connector.connect(
-                    host = 'project-poseidon.cpsnf8brapsd.us-west-2.redshift.amazonaws.com',
-                    database = 'trading_bot',
-                    user = 'administrator',
-                    password = 'Free2play2'
-                ) as conn2:
-                    with conn2.cursor() as cursor2:
-                        for query in queries:
-                            cursor2.execute(query)
-
-                    conn2.commit()
-                    return
-                    
-        conn.commit()
+        self.conn.commit()
 
     def __walk_forward_optimization(
         self, 
@@ -269,7 +215,7 @@ class BackTester:
         is_end_i: int, 
         oos_start_i: int, 
         oos_end_i: int
-    ) -> (pd.DataFrame, pd.DataFrame):
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
         
         """
         Optimizes the parameters of a Strategy (strat) on the in-sample data and performs 
@@ -329,7 +275,7 @@ class BackTester:
         strat,       
         in_sample_size: int, 
         out_of_sample_size: int
-    ) -> (pd.DataFrame, pd.DataFrame, pd.DataFrame):
+    ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
 
         """
         Executes a walk-forward optimization on an arbitrary trading strategy and a
@@ -394,7 +340,7 @@ class BackTester:
 
         while start + in_sample_size + out_of_sample_size <= len(backtest_data):
             
-            print('Progress: {} / {} days...'.format(int((start + in_sample_size) / 24), int(len(backtest_data) / 24)))
+            print('Progress: {} / {} days...'.format(int((start + in_sample_size) / (24 * 60)), int(len(backtest_data) / (24 * 60))))
             print()
 
             print('*** Starting Equity: ', starting_equity)
@@ -472,118 +418,110 @@ class BackTester:
         --------
         None
         """
-        
-        with redshift_connector.connect(
-            host = 'project-poseidon.cpsnf8brapsd.us-west-2.redshift.amazonaws.com',
-            database = 'trading_bot',
-            user = 'administrator',
-            password = 'Free2play2'
-        ) as conn:
-            with conn.cursor() as cursor:
+            
+        for strat in self.strategies:
+            for token in self.TOKENS_TO_BACKTEST:
+                base, quote, exchange = token.split('_')
 
-                for strat in self.strategies:
-                    for token in self.TOKENS_TO_BACKTEST:
-                        base, quote, exchange = token.split('_')
+                print()
+                print('Backtesting the {} strategy on {}'.format(
+                strat.indicator_factory_dict['class_name'],
+                base + '_' + quote + '_' + exchange
+                ))
+                print()
 
-                        print()
-                        print('Backtesting the {} strategy on {}'.format(
+                # Execute walk-forward optimization
+                oos_equity_curves, oos_trades, oos_price_data, is_sharpes, oos_sharpes = self.__execute_wfo(
+                    base = base,
+                    quote = quote, 
+                    exchange = exchange,
+                    strat = strat,
+                    in_sample_size = 60 * 24 * 365,
+                    out_of_sample_size = 60 * 24 * 90
+                )
+
+                # Reset starting equity for next token
+                strat.backtest_params['init_cash'] = 10_000
+
+                # If the walk-forward optimization failed, skip to the next token
+                if (oos_equity_curves is None) or (oos_trades is None) or (oos_price_data is None):
+                    continue
+
+                oos_trades['entry_date'] = pd.to_datetime(oos_trades['entry_date'])
+                oos_trades['exit_date'] = pd.to_datetime(oos_trades['exit_date'])
+                oos_trades_dict = oos_trades.to_dict(orient = 'records')
+                
+                insert_str_backtest_trades = ''
+
+                for trade in oos_trades_dict:
+                    pnl = float(str(trade['pnl'])[:38])
+                    pnl_pct = float(str(trade['pnl_pct'])[:38])
+
+                    insert_str_backtest_trades += """('{}', '{}', '{}', '{}', '{}', '{}', '{}'), """.format(
+                        base + '_' + quote + '_' + exchange, 
                         strat.indicator_factory_dict['class_name'],
-                        base + '_' + 'USD' + '_' + exchange
-                        ))
-                        print()
+                        trade['entry_date'],
+                        trade['exit_date'],
+                        pnl,
+                        pnl_pct,
+                        trade['is_long']
+                    )
 
-                        # Execute walk-forward optimization
-                        oos_equity_curves, oos_trades, oos_price_data, is_sharpes, oos_sharpes = self.__execute_wfo(
-                            base = base,
-                            quote = quote, 
-                            exchange = exchange,
-                            strat = strat,
-                            in_sample_size = 8760,
-                            out_of_sample_size = 24 * 30 * 6
-                        )
+                insert_str_backtest_trades = insert_str_backtest_trades[:-2]
 
-                        # Reset starting equity for next token
-                        strat.backtest_params['init_cash'] = 100_000
+                insert_str_backtest_equity_curve = ''
+                
+                for i in range(len(oos_equity_curves)):
+                    date = oos_equity_curves.index[i]
+                    equity = oos_equity_curves['equity'].iloc[i]
 
-                        # If the walk-forward optimization failed, skip to the next token
-                        if (oos_equity_curves is None) or (oos_trades is None) or (oos_price_data is None):
-                            continue
+                    insert_str_backtest_equity_curve += """('{}', '{}', '{}', {}), """.format(
+                        base + '_' + quote + '_' + exchange,
+                        strat.indicator_factory_dict['class_name'],
+                        date,
+                        equity
+                    )
 
-                        oos_trades['entry_date'] = oos_trades['entry_date'].astype(str)
-                        oos_trades['exit_date'] = oos_trades['exit_date'].astype(str)
-                        oos_trades_dict = oos_trades.to_dict(orient = 'records')
-                        
-                        insert_str_backtest_trades = ''
+                insert_str_backtest_equity_curve = insert_str_backtest_equity_curve[:-2]
 
-                        for trade in oos_trades_dict:
-                            pnl = float(str(trade['pnl'])[:38])
-                            pnl_pct = float(str(trade['pnl_pct'])[:38])
+                performance_metrics = calculate_performance_metrics(
+                    oos_equity_curves, 
+                    oos_trades, 
+                    oos_price_data
+                ).to_dict(orient = 'records')[0]
 
-                            insert_str_backtest_trades += """('{}', '{}', '{}', '{}', '{}', '{}', '{}'), """.format(
-                                base + '_' + quote + '_' + exchange, 
-                                strat.indicator_factory_dict['class_name'],
-                                trade['entry_date'],
-                                trade['exit_date'],
-                                pnl,
-                                pnl_pct,
-                                trade['is_long']
-                            )
+                performance_metrics['is_sharpe'] = is_sharpes
+                performance_metrics['oos_sharpe'] = oos_sharpes
+                
+                performance_metrics = json.dumps(performance_metrics, default = BackTester.__serialize_json_data)
+                performance_metrics = performance_metrics.replace('NaN', 'null').replace('Infinity', 'null')
 
-                        insert_str_backtest_trades = insert_str_backtest_trades[:-2]
+                insert_str_backtest_result = """
+                ('{}', '{}', '{}', '{}', '{}', '{}')
+                """.format(
+                    strat.indicator_factory_dict['class_name'],
+                    base + '_' + quote + '_' + exchange,
+                    oos_price_data.index[0],
+                    oos_price_data.index[-1],
+                    performance_metrics,  
+                    self.optimization_metric
+                )
 
-                        insert_str_backtest_equity_curve = ''
-                        
-                        for i in range(len(oos_equity_curves)):
-                            date = oos_equity_curves.index[i]
-                            equity = oos_equity_curves['equity'].iloc[i]
-
-                            insert_str_backtest_equity_curve += """('{}', '{}', '{}', {}), """.format(
-                                base + '_' + quote + '_' + exchange,
-                                strat.indicator_factory_dict['class_name'],
-                                date,
-                                equity
-                            )
-
-                        insert_str_backtest_equity_curve = insert_str_backtest_equity_curve[:-2]
-
-                        performance_metrics = calculate_performance_metrics(
-                            oos_equity_curves, 
-                            oos_trades, 
-                            oos_price_data
-                        ).to_dict(orient = 'records')[0]
-
-                        performance_metrics['is_sharpe'] = is_sharpes
-                        performance_metrics['oos_sharpe'] = oos_sharpes
-                        
-                        performance_metrics = json.dumps(performance_metrics, default = BackTester.__serialize_json_data)
-                        performance_metrics = performance_metrics.replace('NaN', 'null').replace('Infinity', 'null')
-
-                        insert_str_backtest_result = """
-                        ('{}', '{}', '{}', '{}', '{}', '{}')
-                        """.format(
-                            strat.indicator_factory_dict['class_name'],
-                            base + '_' + quote + '_' + exchange,
-                            oos_price_data.index[0],
-                            oos_price_data.index[-1],
-                            performance_metrics,  
-                            self.optimization_metric
-                        )
-
-                        self.__upsert_into_redshift_table(
-                            table = 'backtest_results',
-                            insert_str = insert_str_backtest_result,
-                            cursor = cursor,
-                            conn = conn
-                        )
-                        self.__upsert_into_redshift_table(
-                            table = 'backtest_trades',
-                            insert_str = insert_str_backtest_trades,
-                            cursor = cursor,
-                            conn = conn
-                        )
-                        self.__upsert_into_redshift_table(
-                            table = 'backtest_equity_curves',
-                            insert_str = insert_str_backtest_equity_curve,
-                            cursor = cursor,
-                            conn = conn
-                        )
+                self.__upsert_into_redshift_table(
+                    symbol_id = base + '_' + quote + '_' + exchange,
+                    strat = strat.indicator_factory_dict['class_name'],
+                    table = 'backtest_results',
+                    insert_str = insert_str_backtest_result
+                )
+                self.__upsert_into_redshift_table(
+                    symbol_id = base + '_' + quote + '_' + exchange,
+                    strat = strat.indicator_factory_dict['class_name'],
+                    table = 'backtest_trades',
+                    insert_str = insert_str_backtest_trades
+                )
+                self.__upsert_into_redshift_table(
+                    symbol_id = base + '_' + quote + '_' + exchange,
+                    strat = strat.indicator_factory_dict['class_name'],
+                    table = 'backtest_equity_curves',
+                    insert_str = insert_str_backtest_equity_curve
+                )

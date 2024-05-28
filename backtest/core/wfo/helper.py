@@ -73,7 +73,7 @@ def calculate_size(open, high, low, close, volume, backtest_params):
     if backtest_params['size'] == 'atr':
         # Calculate the rolling average true range of the close price
         # over the last week
-        rolling_atr = vbt.ATR.run(high, low, close, window = 24 * 7).atr
+        rolling_atr = vbt.ATR.run(high, low, close, window = 60 * 24 * 7).atr
 
         # Normalize the average true range by dividing it by the close price
         rolling_atr = (rolling_atr / close) * 100
@@ -86,7 +86,7 @@ def calculate_size(open, high, low, close, volume, backtest_params):
     elif backtest_params['size'] == 'std':
         # Calculate the rolling standard deviation of the close price
         # over the last week
-        rolling_std = pd.Series(close).rolling(24 * 7).std().values
+        rolling_std = pd.Series(close).rolling(60 * 24 * 7).std().values
 
         # Normalize the standard deviation by dividing it by the close price
         rolling_std = (rolling_std / close) * 100

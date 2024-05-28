@@ -34,7 +34,7 @@ def sharpe_ratio(equity):
     std_returns = returns.std()
     
     try:
-        return np.sqrt(8760) * mean_returns / std_returns 
+        return np.sqrt(525600) * mean_returns / std_returns 
     except:
         return np.nan
     
@@ -46,12 +46,12 @@ def sortino_ratio(equity):
     std_negative_returns = negative_returns.std()
     
     try:
-        return np.sqrt(8760) * mean_returns / std_negative_returns 
+        return np.sqrt(525600) * mean_returns / std_negative_returns 
     except:
         return np.nan
     
 def calmar_ratio(equity):
-    num_years = len(equity) / 8760
+    num_years = len(equity) / 525600
     cum_ret_final = (1 + equity.pct_change()).prod().squeeze()
     annual_returns = cum_ret_final ** (1 / num_years) - 1
     
@@ -61,7 +61,7 @@ def calmar_ratio(equity):
         return np.nan
 
 def cagr_over_avg_drawdown(equity):
-    num_years = len(equity) / 8760
+    num_years = len(equity) / 525600
     cum_ret_final = (1 + equity.pct_change()).prod().squeeze()
     annual_returns = cum_ret_final ** (1 / num_years) - 1
     
@@ -213,12 +213,12 @@ def calculate_performance_metrics(oos_equity_curve,
         'avg_trade_pct':round(avg_trade(oos_trades), 2),
         'max_trade_duration':max_trade_duration(oos_trades),
         'avg_trade_duration':avg_trade_duration(oos_trades),
-        '1_day_value_at_risk':value_at_risk(oos_equity_curve['equity'], 24, 0.95),
-        '1_week_value_at_risk':value_at_risk(oos_equity_curve['equity'], 24 * 7, 0.95),
-        '1_month_value_at_risk':value_at_risk(oos_equity_curve['equity'], 24 * 30, 0.95),
-        '1_day_cvar':conditional_value_at_risk(oos_equity_curve['equity'], 24, 0.95),
-        '1_week_cvar':conditional_value_at_risk(oos_equity_curve['equity'], 24 * 7, 0.95),
-        '1_month_cvar':conditional_value_at_risk(oos_equity_curve['equity'], 24 * 30, 0.95)
+        '1_day_value_at_risk':value_at_risk(oos_equity_curve['equity'], 24 * 60, 0.95),
+        '1_week_value_at_risk':value_at_risk(oos_equity_curve['equity'], 24 * 7 * 60, 0.95),
+        '1_month_value_at_risk':value_at_risk(oos_equity_curve['equity'], 24 * 30 * 60, 0.95),
+        '1_day_cvar':conditional_value_at_risk(oos_equity_curve['equity'], 24 * 60, 0.95),
+        '1_week_cvar':conditional_value_at_risk(oos_equity_curve['equity'], 24 * 7 * 60, 0.95),
+        '1_month_cvar':conditional_value_at_risk(oos_equity_curve['equity'], 24 * 30 * 60, 0.95)
     }
 
     return pd.DataFrame(metrics_dict).reset_index(drop = True)

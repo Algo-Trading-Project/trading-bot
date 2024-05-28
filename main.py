@@ -1,5 +1,4 @@
 from backtest.strategies.ma_crossover import MACrossOver
-from backtest.strategies.ml_strategy import MLStrategy
 from backtest.BackTester import BackTester
 
 import time
@@ -10,7 +9,7 @@ if __name__ == '__main__':
     # a performance metric to optimize on
 
     b = BackTester(
-        strategies = [MLStrategy()],
+        strategies = [MACrossOver()],
         optimization_metric = 'Sortino Ratio'
     )
 
