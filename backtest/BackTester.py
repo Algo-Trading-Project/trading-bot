@@ -1,10 +1,4 @@
 #################################
-# ADDING PACKAGE TO PYTHON PATH #
-#################################
-import sys
-import os
-
-#################################
 #             MISC              #
 #################################
 import warnings
@@ -29,7 +23,8 @@ class BackTester:
 
     # List of tokens to backtest
     TOKENS_TO_BACKTEST = [
-        'BTC_USD_COINBASE', 'ETH_USD_COINBASE'
+        'NXRA_USDT_KUCOIN', 'BTC_USD_COINBASE', 'ETH_USD_COINBASE', 
+        'QNT_USDT_BINANCE', 'BNB_USDT_BINANCE'
     ]
 
     def __init__(
@@ -133,7 +128,8 @@ class BackTester:
             price_high,
             price_low,
             price_close,
-            volume_traded
+            volume_traded,
+            trades_count
         FROM market_data.price_data_1m
         WHERE 
             asset_id_base = '{}' AND
@@ -143,10 +139,34 @@ class BackTester:
         """.format(base, quote, exchange)
 
         # Execute query on DuckDB and return result as a DataFrame
-        df = self.conn.sql(query).df().set_index('time_period_end').astype(float)
+        df = self.conn.sql(query).df().set_index('time_period_end').resample('1min').agg({
+            'price_open': 'first',
+            'price_close': 'last',
+            'price_high': 'max',
+            'price_low': 'min',
+            'volume_traded': 'sum',
+            'trades_count': 'sum'
+        })
+
+        # Skip over tokens with more than 25% missing data
+        pct_missing_price_close = df['price_close'].isna().mean() * 100
         
-        # Fill in any gaps in data with last seen value
-        df = df.asfreq(freq = 'min', method = 'ffill')
+        if pct_missing_price_close > 25:
+            symbol_id = base + '_' + quote + '_' + exchange
+            print(f'Skipping {symbol_id} due to {pct_missing_price_close} of the data missing')
+            return pd.DataFrame()
+        
+        df = df.interpolate(method = 'linear')
+        
+        # Downsample to 30 minutes
+        df = df.resample('30min').agg({
+            'price_open': 'first',
+            'price_close': 'last',
+            'price_high': 'max',
+            'price_low': 'min',
+            'volume_traded': 'sum',
+            'trades_count': 'sum'
+        })
 
         return df
             
@@ -328,6 +348,9 @@ class BackTester:
             quote = quote,
             exchange = exchange
         )
+
+        if backtest_data.empty:
+            return None, None, None, None, None
         
         equity_curves = []
         trades = []
@@ -340,7 +363,7 @@ class BackTester:
 
         while start + in_sample_size + out_of_sample_size <= len(backtest_data):
             
-            print('Progress: {} / {} days...'.format(int((start + in_sample_size) / (24 * 60)), int(len(backtest_data) / (24 * 60))))
+            print('Progress: {} / {} days...'.format(int((start + in_sample_size) / (24 * 2)), int(len(backtest_data) / (24 * 2))))
             print()
 
             print('*** Starting Equity: ', starting_equity)
@@ -394,7 +417,20 @@ class BackTester:
             start += out_of_sample_size
 
         if len(equity_curves) == 0 or len(trades) == 0 or len(price_data) == 0:
-            return None, None, None
+            print('Walk-forward optimization failed for {} on {}'.format(
+                strat.indicator_factory_dict['class_name'],
+                base + '_' + quote + '_' + exchange
+            ))
+            print('Equity Curves: ')
+            print(equity_curves)
+
+            print('Trades: ')
+            print(trades)
+
+            print('Price Data: ')
+            print(price_data)
+            print()
+            return None, None, None, None, None
 
         equity_curves = pd.concat(equity_curves).sort_index()
         trades = pd.concat(trades, ignore_index = True)
@@ -436,8 +472,8 @@ class BackTester:
                     quote = quote, 
                     exchange = exchange,
                     strat = strat,
-                    in_sample_size = 60 * 24 * 365,
-                    out_of_sample_size = 60 * 24 * 90
+                    in_sample_size = 2 * 24 * 30 * 6,
+                    out_of_sample_size = 2 * 24 * 30 * 3
                 )
 
                 # Reset starting equity for next token

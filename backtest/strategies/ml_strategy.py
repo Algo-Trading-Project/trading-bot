@@ -5,35 +5,33 @@ import pandas as pd
 from .base_strategy import BaseStrategy
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.pipeline import Pipeline
-from sklearn.model_selection import GridSearchCV
-from sklearn.model_selection import TimeSeriesSplit
-from sklearn.metrics import precision_score
 
 from notebooks.custom_transformers import *
 from notebooks.helper import calculate_triple_barrier_labels
+from notebooks.helper import construct_dataset_for_ml
 
 class MLStrategy(BaseStrategy):
     
     indicator_factory_dict = {
         'class_name':'MLStrategy',
         'short_name':'ml_strategy',
-        'input_names':['open', 'high', 'low', 'close', 'volume'],
-        'param_names':['prediction_threshold', 'kelly_fraction'],
+        'input_names':['open', 'high', 'low', 'close', 'volume', 'trades_count'],
+        'param_names':['prediction_threshold', 'trade_size_multiplier'],
         'output_names':['entries', 'exits', 'tp', 'sl', 'size']
     }
 
     optimize_dict = {
-        'prediction_threshold': [0.5, 0.6, 0.7, 0.8, 0.9],
-        'kelly_fraction': [0.1, 0.2, 0.3, 0.4, 0.5]
+        'prediction_threshold': [0.6],
+        'trade_size_multiplier': [0.2]
     }
 
     backtest_params = {
-        'init_cash': 100_000,
+        'init_cash': 10_000,
         'fees': 0.0029,
-        'sl_stop': 'atr',
-        'sl_trail': False,
-        'tp_stop': 'atr',
-        'size': 0.05,
+        'sl_stop': 'std',
+        'sl_trail': True,
+        'tp_stop': 'std',
+        'size': 0.1,
         'size_type': 2
     }
 
@@ -41,53 +39,33 @@ class MLStrategy(BaseStrategy):
         MLStrategy.is_train = True
         
         MLStrategy.model = RandomForestClassifier(
+            n_estimators = 25,
             bootstrap = False, 
-            random_state = 9 + 10,
-            n_estimators = 50,
-            max_depth = 10,
-            min_samples_split = 2,
-            min_samples_leaf = 2,
-            max_features = 'sqrt'
+            random_state = 9 + 10, 
+            n_jobs = -1,
+            max_depth = 10
         )
 
-        # Dataframe to save calculated features across all iterations of the walk-forward optimization
-        MLStrategy.historical_features = pd.DataFrame()
-
-        # Series to save calculated labels across all iterations of the walk-forward optimization
-        MLStrategy.historical_labels = pd.Series()
-
         # Specify window sizes for rolling min-max and z-score scaling
-        window_sizes = [12, 24, 24 * 7]
+        window_sizes_scaling = [2 * 24, 2 * 24 * 7, 2 * 24 * 30]
 
-        # Specify the symbol ID
-        symbol_id = 'BTC_USD_COINBASE'
-
+        # Specify window sizes for returns-based features
+        window_sizes_returns = [1, 2 * 24, 2 * 24 * 7, 2 * 24 * 30]
+       
         # Pipeline for feature engineering
         MLStrategy.feature_engineering_pipeline = Pipeline([
 
-            # Add block-based features to the dataset
-            ('block_features', BlockFeatures()),
-
-            # Add transaction-based features to the dataset
-            # ('transaction_features', TransactionFeatures()),
-
-            # Add transfer-based features to the dataset
-            # ('transfer_features', TransferFeatures()),
-
-            # Add tick-based features to the dataset
-            ('tick_features', TickFeatures(symbol_id = symbol_id)),
-
-            # Add order book-based features to the dataset
-            # ('order_book_features', OrderBookFeatures(symbol_id = symbol_id)),
-
-            # Add wallet-based features to the dataset
-            ('wallet_features', WalletFeatures()),
+            # Add returns-based features to the dataset
+            ('returns_features', ReturnsFeatures(window_sizes_returns)),
 
             # Add rolling min-max scaled features to the dataset
-            ('rolling_min_max_scaler', RollingMinMaxScaler(window_sizes)),
+            ('rolling_min_max_scaler', RollingMinMaxScaler(window_sizes_scaling)),
 
             # Add rolling z-score scaled features to the dataset
-            ('rolling_z_score_scaler', RollingZScoreScaler(window_sizes)),
+            ('rolling_z_score_scaler', RollingZScoreScaler(window_sizes_scaling)),
+
+            # Add price-based features to the dataset
+            # ('price_features', PriceFeatures()),
 
             # Add more feature engineering steps here
             # ...
@@ -98,227 +76,153 @@ class MLStrategy(BaseStrategy):
 
             # Add lagged features to the dataset
             ('lag_features', LagFeatures(lags = [1, 2, 3])),
+
+            # Add time-based features to the dataset
+            # ('time_features', TimeFeatures()),
+
         ])
 
+        # Feature engineering
+        MLStrategy.data = construct_dataset_for_ml()
+        MLStrategy.data = MLStrategy.__get_ml_dataset()
+        
+    def __get_ml_dataset():
+        df = MLStrategy.data
+        X, y = [], []
+        i = 1
+        n = len(df.symbol_id.unique())
+
+        for symbol_id in df.symbol_id.unique():
+            print(f'Processing symbol_id: {symbol_id} ({i}/{n})')
+            i += 1
+
+            token = df.loc[df.symbol_id == symbol_id,:]
+            labels = token.loc[:,'triple_barrier_label']
+            features = MLStrategy.feature_engineering_pipeline.fit_transform(token.drop(['triple_barrier_label'], axis = 1))
+
+            X.append(features)
+            y.append(labels)
+
+        X = pd.concat(X)
+        y = pd.concat(y)
+
+        X.loc[:,'triple_barrier_label'] = y
+        return X
+    
     @staticmethod
-    def indicator_func(open, high, low, close, volume,
-                       prediction_threshold, kelly_fraction):
+    def indicator_func(open, high, low, close, volume, trades_count,
+                       prediction_threshold, trade_size_multiplier):
         
         # Get backtest parameters
         backtest_params = MLStrategy.backtest_params
 
         # Create OHLCV dataframe
-        price_data = pd.DataFrame({'price_open': open, 'price_high': high, 'price_low': low, 'price_close': close, 'volume_traded': volume}, index = open.index)
+        price_data = pd.DataFrame({
+            'price_close': close, 
+            'price_high': high, 
+            'price_low': low, 
+            'volume_traded': volume,
+            'trades_count': trades_count
+        })
         price_data = price_data.astype(float)
+        price_data.loc[:,'returns'] = price_data.loc[:,'price_close'].pct_change()
 
-        # Calculate features
-        X = MLStrategy.feature_engineering_pipeline.fit_transform(price_data)
-        
-        # calculate triple-barrier labels
-        y = calculate_triple_barrier_labels(price_data, atr_window = 24, max_holding_time = 24)
+        df = MLStrategy.data
 
-        # Turn every non 1 label into 0
-        y = pd.Series(np.where(y != 1, 0, y), index = y.index)
-
-        # Align X and y
-        X = X[X.index.isin(y.index)]
-        y = y[y.index.isin(X.index)]
-
-        # If is_train is True, fit the model and save the calculated features
+        # If is_train is True, fit the model and generate predictions for the training set
         if MLStrategy.is_train:
-            
-            # If historical_features is empty, set it to X, else append X to it and do the same for historical_labels
-            if MLStrategy.historical_features.empty:
-                MLStrategy.historical_features = X
-                MLStrategy.historical_labels = y
-            else:
-                MLStrategy.historical_features = pd.concat([MLStrategy.historical_features, X])
-                MLStrategy.historical_labels = pd.concat([MLStrategy.historical_labels, y])
 
-                # Ensure there are unique indices
-                MLStrategy.historical_features = MLStrategy.historical_features[~MLStrategy.historical_features.index.duplicated(keep = 'first')].sort_index()
-                MLStrategy.historical_labels = MLStrategy.historical_labels[~MLStrategy.historical_labels.index.duplicated(keep = 'first')].sort_index()
+            in_sample_data = MLStrategy.feature_engineering_pipeline.fit_transform(price_data)
+            
+            # Training data is all data available by the end of the training period
+            end = close.index[-1]
+            curr_data = df.loc[df.index <= end,:]
+            X_train = curr_data.drop(['triple_barrier_label'], axis = 1)
+
+            # Recalculate the triple barrier labels for each token in X_train to avoid lookahead bias/data leakage
+            y_train = []
+            
+            for symbol_id in X_train.symbol_id.unique():
+                token = X_train.loc[X_train.symbol_id == symbol_id,:]
+                labels = calculate_triple_barrier_labels(token, window = 2 * 24 * 7, max_holding_time = 2 * 24)
+                y_train.append(labels)
+
+            X_train = X_train.drop(['symbol_id'], axis = 1)
+            y_train = pd.concat(y_train)
 
             # Train the model
-            MLStrategy.model.fit(MLStrategy.historical_features, MLStrategy.historical_labels)
+            MLStrategy.model.fit(X_train, y_train)
 
             # Generate predictions for the training set
-            y_pred = MLStrategy.model.predict_proba(MLStrategy.historical_features)[:,1]
-            y_pred = np.where(y_pred >= prediction_threshold, 1, 0)
+            y_pred_proba = MLStrategy.model.predict_proba(in_sample_data)[:,1]
 
             # Turn the predictions into entry signals
-            entries = pd.Series(y_pred, index = MLStrategy.historical_features.index)
+            entries = pd.Series(np.where(y_pred_proba >= prediction_threshold, 1, 0), index = in_sample_data.index)
             
-            # Initialize a counter for periods since the last entry
-            periods_since_last_entry = 24  # Start with 24 to allow an entry at the first period
-
-            # Iterate through the entries to enforce the 24-period gap
-            for i in range(len(entries)):
-                if entries.iloc[i] == 1 and periods_since_last_entry >= 24:
-                    # If an entry signal is found and at least 24 periods have passed since the last entry
-                    periods_since_last_entry = 0  # Reset the counter
-                else:
-                    # If it's not time for an entry, or if the current signal is not an entry
-                    if entries.iloc[i] == 1:
-                        # If the current signal is an entry but it's not time yet, suppress it
-                        entries.iloc[i] = 0
-                    
-                    periods_since_last_entry += 1  # Increment the counter
-
             # Exit signals reflect a 24 period maximum holding time
-            exits = pd.Series(entries.shift(24, fill_value = 0), index = entries.index)
+            exits = entries.shift(2 * 24, fill_value = 0)
 
             # Calculate the take-profit and stop-loss levels
             tp = MLStrategy.calculate_tp(
-                price_data.price_open, 
+                price_data.price_close, 
                 price_data.price_high, 
                 price_data.price_low, 
                 price_data.price_close, 
                 price_data.volume_traded, 
                 backtest_params,
-                window = 24
+                window = 2 * 24 * 7
             )
-
-            # Increase the take-profit level by the fees
-            tp = tp * (1 + backtest_params['fees'])
 
             sl = MLStrategy.calculate_sl(
-                price_data.price_open, 
+                price_data.price_close, 
                 price_data.price_high, 
                 price_data.price_low, 
                 price_data.price_close, 
                 price_data.volume_traded, 
                 backtest_params,
-                window = 24
+                window = 2 * 24 * 7
             )
 
-            # Align tp and sl with the entries and exits
-            tp = tp[tp.index.isin(entries.index)]
-            sl = sl[sl.index.isin(entries.index)]
-
-            # Calculate the position size based on a fraction of the Kelly criterion
-            
-            # Net odds for the wager
-            b = 1
-
-            # Probability of winning for the positive class
-            p = precision_score(MLStrategy.historical_labels, y_pred, pos_label = 1)
-
-            # Probability of losing for the positive class
-            q = 1 - p
-
-            # Fraction of the Kelly criterion
-            f = kelly_fraction * ((b * p - q) / b)
-
-            # Create a series of the same length as entries and exits with the position size
-            size = pd.Series(f, index = entries.index)
-
-            # Turn negative sizes into 0
-            size = size.where(size >= 0, 0)
-            
-            # Switch is_train after each iteration
-            MLStrategy.is_train = not MLStrategy.is_train
-
-            # Match the indices of entries, exits, tp, sl, and size with the input data. Fill missing indices with 0
-            entries = entries.reindex(price_data.index, fill_value = 0)
-            exits = exits.reindex(price_data.index, fill_value = 0)
-            tp = tp.reindex(price_data.index, fill_value = 0)
-            sl = sl.reindex(price_data.index, fill_value = 0)
-            size = size.reindex(price_data.index, fill_value = 0)
-
+            # Calculate the position size based on predicted class probabilities
+            size = pd.Series(y_pred_proba * trade_size_multiplier, index = in_sample_data.index)
+                
             return entries, exits, tp, sl, size
 
         # If is_train is False, generate predictions for the test set
         else:
-            
+            out_of_sample_data = MLStrategy.feature_engineering_pipeline.fit_transform(price_data)
+
             # Generate predictions for the test set
-            y_pred = MLStrategy.model.predict_proba(X)[:,1]
-            y_pred = np.where(y_pred >= prediction_threshold, 1, 0)
-
+            y_pred_proba = MLStrategy.model.predict_proba(out_of_sample_data)[:,1]
+            
             # Turn the predictions into entry signals
-            entries = pd.Series(y_pred, index = X.index)
-
-            # Initialize a counter for periods since the last entry
-            periods_since_last_entry = 24  # Start with 24 to allow an entry at the first period
-
-            # Iterate through the entries to enforce the 24-period gap
-            for i in range(len(entries)):
-                if entries.iloc[i] == 1 and periods_since_last_entry >= 24:
-                    # If an entry signal is found and at least 24 periods have passed since the last entry
-                    periods_since_last_entry = 0  # Reset the counter
-                else:
-                    # If it's not time for an entry, or if the current signal is not an entry
-                    if entries.iloc[i] == 1:
-                        # If the current signal is an entry but it's not time yet, suppress it
-                        entries.iloc[i] = 0
-                    
-                    periods_since_last_entry += 1  # Increment the counter
+            entries = pd.Series(np.where(y_pred_proba >= prediction_threshold, 1, 0), index = out_of_sample_data.index)
 
             # Exit signals reflect a 24 period maximum holding time
-            exits = pd.Series(entries.shift(24, fill_value = 0), index = entries.index)
+            exits = entries.shift(2 * 24, fill_value = 0)
 
             # Calculate the take-profit and stop-loss levels
             tp = MLStrategy.calculate_tp(
-                price_data.price_open, 
+                price_data.price_close, 
                 price_data.price_high, 
                 price_data.price_low, 
                 price_data.price_close, 
                 price_data.volume_traded, 
                 backtest_params,
-                window = 24
+                window = 2 * 24 * 7
             )
-
-            # Increase the take-profit level by the fees
-            tp = tp * (1 + backtest_params['fees'])
 
             sl = MLStrategy.calculate_sl(
-                price_data.price_open, 
+                price_data.price_close, 
                 price_data.price_high, 
                 price_data.price_low, 
                 price_data.price_close, 
                 price_data.volume_traded, 
                 backtest_params,
-                window = 24
+                window = 2 * 24 * 7
             )
 
-            # Align tp and sl with the entries and exits
-            tp = tp[tp.index.isin(entries.index)]
-            sl = sl[sl.index.isin(entries.index)]
+            # Calculate the position size based on predicted class probabilities
+            size = pd.Series(y_pred_proba * trade_size_multiplier, index = out_of_sample_data.index)
 
-            # Calculate the position size based on a fraction of the Kelly criterion
-            
-            # Net odds for the wager
-            b = 1
-
-            # Probability of winning for the positive class
-            p = precision_score(y, y_pred, pos_label = 1)
-
-            # Probability of losing for the positive class
-            q = 1 - p
-
-            # Fraction of the Kelly criterion
-            f = kelly_fraction * ((b * p - q) / b)
-
-            # Create a series of the same length as entries and exits with the position size
-            size = pd.Series(f, index = entries.index)
-
-            # Turn negative sizes into 0
-            size = size.where(size >= 0, 0)
-
-            # Switch is_train after each iteration
-            MLStrategy.is_train = not MLStrategy.is_train
-
-            # Append X to historical_features
-            MLStrategy.historical_features = pd.concat([MLStrategy.historical_features, X]).sort_index()
-
-            # Append y to historical_labels
-            MLStrategy.historical_labels = pd.concat([MLStrategy.historical_labels, y]).sort_index()
-
-            # Match the indices of entries, exits, tp, sl, and size with the input data. Fill missing indices with 0
-            entries = entries.reindex(price_data.index, fill_value = 0)
-            exits = exits.reindex(price_data.index, fill_value = 0)
-            tp = tp.reindex(price_data.index, fill_value = 0)
-            sl = sl.reindex(price_data.index, fill_value = 0)
-            size = size.reindex(price_data.index, fill_value = 0)
-
-            return entries, exits, tp, sl, size
+        return entries, exits, tp, sl, size
