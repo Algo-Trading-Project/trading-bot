@@ -28,9 +28,9 @@ def calculate_sl(open, high, low, close, volume, method, window):
         # over the window
         rolling_atr = vbt.ATR.run(high, low, close, window = window).atr
 
-        # Calculate the stop-loss price as close price minus 1 times
+        # Calculate the stop-loss price as close price minus 2 times
         # the rolling average true range
-        sl = np.nan_to_num(close - 1 * rolling_atr, nan = 0.05)
+        sl = np.nan_to_num(close - 2 * rolling_atr, nan = 0.05)
 
         # The stop-loss as a percentage of the close price
         sl = sl / close
@@ -47,7 +47,7 @@ def calculate_tp(open, high, low, close, volume, method, window):
 
         # Calculate the take-profit price as close price plus 2 times
         # the rolling standard deviation
-        tp = np.nan_to_num(close + rolling_std, nan = 0.05)
+        tp = np.nan_to_num(close * (1.0029) + 2 * rolling_std, nan = 0.05)
 
         # The take-profit as a percentage of the close price
         tp = tp / close

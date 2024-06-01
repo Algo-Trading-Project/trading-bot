@@ -1,4 +1,5 @@
 from backtest.strategies.ma_crossover import MACrossOver
+from backtest.strategies.ml_strategy import MLStrategy
 from backtest.BackTester import BackTester
 
 import time
@@ -9,12 +10,12 @@ if __name__ == '__main__':
     # a performance metric to optimize on
 
     b = BackTester(
-        strategies = [MACrossOver()],
+        strategies = [MLStrategy()],
         optimization_metric = 'Sortino Ratio'
     )
 
     # Execute a walk-forward optimization across all strategies
-    # and log the results to Redshift
+    # and log the results to DuckDB
     
     backtest_start = time.time()
     b.execute()

@@ -80,7 +80,7 @@ class WalkForwardOptimization:
 
         self.custom_indicator = (vbt.IndicatorFactory(**strategy.indicator_factory_dict)
                                  .from_apply_func(strategy.indicator_func, 
-                                                  keep_pd = False,
+                                                  keep_pd = True,
                                                   to_2d = False))
 
         # Turn off vectorization to keep pd.Series index of inputs
@@ -131,10 +131,20 @@ class WalkForwardOptimization:
         if optimize:
             backtest_window = self.backtest_data.iloc[self.is_start_i:self.is_end_i]
 
+            # If we are backtesting an ML strategy, indicate to the strategy that we are in an
+            # in-sample period
+            if self.strategy.indicator_factory_dict['class_name'] == 'MLStrategy':
+                self.strategy.is_train = True
+
         # If we are in an out-of-sample period, we apply the strategy to the in-sample and out-of-sample data
         # This allows us to access historical data in the in-sample period to help generate signals for the out-of-sample period
         else:
             backtest_window = self.backtest_data.iloc[self.is_start_i:self.oos_end_i]
+
+            # If we are backtesting an ML strategy, indicate to the strategy that we are in an
+            # out-of-sample period
+            if self.strategy.indicator_factory_dict['class_name'] == 'MLStrategy':
+                self.strategy.is_train = False
         
         # Either apply the strategy to all combinations of the input parameters or apply the strategy to the specific
         # parameter combination passed in
@@ -144,6 +154,7 @@ class WalkForwardOptimization:
             backtest_window.price_low,
             backtest_window.price_close,
             backtest_window.volume_traded,
+            backtest_window.trades_count,
             param_product = param_product,
             **params
         )
@@ -205,7 +216,7 @@ class WalkForwardOptimization:
             close = self.backtest_data.iloc[self.oos_start_i:self.oos_end_i].price_close,
             entries = entries,
             exits = exits,
-            freq = 'm',
+            freq = '30min',
             init_cash = self.strategy.backtest_params['init_cash'],
             fees = self.strategy.backtest_params['fees'],
             sl_trail = self.strategy.backtest_params['sl_trail'],
@@ -253,7 +264,6 @@ class WalkForwardOptimization:
             in-sample data.
             
         """
-
         # Generate signals for all combinations of the input parameters
         entries, exits, tp, sl, size = self.__generate_signals(
             params = self.strategy.optimize_dict,
@@ -267,7 +277,7 @@ class WalkForwardOptimization:
             close = self.backtest_data.iloc[self.is_start_i:self.is_end_i].price_close,
             entries = entries,
             exits = exits,
-            freq = 'm',
+            freq = '30min',
             init_cash = self.strategy.backtest_params['init_cash'],
             fees = self.strategy.backtest_params['fees'],
             sl_trail = self.strategy.backtest_params['sl_trail'],
@@ -315,8 +325,9 @@ class WalkForwardOptimization:
                 # Return the best parameter combination and the portfolio of the backtest that
                 # maximizes the selected performance metric over the in-sample data
                 return best_param_comb, portfolio.loc[maximizing_index]
+            
             else:
-                return {}, portfolio
+                return self.strategy.optimize_dict, portfolio
 
         # If we are optimizing for a metric that we want to minimize
         else:
@@ -337,4 +348,4 @@ class WalkForwardOptimization:
                 # minimizes the selected performance metric over the in-sample data
                 return best_param_comb, portfolio.loc[minimizing_index]
             else:
-                return {}, portfolio
+                return self.strategy.optimize_dict, portfolio
