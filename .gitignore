@@ -11,3 +11,4 @@ __pycache__/
 *.empty/
 *.xml
 walk_forward_model.pkl
+.ipynb_checkpoints/
