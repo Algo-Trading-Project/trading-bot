@@ -8,10 +8,10 @@ if __name__ == '__main__':
 
     # Initialize a BackTester instance w/ the intended strategies to backtest and
     # a performance metric to optimize on
-
+    
     b = BackTester(
         strategies = [MLStrategy()],
-        optimization_metric = 'Sortino Ratio'
+        optimization_metric = 'Sharpe Ratio'
     )
 
     # Execute a walk-forward optimization across all strategies
@@ -22,4 +22,4 @@ if __name__ == '__main__':
     backtest_end = time.time()
 
     print()
-    print('Total Time Elapsed: {} mins'.format(round(abs(backtest_end - backtest_start) / 60.0, 2)))    
+    print('Total Time Elapsed: {} mins'.format(round(abs(backtest_end - backtest_start) / 60.0, 2)))

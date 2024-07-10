@@ -13,6 +13,8 @@ import numpy as np
 import json
 import duckdb
 
+from notebooks.helper import QUERY
+
 ###############################################
 #      TRADING STRATEGIES / BACKTESTING       #
 ###############################################
@@ -20,12 +22,6 @@ from .core.wfo.walk_forward_optimization import WalkForwardOptimization
 from .core.performance.performance_metrics import *
 
 class BackTester:
-
-    # List of tokens to backtest
-    TOKENS_TO_BACKTEST = [
-        'NXRA_USDT_KUCOIN', 'BTC_USD_COINBASE', 'ETH_USD_COINBASE', 
-        'QNT_USDT_BINANCE', 'BNB_USDT_BINANCE'
-    ]
 
     def __init__(
         self,  
@@ -129,7 +125,8 @@ class BackTester:
             price_low,
             price_close,
             volume_traded,
-            trades_count
+            trades_count,
+            asset_id_base || '_' || asset_id_quote || '_' || exchange_id AS symbol_id
         FROM market_data.price_data_1m
         WHERE 
             asset_id_base = '{}' AND
@@ -145,7 +142,8 @@ class BackTester:
             'price_high': 'max',
             'price_low': 'min',
             'volume_traded': 'sum',
-            'trades_count': 'sum'
+            'trades_count': 'sum',
+            'symbol_id': 'first'
         })
 
         # Skip over tokens with more than 25% missing data
@@ -156,18 +154,26 @@ class BackTester:
             print(f'Skipping {symbol_id} due to {pct_missing_price_close} of the data missing')
             return pd.DataFrame()
         
-        df = df.interpolate(method = 'linear')
-        
+        # Interpolate numeric values
+        numeric_cols = [c for c in df.columns if c not in ('symbol_id')]
+        df[numeric_cols] = df[numeric_cols].interpolate(method = 'linear')
+
+        # Interpolate symbol_id with the most common value
+        df['symbol_id'] = df['symbol_id'].fillna(df['symbol_id'].mode().iloc[0])
+
         # Downsample to 30 minutes
-        df = df.resample('30min').agg({
+        df = df.resample('30min', label = 'right', closed = 'right').agg({
             'price_open': 'first',
             'price_close': 'last',
             'price_high': 'max',
             'price_low': 'min',
             'volume_traded': 'sum',
-            'trades_count': 'sum'
+            'trades_count': 'sum',
+            'symbol_id': 'first'
         })
 
+        df.index = pd.to_datetime(df.index)
+        
         return df
             
     def __upsert_into_redshift_table(
@@ -361,6 +367,16 @@ class BackTester:
 
         starting_equity = strat.backtest_params['init_cash']
 
+        if len(backtest_data) <= in_sample_size + out_of_sample_size:
+            print('Not enough data to perform walk-forward optimization for {} on {}'.format(
+                strat.indicator_factory_dict['class_name'],
+                base + '_' + quote + '_' + exchange
+            ))
+            print()
+            
+            in_sample_size = len(backtest_data) // 2
+            out_of_sample_size = len(backtest_data) // 2
+
         while start + in_sample_size + out_of_sample_size <= len(backtest_data):
             
             print('Progress: {} / {} days...'.format(int((start + in_sample_size) / (24 * 2)), int(len(backtest_data) / (24 * 2))))
@@ -454,9 +470,30 @@ class BackTester:
         --------
         None
         """
-            
+        # Fetch tokens that have not been backtested yet
+        tokens = QUERY(
+            """
+            SELECT DISTINCT 
+                asset_id_base, 
+                asset_id_quote, 
+                exchange_id 
+            FROM market_data.price_data_1m 
+            WHERE 
+                asset_id_base || '_' || asset_id_quote || '_' || exchange_id NOT IN (
+                    SELECT DISTINCT symbol_id
+                    FROM backtest.backtest_results
+                )
+            ORDER BY asset_id_base
+            """
+        )
+
+        # Shuffle tokens for the sake of randomness in the order of backtesting
+        tokens = tokens.sample(frac = 1).reset_index(drop = True)
+        tokens['symbol_id'] = tokens['asset_id_base'] + '_' + tokens['asset_id_quote'] + '_' + tokens['exchange_id']
+        tokens_to_backtest = ['ETH_USD_COINBASE', 'BTC_USD_COINBASE', 'BNB_USDT_BINANCE']
+
         for strat in self.strategies:
-            for token in self.TOKENS_TO_BACKTEST:
+            for token in tokens_to_backtest:
                 base, quote, exchange = token.split('_')
 
                 print()
@@ -549,12 +586,15 @@ class BackTester:
                     table = 'backtest_results',
                     insert_str = insert_str_backtest_result
                 )
-                self.__upsert_into_redshift_table(
-                    symbol_id = base + '_' + quote + '_' + exchange,
-                    strat = strat.indicator_factory_dict['class_name'],
-                    table = 'backtest_trades',
-                    insert_str = insert_str_backtest_trades
-                )
+
+                if len(oos_trades) > 0:
+                    self.__upsert_into_redshift_table(
+                        symbol_id = base + '_' + quote + '_' + exchange,
+                        strat = strat.indicator_factory_dict['class_name'],
+                        table = 'backtest_trades',
+                        insert_str = insert_str_backtest_trades
+                    )
+                    
                 self.__upsert_into_redshift_table(
                     symbol_id = base + '_' + quote + '_' + exchange,
                     strat = strat.indicator_factory_dict['class_name'],

@@ -24,7 +24,7 @@ class BaseStrategy:
         'size_type': 2 # e.g. 2 if 'size' is 'Fixed Percent' and 0 otherwise
     }
 
-    def calculate_tp(open, high, low, close, volume, backtest_params, window):
+    def calculate_tp(self, open, high, low, close, volume, backtest_params, window):
         
         if type(backtest_params['tp_stop']) == float:
             tp = np.full(len(close), backtest_params['tp_stop'])
@@ -37,10 +37,11 @@ class BaseStrategy:
             close,
             volume, 
             method = backtest_params['tp_stop'],
-            window = window
+            window = window,
+            backtest_params = backtest_params
         ) - 1)
-
-    def calculate_sl(open, high, low, close, volume, backtest_params, window):
+    
+    def calculate_sl(self, open, high, low, close, volume, backtest_params, window):
         
         if type(backtest_params['sl_stop']) == float:
             sl = np.full(len(close), backtest_params['sl_stop'])
@@ -53,10 +54,11 @@ class BaseStrategy:
             close, 
             volume, 
             method = backtest_params['sl_stop'],
-            window = window
+            window = window,
+            backtest_params = backtest_params
         ) - 1)
 
-    def calculate_size(open, high, low, close, volume, backtest_params):
+    def calculate_size(self, open, high, low, close, volume, backtest_params):
         
         if type(backtest_params['size']) == float:
             size = np.full(len(close), backtest_params['size'])

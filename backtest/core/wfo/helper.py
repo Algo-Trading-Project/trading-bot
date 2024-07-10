@@ -8,7 +8,7 @@ stop-loss, take-profit, and position size during the walk-forward optimization
 process.
 """
 
-def calculate_sl(open, high, low, close, volume, method, window):
+def calculate_sl(open, high, low, close, volume, method, window, backtest_params):
     if method == 'std':
         # Calculate the rolling standard deviation of the close price
         # over the window
@@ -16,7 +16,8 @@ def calculate_sl(open, high, low, close, volume, method, window):
 
         # Calculate the stop-loss price as close price minus 1 times
         # the rolling standard deviation
-        sl = np.nan_to_num(close - 1 * rolling_std, nan = 0.05)
+        transaction_cost_multiplier = 1 + backtest_params['fees']
+        sl = np.nan_to_num((close - rolling_std) * transaction_cost_multiplier, nan = 0.01)
 
         # The stop-loss as a percentage of the close price
         sl = sl / close
@@ -39,7 +40,7 @@ def calculate_sl(open, high, low, close, volume, method, window):
     else:
         raise ValueError('Invalid stop-loss method')
 
-def calculate_tp(open, high, low, close, volume, method, window):
+def calculate_tp(open, high, low, close, volume, method, window, backtest_params):
     if method == 'std':
         # Calculate the rolling standard deviation of the close price
         # over the window
@@ -47,7 +48,8 @@ def calculate_tp(open, high, low, close, volume, method, window):
 
         # Calculate the take-profit price as close price plus 2 times
         # the rolling standard deviation
-        tp = np.nan_to_num(close * (1.0029) + 2 * rolling_std, nan = 0.05)
+        transaction_cost_multiplier = 1 + backtest_params['fees']
+        tp = np.nan_to_num((close + 2 * rolling_std) * transaction_cost_multiplier, nan = 0.01)
 
         # The take-profit as a percentage of the close price
         tp = tp / close
@@ -60,7 +62,7 @@ def calculate_tp(open, high, low, close, volume, method, window):
 
         # Calculate the take-profit price as close price plus 2 times
         # the rolling average true range
-        tp = np.nan_to_num(close + rolling_atr, nan = 0.05)
+        tp = np.nan_to_num(close + rolling_atr, nan = 0.01)
 
         # The take-profit as a percentage of the close price
         tp = tp / close

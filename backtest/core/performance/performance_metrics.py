@@ -34,7 +34,7 @@ def sharpe_ratio(equity):
     std_returns = returns.std()
     
     try:
-        return np.sqrt(8760 / 2) * mean_returns / std_returns 
+        return np.sqrt(8760 * 2) * mean_returns / std_returns 
     except:
         return np.nan
     
@@ -46,12 +46,12 @@ def sortino_ratio(equity):
     std_negative_returns = negative_returns.std()
     
     try:
-        return np.sqrt(8760 / 2) * mean_returns / std_negative_returns 
+        return np.sqrt(8760 * 2) * mean_returns / std_negative_returns 
     except:
         return np.nan
     
 def calmar_ratio(equity):
-    num_years = len(equity) / (8760 / 2)
+    num_years = len(equity) / (8760 * 2)
     cum_ret_final = (1 + equity.pct_change()).prod().squeeze()
     annual_returns = cum_ret_final ** (1 / num_years) - 1
     
@@ -61,7 +61,7 @@ def calmar_ratio(equity):
         return np.nan
 
 def cagr_over_avg_drawdown(equity):
-    num_years = len(equity) / (8760 / 2)
+    num_years = len(equity) / (8760 * 2)
     cum_ret_final = (1 + equity.pct_change()).prod().squeeze()
     annual_returns = cum_ret_final ** (1 / num_years) - 1
     
