@@ -1,10 +1,10 @@
 import numpy as np
 import pandas as pd
-from numba import njit, prange
+from numba import njit
 
 @njit
 def custom_diff(arr):
-    return np.array([arr[i + 1] - arr[i] for i in range(len(arr) - 1)])
+    return np.array([(arr[i] - arr[i - 1]) / arr[i - 1] for i in range(1, len(arr))])
 
 @njit
 def custom_rolling_max(arr):
@@ -130,34 +130,38 @@ def avg_drawdown(equity):
 
 @njit
 def sharpe_ratio(equity):
-    returns = custom_diff(equity) / equity[:-1]
+    # Sharpe Ratio of non-zero returns
+    returns = custom_diff(equity)
     mean_returns = np.mean(returns)
     std_returns = np.std(returns)
 
     if std_returns != 0:
-        sharpe = np.sqrt(8760 * 2) * mean_returns / std_returns
+        sharpe = np.sqrt(365) * mean_returns / std_returns
         return sharpe
     else:
         return np.nan
 
 @njit
 def sortino_ratio(equity):
-    returns = custom_diff(equity) / equity[:-1]
-    negative_returns = returns[returns < 0]
-
+    # Sortino Ratio of non-zero returns
+    returns = custom_diff(equity)
     mean_returns = np.mean(returns)
+    negative_returns = returns[returns < 0]
     std_negative_returns = np.std(negative_returns)
 
-    if std_negative_returns != 0:
-        sortino = np.sqrt(8760 * 2) * mean_returns / std_negative_returns
-        return sortino
+    if std_negative_returns != 0 and len(negative_returns) > 0:
+        try:
+            sortino = np.sqrt(365) * mean_returns / (std_negative_returns)
+            return sortino
+        except:
+            return np.nan
     else:
         return np.nan
 
 @njit
 def calmar_ratio(equity):
-    num_years = len(equity) / (8760 * 2)
-    returns = custom_diff(equity) / equity[:-1]
+    num_years = len(equity) / (365)
+    returns = custom_diff(equity)
     cum_ret_final = np.prod(1 + returns)
 
     if num_years != 0:
@@ -175,7 +179,7 @@ def calmar_ratio(equity):
     except:
         return np.nan
 
-def run_monte_carlo_simulation(equity_curve, num_simulations = 2000):
+def run_monte_carlo_simulation(equity_curve, num_simulations = 10_000):
     """
     Runs a Monte Carlo simulation on an equity curve.
 
@@ -206,7 +210,7 @@ def run_monte_carlo_simulation(equity_curve, num_simulations = 2000):
     initial_equity = equity_curve['equity'].iloc[0]
 
     # Generate simulated equity curves
-    simulated_curves_np = simulate_equity_curves_with_block_bootstrap(equity_curve['returns'].values, initial_equity, num_simulations, 2 * 24)
+    simulated_curves_np = simulate_equity_curves_with_block_bootstrap(equity_curve['returns'].values, initial_equity, num_simulations, 7)
 
     # Convert the numpy array of simulated curves to a pandas DataFrame
     dates = equity_curve.index
@@ -230,8 +234,8 @@ def calculate_monte_carlo_performance_metrics(monte_carlo_equity_curves):
     """
     
     # Define holding periods and confidence level
-    holding_periods = [2 * 24, 2 * 168, 2 * 720]  # 1 day, 1 week, 1 month (assuming 24 hours in a day)
-    confidence_level = 0.95
+    holding_periods = [1, 7, 30]  # 1 day, 1 week, 1 month in days
+    confidence_level = 0.99
 
     # Initialize dictionary to store metrics
     metrics_dict = {'1_day_var': [], '1_week_var': [], '1_month_var': [],
@@ -250,7 +254,11 @@ def calculate_monte_carlo_performance_metrics(monte_carlo_equity_curves):
         equity_curve = monte_carlo_equity_curves[curve].values
         
         sharpe = sharpe_ratio(equity_curve)
-        sortino = sortino_ratio(equity_curve)
+        try:
+            sortino = sortino_ratio(equity_curve)
+        except:
+            sortino = float('-inf')
+            
         calmar = calmar_ratio(equity_curve)
         max_dd = max_drawdown(equity_curve)
         avg_dd = avg_drawdown(equity_curve)
@@ -267,13 +275,13 @@ def calculate_monte_carlo_performance_metrics(monte_carlo_equity_curves):
             cvar = conditional_value_at_risk(equity_curve, holding_period, confidence_level)
             
             # Assign to appropriate keys in the dictionary
-            if holding_period == 2 * 24:  # 1 day
+            if holding_period == 1:  # 1 day
                 metrics_dict['1_day_var'].append(var)
                 metrics_dict['1_day_cvar'].append(cvar)
-            elif holding_period == 2 * 168:  # 1 week
+            elif holding_period == 7:  # 1 week
                 metrics_dict['1_week_var'].append(var)
                 metrics_dict['1_week_cvar'].append(cvar)
-            elif holding_period == 2 * 720:  # 1 month
+            elif holding_period == 30:  # 1 month
                 metrics_dict['1_month_var'].append(var)
                 metrics_dict['1_month_cvar'].append(cvar)
 

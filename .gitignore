@@ -12,3 +12,7 @@ __pycache__/
 *.xml
 walk_forward_model.pkl
 .ipynb_checkpoints/
+.lake_cache
+*.conf
+data/*
+trading_bot.egg-info/

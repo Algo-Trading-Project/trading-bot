@@ -1,5 +1,5 @@
 # Project Poseidon: Trading Strategy Creation Tutorial
-##### 7/18/23  |  Author: Eamon, Louis
+##### Author: Louis
 This document serves as a tutorial for creating an arbitrary trading strategy and then backtesting it via Project Poseidon.
 
 ## Example: Moving Average Crossover Strategy
@@ -42,7 +42,7 @@ class Strategy:
         # Execute arbitrary code
         ...
         
-        return entries, exits, tp, sl, size
+        return entries, exits
 ```
 
 Here are the descriptions for each component of the Strategy class skeleton:
@@ -58,7 +58,7 @@ Here are the descriptions for each component of the Strategy class skeleton:
 
     - param_names : Parameters of the trading strategy that will be optimized during backtesting.
 
-    - output_names : Outputs of the trading strategy.  Always has the values ['entries', 'exits'].
+    - output_names : Outputs of the trading strategy.  Always has the values ['entries', 'exits'] by defualt but more outputs can be added.
 
 ## optimize_dict
 - A dictionary whose keys are the values in indicator_factory_dict['param_names'] and values are a list of values for that parameter to use in optimization.
@@ -102,7 +102,7 @@ class MACrossOver:
 For this strategy, its name is MACrossOver and its short name is ma_crossover.  It has parameters fast_window & slow_window.  The indicator_func takes in OHLCV data as well as values for the fast_window and slow_window parameters and returns the entry and exit signals from applying the strategy w/ the given parameters on the OHLCV data.  At this stage, the trading strategy is fully defined and is ready to be backtested.  
 
 ## Step 3: Backtest the Strategy
-Once we have defined our trading strategy in the required template, we can finally backtest it on historical price data stored in Redshift.  We do so in the **backtest.BackTester.py** file.  Shown below is the bottom of that file and the place where you'll setup your backtests:
+Once we have defined our trading strategy in the required template, we can finally backtest it on historical data stored in Redshift / DuckDB.  We can initiate this process in the **main.py** file in the root directory.  Shown below is the contents of that file and the place where you'll configure your backtests:
 
 ```py
 if __name__ == '__main__': 
@@ -112,12 +112,16 @@ if __name__ == '__main__':
     # parameters with
 
     b = BackTester(
-        strategies = [MACrossOver, ARIMAStrat],
-        optimization_metric = 'Sharpe Ratio'
+        strategies = [MACrossOver(), MLStrategy()],
+        optimization_metric = 'Sharpe Ratio',
+        # Backtest strategy on 30 minute timeframe instead of 1 minute (default)
+        resample_period = '30min',
+        # Use time-based bars for backtesting instead of dollar bars
+        use_dollar_bars = False
     )
 
-    # Execute a walk-forward optimization across all strategies
-    # and log the results to Redshift
+    # Execute a walk-forward optimization across all strategies and tokens
+    # and log the results to Redshift / DuckDB
 
     backtest_start = time.time()
     b.execute()
@@ -127,4 +131,4 @@ if __name__ == '__main__':
     print('Total Time Elapsed: {} mins'.format(round(abs(backtest_end - backtest_start) / 60.0, 2)))
 ```
 
-As you can see, everyting is pretty much already laid out.  The only thing you need to do when you want to backtest a strategy is to import it into the **backtest.BackTester.py** file and add it to the 'strategies' list that's passed into the BackTester class.  Running the file will initiate a walk-forward optimization of all the strategies passed into the backtester and the results are logged to Redshift for further dashboarding/analysis.
+As you can see, everyting is pretty much already laid out.  The only thing you need to do when you want to backtest a strategy is to import it into the **main.py** file from the **backtest/strategies** directory and add it to the 'strategies' list that's passed into the BackTester class.  Running the file will initiate a walk-forward optimization of all the strategies passed into the backtester across all tokens stored in our database and the results are logged to Redshift / DuckDB for further dashboarding/analysis.

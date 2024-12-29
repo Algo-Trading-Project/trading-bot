@@ -3,7 +3,6 @@
 #################################
 import warnings
 from statsmodels.tools.sm_exceptions import ConvergenceWarning
-
 warnings.simplefilter('ignore', ConvergenceWarning)
 warnings.simplefilter('ignore', UserWarning)
 warnings.simplefilter('ignore', RuntimeWarning)
@@ -12,26 +11,38 @@ import pandas as pd
 import numpy as np
 import json
 import duckdb
-
-from notebooks.helper import QUERY
+from utils.db_utils import QUERY
 
 ###############################################
-#      TRADING STRATEGIES / BACKTESTING       #
+#                BACKTESTING                  #
 ###############################################
-from .core.wfo.walk_forward_optimization import WalkForwardOptimization
-from .core.performance.performance_metrics import *
+from core.walk_forward_optimization import WalkForwardOptimization
+from core.performance_metrics import *
+
+"""
+Comment describing the contents of the file:
+---------------------------------------------
+This file contains the BackTester class, which is responsible for coordinating the walk-forward 
+optimization of a set of strategies over a set of tokens. The results of the walk-forward optimizations 
+are logged to our databases for further dashboarding/analysis. The BackTester class is instantiated with a list of strategies, 
+an optimization metric to maximize/minimize during the in-sample parameter optimizations, a resample period to 
+resample the OHLCV data to a desired timeframe (e.g. 1min, 30min, 1hr) before backtesting, and a boolean flag 
+indicating whether to use dollar bars instead of time bars for the backtest.
+"""
 
 class BackTester:
 
     def __init__(
         self,  
         strategies: list,                  
-        optimization_metric: str = 'Sortino Ratio'                
+        optimization_metric: str = 'Sortino Ratio',
+        resample_period: str = '1min',
+        use_dollar_bars: bool = False            
     ):
         """
-        Coordinates the walk-forward optimization of a set of strategies over a set of CoinAPI tokens, 
+        Coordinates the walk-forward optimization of a set of strategies over a set of tokens, 
         utilizing the vectorbt package for efficient parameter optimization. The results of the walk-forward
-        optimizations are logged to Redshift for further dashboarding/analysis.
+        optimizations are logged for further dashboarding/analysis.
 
         Parameters:
         -----------
@@ -42,10 +53,18 @@ class BackTester:
             Performance metric to maximize/minimize during the in-sample parameter optimizations. 
             The full list of metrics available to use can be found in the file 
             backtest/core/walk_forward_optimization.py in the metric_map dictionary in the __init__ method.
+
+        resample_period : str, default = '1min'
+            Period to resample the OHLCV data to before backtesting.
+
+        use_dollar_bars : bool, default = False
+            Whether to use dollar bars instead of time bars for the backtest.
         """
 
         self.optimization_metric = optimization_metric
         self.strategies = strategies
+        self.resample_period = resample_period
+        self.use_dollar_bars = use_dollar_bars
 
         self.conn = duckdb.connect(
             database = '/Users/louisspencer/Desktop/Trading-Bot-Data-Pipelines/data/database.db',
@@ -88,16 +107,17 @@ class BackTester:
         else:
             raise TypeError('Object of type {} is not JSON serializable'.format(type(obj)))
              
-    def __fetch_OHLCV_df_from_redshift(
+    def __fetch_OHLCV_df(
         self, 
         base: str, 
         quote: str, 
-        exchange: str
+        exchange: str,
+        strat,
+        use_dollar_bars: bool = False
     ) -> pd.DataFrame:
         """
-        Queries OHLCV data for {exchange}_SPOT_{base}_{quote} CoinAPI pair stored in
-        Project Poseidon's Redshift cluster. Returns the queried data as a DataFrame 
-        indexed by timestamp.
+        Queries OHLCV data for a given crypto token stored in Project Poseidon's 
+        databases. Returns the queried data as a DataFrame indexed by timestamp.
 
         Parameters:
         -----------
@@ -110,44 +130,103 @@ class BackTester:
         exchange : str
             CoinAPI exchange_id of the token being backtested.
 
+        strat : Strategy class in backtest/strategies
+            Trading strategy being backtested.
+
+        use_dollar_bars : bool, default = False
+            Whether to use dollar bars instead of time bars for the backtest.
+
         Returns:
         --------
         DataFrame:
             DataFrame of queried OHLCV data, indexed by timestamp.
 
         """
-        # Query to fetch OHLCV data for a token & exchange of interest
-        query = """
-        SELECT 
-            time_period_end,
-            price_open,
-            price_high,
-            price_low,
-            price_close,
-            volume_traded,
-            trades_count,
-            asset_id_base || '_' || asset_id_quote || '_' || exchange_id AS symbol_id
-        FROM market_data.price_data_1m
-        WHERE 
-            asset_id_base = '{}' AND
-            asset_id_quote = '{}' AND
-            exchange_id = '{}'
-        ORDER BY time_period_end ASC
-        """.format(base, quote, exchange)
+        # Query to fetch data for a token & exchange of interest
+        if use_dollar_bars:
+            query = f"""
+            SELECT *
+            FROM market_data.dollar_bars
+            WHERE 
+                asset_id_base = '{base}' AND
+                asset_id_quote = '{quote}' AND
+                exchange_id = '{exchange}' AND
+                time_period_end >= (
+                    SELECT MIN(DATE_TRUNC('minute', received_time))
+                    FROM market_data.order_book_snapshot_1m
+                    WHERE
+                        asset_id_base = '{base}' AND
+                        asset_id_quote = '{quote}' AND
+                        exchange_id = '{exchange}'
+                ) AND 
+                time_period_end <= (
+                    SELECT MAX(DATE_TRUNC('minute', received_time))
+                    FROM market_data.order_book_snapshot_1m
+                    WHERE
+                        asset_id_base = '{base}' AND
+                        asset_id_quote = '{quote}' AND
+                        exchange_id = '{exchange}'
+                )
+            ORDER BY time_period_end ASC
+            """
+        elif strat.indicator_factory_dict['class_name'] == 'MLStrategy' and not use_dollar_bars:
+            query = f"""
+            SELECT 
+                origin_time,
+                open,
+                high,
+                low,
+                close,
+                volume,
+                trades,
+                asset_id_base || '_' || asset_id_quote || '_' || exchange_id AS symbol_id
+            FROM market_data.ohlcv_1m
+            WHERE 
+                asset_id_base = '{base}' AND
+                asset_id_quote = '{quote}' AND
+                exchange_id = '{exchange}'
+            ORDER BY origin_time ASC
+            """
+        else:
+            query = """
+            SELECT 
+                origin_time,
+                open,
+                high,
+                low,
+                close,
+                volume,
+                trades,
+                asset_id_base || '_' || asset_id_quote || '_' || exchange_id AS symbol_id
+            FROM market_data.ohlcv_1m
+            WHERE 
+                asset_id_base = '{}' AND
+                asset_id_quote = '{}' AND
+                exchange_id = '{}'
+            ORDER BY origin_time ASC
+            """.format(base, quote, exchange)
+
+        if self.use_dollar_bars:
+            df = self.conn.sql(query).df().set_index('time_period_end')
+            df['symbol_id'] = df['asset_id_base'] + '_' + df['asset_id_quote'] + '_' + df['exchange_id']
+            df['trades'] = 0
+            df = df.drop(columns = ['asset_id_base', 'asset_id_quote', 'exchange_id'])
+            return df
 
         # Execute query on DuckDB and return result as a DataFrame
-        df = self.conn.sql(query).df().set_index('time_period_end').resample('1min').agg({
-            'price_open': 'first',
-            'price_close': 'last',
-            'price_high': 'max',
-            'price_low': 'min',
-            'volume_traded': 'sum',
-            'trades_count': 'sum',
+        df = self.conn.sql(query).df().set_index('origin_time').resample('1min', label = 'right', closed = 'left').agg({
+            'open': 'first',
+            'close': 'last',
+            'high': 'max',
+            'low': 'min',
+            'volume': 'sum',
+            'trades': 'sum',
             'symbol_id': 'first'
         })
+        df.index = pd.to_datetime(df.index)
 
         # Skip over tokens with more than 25% missing data
-        pct_missing_price_close = df['price_close'].isna().mean() * 100
+        pct_missing_price_close = df['close'].isna().mean() * 100
         
         if pct_missing_price_close > 25:
             symbol_id = base + '_' + quote + '_' + exchange
@@ -160,45 +239,49 @@ class BackTester:
 
         # Interpolate symbol_id with the most common value
         df['symbol_id'] = df['symbol_id'].fillna(df['symbol_id'].mode().iloc[0])
+        # df.index = pd.to_datetime(df.index, utc = True)
 
-        # Downsample to 30 minutes
-        df = df.resample('30min', label = 'right', closed = 'right').agg({
-            'price_open': 'first',
-            'price_close': 'last',
-            'price_high': 'max',
-            'price_low': 'min',
-            'volume_traded': 'sum',
-            'trades_count': 'sum',
-            'symbol_id': 'first'
-        })
-
-        df.index = pd.to_datetime(df.index)
+        if self.resample_period != '1min':
+            # Resample the DataFrame to the specified resample_period
+            df = df.resample(self.resample_period, label = 'right', closed = 'left').agg({
+                'open': 'first',
+                'close': 'last',
+                'high': 'max',
+                'low': 'min',
+                'volume': 'sum',
+                'trades': 'sum',
+                'symbol_id': 'first'
+            })
         
         return df
             
-    def __upsert_into_redshift_table(
+    def __upsert_into_table(
         self,
         symbol_id: str,
         strat: str,
         table: str, 
-        insert_str: str
+        insert_str: str,
+        df: pd.DataFrame = None
     ) -> None:
         """
-        Performs an upsert on the specified Redshift table in the trading_bot database.
+        Performs an upsert on the specified table in the trading_bot database.
 
         Parameters
         ----------
+        symbol_id : str
+            token being backtested.
+
+        strat : str
+            trading strategy being backtested.
+
         table : str
-            Redshift table to upsert into
+            table in the backtest database to upsert data into.
 
         insert_str : str
-            Rows to upsert into Redshift represented as a string
+            rows to be inserted into the table in the form of a string.
 
-        cursor : Cursor
-            redshift_connector Cursor
-
-        conn : Connection
-            redshift_connector Connection
+        df : pd.DataFrame, default = None
+            DataFrame to be upserted into the table, if applicable.
 
         Returns
         -------
@@ -212,10 +295,31 @@ class BackTester:
             self.conn.sql(upsert_query)
 
         elif table == 'backtest_equity_curves':
-            upsert_query = f"""
-            INSERT OR REPLACE INTO backtest.{table} VALUES {insert_str} 
+            # Ensure no duplicate entries are inserted by df
+            df = df.drop_duplicates(subset = ['date'])
+
+            # Register the DataFrame as a table in DuckDB
+            self.conn.register('backtest_equity_curves', df)
+
+            # Upsert the DataFrame into DuckDB
+            # using the backtest_equity_curves table
+            delete_query = f"""
+            DELETE FROM backtest.{table}
+            WHERE 
+                symbol_id = '{symbol_id}' AND 
+                strat = '{strat}'
             """
+            upsert_query = f"""
+            INSERT INTO backtest.{table} (symbol_id, strat, date, equity)
+            SELECT symbol_id, strat, date, equity
+            FROM backtest_equity_curves
+            """
+
+            self.conn.sql(delete_query)
             self.conn.sql(upsert_query)
+
+            # Unregister the DataFrame as a table in DuckDB
+            self.conn.unregister('backtest_equity_curves')
         
         elif table == 'backtest_trades':
             delete_query = f"""
@@ -245,9 +349,10 @@ class BackTester:
         
         """
         Optimizes the parameters of a Strategy (strat) on the in-sample data and performs 
-        a backtest on the out-of-sample data w/ the optimized parameters. Returns the 
-        out-of-sample trades and out-of-sample equity curve so that it can be logged to 
-        Redshift for further dashboarding/analysis.
+        a backtest on the out-of-sample data w/ the optimized parameters. Returns the trades and
+        equity curve from the out-of-sample period as well as the optimal parameters and
+        performance metrics from the in-sample optimization period so that it can be logged
+        for further dashboarding/analysis.
 
         Parameters:
         -----------
@@ -255,7 +360,7 @@ class BackTester:
             Trading strategy to be backtested.
 
         backtest_data: DataFrame
-            OHLCV CoinAPI token price data being backtested on.
+            OHLCV token data being backtested on.
 
         is_start_i: int
             Start index of the in-sample optimization period in backtest_data.
@@ -276,6 +381,9 @@ class BackTester:
 
         DataFrame:
             DataFrame containing the equity curve from the out-of-sample backtest.
+
+        DataFrame:
+            DataFrame containing the optimal parameters and performance metrics from the in-sample optimization period.
         """
                 
         wfo = WalkForwardOptimization(
@@ -285,7 +393,8 @@ class BackTester:
             is_end_i = is_end_i,
             oos_start_i = oos_start_i,
             oos_end_i = oos_end_i,
-            optimization_metric = self.optimization_metric
+            optimization_metric = self.optimization_metric,
+            resample_period = self.resample_period
         )
 
         optimal_params, optimal_is_portfolio = wfo.optimize()
@@ -304,8 +413,7 @@ class BackTester:
     ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
 
         """
-        Executes a walk-forward optimization on an arbitrary trading strategy and a
-        {exchange}_SPOT_{base}_{quote} CoinAPI pair. Aggregates and returns the out-of-sample equity curves,
+        Executes a walk-forward optimization on a given (Strategy, crypto token) pair. Aggregates and returns the out-of-sample equity curves,
         trades, and token prices to calculate the overall out-of-sample performance metrics.
 
         Parameters:
@@ -324,11 +432,11 @@ class BackTester:
 
         in_sample_size : int
             Length of the in-sample optimization period in the walk-forward
-            optimization.
+            optimization in terms of the number of bars.
 
         out_of_sample_size : int
             Length of the out-of-sample test period in the walk-forward
-            optimization.
+            optimization in terms of the number of bars.
 
         Returns:
         --------
@@ -337,23 +445,28 @@ class BackTester:
             out-of-sample periods, sorted by date.
 
         DataFrame:
-            DataFrame containing the combined trades from all of the
+            DataFrame containing the trades from all of the
             out-of-sample periods.
 
         DataFrame:
-            DataFrame containing the combined token price data from all of the
+            DataFrame containing token price data from all of the
             out-of-sample periods, sorted by date.
         """
 
-        # Walk-forward analysis
         start = 0
 
         # Fetch revelant price data for backtest
-        backtest_data = self.__fetch_OHLCV_df_from_redshift(
+        backtest_data = self.__fetch_OHLCV_df(
             base = base,
             quote = quote,
-            exchange = exchange
+            exchange = exchange,
+            strat = strat,
+            use_dollar_bars = self.use_dollar_bars
         )
+        backtest_data.index = pd.to_datetime(backtest_data.index)
+
+        # Only use data after 2021-01-01
+        backtest_data = backtest_data[backtest_data.index >= '2021-04-01']
 
         if backtest_data.empty:
             return None, None, None, None, None
@@ -378,8 +491,21 @@ class BackTester:
             out_of_sample_size = len(backtest_data) // 2
 
         while start + in_sample_size + out_of_sample_size <= len(backtest_data):
+
+            if self.resample_period == '1min':
+                day_normalizer = 60 * 24
+            elif self.resample_period == '5min':
+                day_normalizer = 12 * 24
+            elif self.resample_period == '30min':
+                day_normalizer = 2 * 24
+            elif self.resample_period == '1h':
+                day_normalizer = 24
+            elif self.resample_period == '4h':
+                day_normalizer = 6
+            elif self.resample_period == '1d':
+                day_normalizer = 1
             
-            print('Progress: {} / {} days...'.format(int((start + in_sample_size) / (24 * 2)), int(len(backtest_data) / (24 * 2))))
+            print('Progress: {} / {} days...'.format(int((start + in_sample_size) / day_normalizer), int(len(backtest_data) / day_normalizer)))
             print()
 
             print('*** Starting Equity: ', starting_equity)
@@ -456,10 +582,10 @@ class BackTester:
                                     
     def execute(self):
         """
-        Runs a walk-forward optimization on each (token, Strategy) combination, where token
-        is a CoinAPI token and Strategy is a trading strategy in backtest/strategies. Performance 
+        Runs a walk-forward optimization on each (Strategy, token) combination, where token
+        is a crypto token and Strategy is a trading strategy in backtest/strategies. Performance 
         metrics are then calculated on the combined out-of-sample equity curve, trade, and 
-        price data output from the walk-forward optimization and logged to Redshift for further 
+        price data output from the walk-forward optimization and logged for further 
         dashboarding/analysis.
 
         Parameters:
@@ -470,19 +596,14 @@ class BackTester:
         --------
         None
         """
-        # Fetch tokens that have not been backtested yet
+        # Fetch all tokens to backtest
         tokens = QUERY(
-            """
+            f"""
             SELECT DISTINCT 
                 asset_id_base, 
                 asset_id_quote, 
                 exchange_id 
-            FROM market_data.price_data_1m 
-            WHERE 
-                asset_id_base || '_' || asset_id_quote || '_' || exchange_id NOT IN (
-                    SELECT DISTINCT symbol_id
-                    FROM backtest.backtest_results
-                )
+            FROM market_data.ohlcv_1m 
             ORDER BY asset_id_base
             """
         )
@@ -490,10 +611,9 @@ class BackTester:
         # Shuffle tokens for the sake of randomness in the order of backtesting
         tokens = tokens.sample(frac = 1).reset_index(drop = True)
         tokens['symbol_id'] = tokens['asset_id_base'] + '_' + tokens['asset_id_quote'] + '_' + tokens['exchange_id']
-        tokens_to_backtest = ['ETH_USD_COINBASE', 'BTC_USD_COINBASE', 'BNB_USDT_BINANCE']
 
         for strat in self.strategies:
-            for token in tokens_to_backtest:
+            for token in tokens['symbol_id']:
                 base, quote, exchange = token.split('_')
 
                 print()
@@ -509,9 +629,11 @@ class BackTester:
                     quote = quote, 
                     exchange = exchange,
                     strat = strat,
-                    in_sample_size = 2 * 24 * 30 * 6,
-                    out_of_sample_size = 2 * 24 * 30 * 3
+                    in_sample_size = 30 * 3,
+                    out_of_sample_size = 30 * 3
                 )
+
+                # oos_equity_curves = oos_equity_curves.reset_index()
 
                 # Reset starting equity for next token
                 strat.backtest_params['init_cash'] = 10_000
@@ -520,8 +642,8 @@ class BackTester:
                 if (oos_equity_curves is None) or (oos_trades is None) or (oos_price_data is None):
                     continue
 
-                oos_trades['entry_date'] = pd.to_datetime(oos_trades['entry_date'])
-                oos_trades['exit_date'] = pd.to_datetime(oos_trades['exit_date'])
+                # oos_trades['entry_date'] = pd.to_datetime(oos_trades['entry_date'], utc = True)
+                # oos_trades['exit_date'] = pd.to_datetime(oos_trades['exit_date'], utc = True)
                 oos_trades_dict = oos_trades.to_dict(orient = 'records')
                 
                 insert_str_backtest_trades = ''
@@ -541,21 +663,22 @@ class BackTester:
                     )
 
                 insert_str_backtest_trades = insert_str_backtest_trades[:-2]
-
-                insert_str_backtest_equity_curve = ''
+                backtest_equity_curve_df = []
                 
                 for i in range(len(oos_equity_curves)):
                     date = oos_equity_curves.index[i]
                     equity = oos_equity_curves['equity'].iloc[i]
 
-                    insert_str_backtest_equity_curve += """('{}', '{}', '{}', {}), """.format(
-                        base + '_' + quote + '_' + exchange,
-                        strat.indicator_factory_dict['class_name'],
-                        date,
-                        equity
-                    )
+                    row_dict = {
+                        'symbol_id': base + '_' + quote + '_' + exchange,
+                        'strat': strat.indicator_factory_dict['class_name'],
+                        'date': date,
+                        'equity': equity
+                    }
 
-                insert_str_backtest_equity_curve = insert_str_backtest_equity_curve[:-2]
+                    backtest_equity_curve_df.append(row_dict)
+
+                backtest_equity_curve_df = pd.DataFrame(backtest_equity_curve_df)
 
                 performance_metrics = calculate_performance_metrics(
                     oos_equity_curves, 
@@ -580,7 +703,7 @@ class BackTester:
                     self.optimization_metric
                 )
 
-                self.__upsert_into_redshift_table(
+                self.__upsert_into_table(
                     symbol_id = base + '_' + quote + '_' + exchange,
                     strat = strat.indicator_factory_dict['class_name'],
                     table = 'backtest_results',
@@ -588,16 +711,17 @@ class BackTester:
                 )
 
                 if len(oos_trades) > 0:
-                    self.__upsert_into_redshift_table(
+                    self.__upsert_into_table(
                         symbol_id = base + '_' + quote + '_' + exchange,
                         strat = strat.indicator_factory_dict['class_name'],
                         table = 'backtest_trades',
                         insert_str = insert_str_backtest_trades
                     )
                     
-                self.__upsert_into_redshift_table(
+                self.__upsert_into_table(
                     symbol_id = base + '_' + quote + '_' + exchange,
                     strat = strat.indicator_factory_dict['class_name'],
                     table = 'backtest_equity_curves',
-                    insert_str = insert_str_backtest_equity_curve
+                    insert_str = '',
+                    df = backtest_equity_curve_df
                 )

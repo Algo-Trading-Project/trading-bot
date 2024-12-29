@@ -1,10 +1,6 @@
 from datetime import timedelta
-from scipy.stats import norm
-
 import pandas as pd
 import numpy as np
-
-# STANDARD PERFORMANCE METRICS
 
 def exposure_time(duration, trades):
     exposure = timedelta(days = 0, hours = 0)
@@ -180,49 +176,6 @@ def avg_trade_duration(trades):
     
     return (pd.to_datetime(trades['exit_date']) - pd.to_datetime(trades['entry_date'])).dt.total_seconds().mean()           
 
-def calculate_performance_metrics(oos_equity_curve, 
-                                  oos_trades, 
-                                  oos_price_data):
-                
-    start = oos_price_data.index[0]
-    end = oos_price_data.index[-1]
-    duration = pd.to_datetime(end) - pd.to_datetime(start)
-
-    return_pct = (oos_equity_curve['equity'].iloc[-1] - oos_equity_curve['equity'].iloc[0]) / oos_equity_curve['equity'].iloc[0]
-    
-    metrics_dict = {
-        'duration':duration, 
-        'exposure_pct': round(exposure_time(duration, oos_trades), 2),
-        'equity_final':round(oos_equity_curve.dropna().iloc[-1]['equity'], 2),
-        'equity_peak':round(oos_equity_curve['equity'].max(), 2),
-        'return_pct':round(return_pct * 100, 2),
-        'buy_and_hold_return_pct':round(buy_and_hold_return(oos_price_data), 2),
-        'sharpe_ratio':round(sharpe_ratio(oos_equity_curve), 2), 
-        'sortino_ratio':round(sortino_ratio(oos_equity_curve), 2),
-        'calmar_ratio':round(calmar_ratio(oos_equity_curve), 2),
-        'cagr_over_avg_drawdown':round(cagr_over_avg_drawdown(oos_equity_curve), 2),
-        'profit_factor':round(profit_factor(oos_trades), 2),
-        'max_dd_pct':round(max_drawdown(oos_equity_curve), 2),
-        'avg_dd_pct':round(avg_drawdown(oos_equity_curve), 2),
-        'max_dd_duration':max_drawdown_duration(oos_equity_curve), 
-        'avg_dd_duration':avg_drawdown_duration(oos_equity_curve),
-        'num_trades':len(oos_trades), 
-        'win_rate_pct':round(win_rate(oos_trades), 2), 
-        'best_trade_pct':round(best_trade(oos_trades), 2),
-        'worst_trade_pct':round(worst_trade(oos_trades), 2), 
-        'avg_trade_pct':round(avg_trade(oos_trades), 2),
-        'max_trade_duration':max_trade_duration(oos_trades),
-        'avg_trade_duration':avg_trade_duration(oos_trades),
-        '1_day_value_at_risk':value_at_risk(oos_equity_curve['equity'], 2 * 24, 0.95),
-        '1_week_value_at_risk':value_at_risk(oos_equity_curve['equity'], 2 * 24 * 7, 0.95),
-        '1_month_value_at_risk':value_at_risk(oos_equity_curve['equity'], 2 * 24 * 30, 0.95),
-        '1_day_cvar':conditional_value_at_risk(oos_equity_curve['equity'], 2 * 24, 0.95),
-        '1_week_cvar':conditional_value_at_risk(oos_equity_curve['equity'], 2 * 24 * 7, 0.95),
-        '1_month_cvar':conditional_value_at_risk(oos_equity_curve['equity'], 2 * 24 * 30, 0.95)
-    }
-
-    return pd.DataFrame(metrics_dict).reset_index(drop = True)
-
 def value_at_risk(equity_curve, holding_period, confidence_level):
     # Calculate daily returns from the equity curve
     returns = equity_curve.pct_change().dropna()
@@ -265,60 +218,47 @@ def conditional_value_at_risk(equity_curve, holding_period, confidence_level):
 
     return cvar_pct
 
-# PERFORMANCE METRICS FOR MONTE CARLO SIMULATIONS
+def calculate_performance_metrics(
+        oos_equity_curve, 
+        oos_trades, 
+        oos_price_data
+    ):
+                
+    start = oos_price_data.index[0]
+    end = oos_price_data.index[-1]
+    duration = pd.to_datetime(end) - pd.to_datetime(start)
 
-def calculate_monte_carlo_metrics(simulated_curves_df):
-    """
-    Calculates various performance metrics for each Monte Carlo simulation and returns them in a dictionary.
+    return_pct = (oos_equity_curve['equity'].iloc[-1] - oos_equity_curve['equity'].iloc[0]) / oos_equity_curve['equity'].iloc[0]
+    
+    metrics_dict = {
+        'duration':duration, 
+        'exposure_pct': round(exposure_time(duration, oos_trades), 2),
+        'equity_final':round(oos_equity_curve.dropna().iloc[-1]['equity'], 2),
+        'equity_peak':round(oos_equity_curve['equity'].max(), 2),
+        'return_pct':round(return_pct * 100, 2),
+        'buy_and_hold_return_pct':round(buy_and_hold_return(oos_price_data), 2),
+        'sharpe_ratio':round(sharpe_ratio(oos_equity_curve), 2), 
+        'sortino_ratio':round(sortino_ratio(oos_equity_curve), 2),
+        'calmar_ratio':round(calmar_ratio(oos_equity_curve), 2),
+        'cagr_over_avg_drawdown':round(cagr_over_avg_drawdown(oos_equity_curve), 2),
+        'profit_factor':round(profit_factor(oos_trades), 2),
+        'max_dd_pct':round(max_drawdown(oos_equity_curve), 2),
+        'avg_dd_pct':round(avg_drawdown(oos_equity_curve), 2),
+        'max_dd_duration':max_drawdown_duration(oos_equity_curve), 
+        'avg_dd_duration':avg_drawdown_duration(oos_equity_curve),
+        'num_trades':len(oos_trades), 
+        'win_rate_pct':round(win_rate(oos_trades), 2), 
+        'best_trade_pct':round(best_trade(oos_trades), 2),
+        'worst_trade_pct':round(worst_trade(oos_trades), 2), 
+        'avg_trade_pct':round(avg_trade(oos_trades), 2),
+        'max_trade_duration':max_trade_duration(oos_trades),
+        'avg_trade_duration':avg_trade_duration(oos_trades),
+        '1_day_value_at_risk':value_at_risk(oos_equity_curve['equity'], 2 * 24, 0.95),
+        '1_week_value_at_risk':value_at_risk(oos_equity_curve['equity'], 2 * 24 * 7, 0.95),
+        '1_month_value_at_risk':value_at_risk(oos_equity_curve['equity'], 2 * 24 * 30, 0.95),
+        '1_day_cvar':conditional_value_at_risk(oos_equity_curve['equity'], 2 * 24, 0.95),
+        '1_week_cvar':conditional_value_at_risk(oos_equity_curve['equity'], 2 * 24 * 7, 0.95),
+        '1_month_cvar':conditional_value_at_risk(oos_equity_curve['equity'], 2 * 24 * 30, 0.95)
+    }
 
-    Each key in the dictionary corresponds to a performance metric (e.g., 'return_pct', 'sharpe_ratio'), and
-    the value is a list containing the computed metric for each Monte Carlo simulation, rounded to 3 decimal places.
-
-    Parameters:
-    ----------
-    simulated_curves_df : pandas.DataFrame
-        A DataFrame with each column representing a Monte Carlo simulated equity curve.
-        Rows are indexed by dates or time periods, and values represent the simulated equity value.
-
-    Returns:
-    -------
-    metrics_dict : dict
-        A dictionary where each key is a metric name and the value is a list of metric values,
-        one for each Monte Carlo simulation, rounded to 3 decimal places.
-
-    Notes:
-    -----
-    - Assumes hourly data for annualization purposes.
-    - Assumes that the input DataFrame contains no NaN values at the start.
-    """
-
-    metrics_dict = {}
-
-    # Sharpe and Sortino Ratios for each simulation, rounded to 3 decimal places
-    daily_returns = simulated_curves_df.pct_change().fillna(0)
-    annualized_return = daily_returns.mean() * 8760
-    annualized_std = daily_returns.std() * np.sqrt(8760)
-    negative_std = daily_returns[daily_returns < 0].std() * np.sqrt(8760)
-
-    metrics_dict['sharpe_ratio'] = [round(val, 3) for val in (annualized_return / annualized_std)]
-    metrics_dict['sortino_ratio'] = [round(val, 3) for val in (annualized_return / negative_std)]
-
-    # Prepare for Maximum Drawdown calculation
-    rolling_max = simulated_curves_df.expanding(min_periods=1).max()
-    drawdown = simulated_curves_df / rolling_max - 1
-
-    # Maximum Drawdown percentage calculation for each simulation
-    max_dd_pct = drawdown.min() * 100
-    metrics_dict['max_dd_pct'] = [round(val, 3) for val in max_dd_pct]
-   
-    # Corrected calculation for Annualized Return (compounded) for Calmar Ratio
-    compounded_annualized_return = 100 * (((1 + daily_returns.mean()) ** 8760) - 1)
-
-    # Calmar Ratio calculation, rounded to 3 decimal places
-    metrics_dict['calmar_ratio'] = [round(val, 3) for val in (compounded_annualized_return / abs(max_dd_pct))]
-
-    #Average Drawdown percentage, rounded to 3 decimal places
-    avg_dd_pct = drawdown.mean() * 100
-    metrics_dict['avg_dd_pct'] = [round(val, 3) for val in avg_dd_pct]
-
-    return metrics_dict
+    return pd.DataFrame(metrics_dict).reset_index(drop = True)
