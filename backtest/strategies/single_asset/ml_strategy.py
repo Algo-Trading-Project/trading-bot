@@ -4,7 +4,7 @@ import warnings
 warnings.filterwarnings('ignore')
 import joblib
 
-from base_strategy import BaseStrategy
+from backtest.strategies.single_asset.base_strategy import BaseStrategy
 from xgboost import XGBClassifier
 from utils.db_utils import QUERY
 

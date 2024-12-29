@@ -16,8 +16,8 @@ from utils.db_utils import QUERY
 ###############################################
 #                BACKTESTING                  #
 ###############################################
-from core.walk_forward_optimization import WalkForwardOptimization
-from core.performance_metrics import *
+from backtest.core.walk_forward_optimization import WalkForwardOptimization
+from backtest.core.performance_metrics import *
 
 """
 Comment describing the contents of the file:

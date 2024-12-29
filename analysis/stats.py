@@ -49,18 +49,25 @@ def calculate_bootstrap_distribution_numba(X_test, n_simulations = 1000):
 def run_oos_statistical_tests(y_pred, trade_returns, n_simulations, sample_statistic):
     # Calculate the permutation test
     permutation_results = permutation_test(y_pred, trade_returns, n_simulations = n_simulations)
+    empirical_p_value = (permutation_results >= sample_statistic).mean()
 
     # Calculate the bootstrap distribution
     mean_returns_diff_dist, mean_returns_pos_pred_dist, mean_returns_neg_pred_dist = calculate_bootstrap_distribution_numba(np.column_stack((y_pred, trade_returns)), n_simulations = n_simulations)
 
     # Calculate the confidence interval for each distribution
     ci_mean_returns_diff = np.percentile(mean_returns_diff_dist, [0.5, 99.5])
+    ci_mean_returns_diff[0] = round(ci_mean_returns_diff[0], 3)
+    ci_mean_returns_diff[1] = round(ci_mean_returns_diff[1], 3)
     median_mean_returns_diff = np.median(mean_returns_diff_dist)
 
     ci_mean_pos_pred = np.percentile(mean_returns_pos_pred_dist, [0.5, 99.5])
+    ci_mean_pos_pred[0] = round(ci_mean_pos_pred[0], 3)
+    ci_mean_pos_pred[1] = round(ci_mean_pos_pred[1], 3)
     median_mean_pos_pred = np.median(mean_returns_pos_pred_dist)
 
     ci_mean_neg_pred = np.percentile(mean_returns_neg_pred_dist, [0.5, 99.5])
+    ci_mean_neg_pred[0] = round(ci_mean_neg_pred[0], 3)
+    ci_mean_neg_pred[1] = round(ci_mean_neg_pred[1], 3)
     median_mean_neg_pred = np.median(mean_returns_neg_pred_dist)
 
     fig, ax = plt.subplots(2, 2, figsize = (18, 6))
@@ -68,7 +75,7 @@ def run_oos_statistical_tests(y_pred, trade_returns, n_simulations, sample_stati
     # Plot the permutation test distribution
     sns.histplot(permutation_results, kde = True, color = 'black', alpha = 0.7, ax = ax[0][0])
     ax[0][0].axvline(x = sample_statistic, color = 'red', linestyle = '--', label = 'OOS test statistic')
-    ax[0][0].set_title(f'Permutation Test Distribution of OOS Mean Return Differences (N = {n_simulations:,})')
+    ax[0][0].set_title(f'Permutation Test Distribution of OOS Mean Return Differences (N = {n_simulations:,}), p = {empirical_p_value:.4f}')
     ax[0][0].set_xlabel('Mean Trade Returns Difference')
     ax[0][0].set_ylabel('Frequency')
     ax[0][0].legend()
@@ -78,7 +85,7 @@ def run_oos_statistical_tests(y_pred, trade_returns, n_simulations, sample_stati
     ax[0][1].axvline(x = ci_mean_returns_diff[0], color = 'red', linestyle = '--', label = '0.5th Percentile')
     ax[0][1].axvline(x = median_mean_returns_diff, color = 'black', linestyle = '--', label = 'Median')
     ax[0][1].axvline(x = ci_mean_returns_diff[1], color = 'green', linestyle = '--', label = '99.5th Percentile')
-    ax[0][1].set_title(f'Bootstrap Distribution of OOS Mean Return Differences (99% CI, N = {n_simulations:,})')
+    ax[0][1].set_title(f'Bootstraped Distribution of OOS Mean Return Differences (99% CI {ci_mean_returns_diff}, N = {n_simulations:,})')
     ax[0][1].set_xlabel('Mean Trade Returns Difference')
     ax[0][1].set_ylabel('Frequency')
     ax[0][1].legend()
@@ -88,7 +95,7 @@ def run_oos_statistical_tests(y_pred, trade_returns, n_simulations, sample_stati
     ax[1][0].axvline(x = ci_mean_pos_pred[0], color = 'red', linestyle = '--', label = '0.5th Percentile')
     ax[1][0].axvline(x = median_mean_pos_pred, color = 'blue', linestyle = '--', label = 'Median')
     ax[1][0].axvline(x = ci_mean_pos_pred[1], color = 'green', linestyle = '--', label = '99.5th Percentile')
-    ax[1][0].set_title(f'Distribution of Mean Trade Returns for Positive Predictions (99% CI, N = {n_simulations:,})')
+    ax[1][0].set_title(f'Bootstrapped Distribution of Mean Returns for Positive Predictions (99% CI {ci_mean_pos_pred}, N = {n_simulations:,})')
     ax[1][0].set_xlabel('Mean Trade Returns')
     ax[1][0].set_ylabel('Frequency')
     ax[1][0].legend()
@@ -98,7 +105,7 @@ def run_oos_statistical_tests(y_pred, trade_returns, n_simulations, sample_stati
     ax[1][1].axvline(x = ci_mean_neg_pred[0], color = 'red', linestyle = '--', label = '0.5th Percentile')
     ax[1][1].axvline(x = median_mean_neg_pred, color = 'blue', linestyle = '--', label = 'Median')
     ax[1][1].axvline(x = ci_mean_neg_pred[1], color = 'green', linestyle = '--', label = '99.5th Percentile')
-    ax[1][1].set_title(f'Distribution of Mean Trade Returns for Negative Predictions (99% CI, N = {n_simulations:,})')
+    ax[1][1].set_title(f'Bootstrapped Distribution of Mean Returns for Negative Predictions (99% CI {ci_mean_neg_pred}, N = {n_simulations:,})')
     ax[1][1].set_xlabel('Mean Trade Returns')
     ax[1][1].set_ylabel('Frequency')
     ax[1][1].legend()
@@ -106,15 +113,3 @@ def run_oos_statistical_tests(y_pred, trade_returns, n_simulations, sample_stati
     plt.tight_layout()
     plt.legend()
     plt.show()
-
-    print('Empirical p-value (Permutation Test):', (permutation_results >= sample_statistic).mean())
-    print()
-    print('99% Confidence Interval (Difference in Mean Returns):', ci_mean_returns_diff)
-    print('Median Difference in Mean Returns:', median_mean_returns_diff)
-    print()
-    print('99% Confidence Interval (Positive Prediction Returns):', ci_mean_pos_pred)
-    print('Median Positive Prediction Returns:', median_mean_pos_pred)
-    print()
-    print('99% Confidence Interval (Negative Prediction Returns):', ci_mean_neg_pred)
-    print('Median Negative Prediction Returns:', median_mean_neg_pred)
-

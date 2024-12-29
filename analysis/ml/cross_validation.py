@@ -1,5 +1,5 @@
 # Define a custom cross-validator for our crypto ml dataset
-class GlobalTimeSeriesSplitByToken(BaseCrossValidator):
+class TimeSeriesSplitByToken(BaseCrossValidator):
     
     def __init__(self, n_splits=3, date_series=None, token_series=None):
         self.n_splits = n_splits
