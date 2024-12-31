@@ -8,22 +8,21 @@ from backtest.strategies.single_asset.base_strategy import BaseStrategy
 from xgboost import XGBClassifier
 from utils.db_utils import QUERY
 
+import vectorbtpro as vbt
+
 class MLStrategy(BaseStrategy):
 
     indicator_factory_dict = {
         'class_name':'MLStrategy',
         'short_name':'ml_strategy',
         'input_names':['open', 'high', 'low', 'close', 'volume', 'trades_count'],
-        'param_names':['prediction_threshold_entry', 'trade_size_multiplier'],
+        'param_names':['prediction_threshold_entry'],
         'output_names':['entries', 'exits', 'tp', 'sl', 'size']
     }
 
     optimize_dict = {
         # Minimum predicted probability for entering a trade
-        'prediction_threshold_entry': [0.7],
-
-        # Multiplier for position size based on predicted class probabilities
-        'trade_size_multiplier': [0.1]
+        'prediction_threshold_entry': vbt.Param(np.array([0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9]))
     }
 
     backtest_params = {
@@ -65,14 +64,14 @@ class MLStrategy(BaseStrategy):
         if quarter == 'oct_to_dec':
             min_year -= 1
 
-        path = f'/Users/louisspencer/Desktop/Trading-Bot/data/pretrained_models/classification/xgboost_model_{min_year}_{quarter}.pkl'
+        path = f'/Users/louisspencer/Desktop/Trading-Bot/data/pretrained_models/classification/xgboost_model_and_metrics_{min_year}_{quarter}.pkl'
 
         # Load the model
-        model = joblib.load(path)
+        model, model_performance = joblib.load(path)
         return model
 
     def indicator_func(self, open, high, low, close, volume, trades_count,
-                       prediction_threshold_entry, trade_size_multiplier):
+                       symbol_id, prediction_threshold_entry):
         
         # Get backtest parameters
         backtest_params = MLStrategy.backtest_params
@@ -128,7 +127,7 @@ class MLStrategy(BaseStrategy):
         ]
 
         non_numeric_cols = [
-            'asset_id_base', 'asset_id_quote', 'exchange_id', 'Unnamed: 0',
+            'asset_id_base', 'asset_id_quote', 'exchange_id', 'Unnamed: 0', 'symbol_id'
         ]
 
         forward_returns_cols = [
@@ -145,17 +144,15 @@ class MLStrategy(BaseStrategy):
 
         # Predict the class probabilities
         y_pred = model.predict(out_of_sample_data)
-        out_of_sample_data['y_pred'] = y_pred
-        # y_pred_prob_class_1 = y_pred_prob[:, 1]
-        # y_pred_prob_class_0 = y_pred_prob[:, 0]
+        y_pred_prob = model.predict_proba(out_of_sample_data)
+        y_pred_prob_class_1 = y_pred_prob[:, 1]
 
-        # out_of_sample_data['y_pred_proba_class_1'] = y_pred_prob_class_1
-        # out_of_sample_data['y_pred_proba_class_0'] = y_pred_prob_class_0
+        out_of_sample_data['y_pred'] = y_pred
+        out_of_sample_data['y_pred_proba_class_1'] = y_pred_prob_class_1
 
         # Turn the predictions into entry signals
         filter_entry = (
-            (out_of_sample_data['y_pred'] == 1) &
-            (out_of_sample_data['returns_1_rz_7'].abs() >= 1)
+            (out_of_sample_data['y_pred_proba_class_1'] >= prediction_threshold_entry)
         )
 
         entries = filter_entry.astype(int)

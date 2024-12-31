@@ -70,7 +70,7 @@ Here are the descriptions for each component of the Strategy class skeleton:
 Now that we have the general structure for a Strategy class, here's what it would look like for the moving average crossover strategy:
 
 ```py
-import vectorbt as vbt
+import vectorbtpro as vbt
 
 class MACrossOver:
     

@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-import vectorbt as vbt
+import vectorbtpro as vbt
 
 class BaseStrategy:
 
