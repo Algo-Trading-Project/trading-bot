@@ -179,7 +179,7 @@ def calmar_ratio(equity):
     except:
         return np.nan
 
-def run_monte_carlo_simulation(equity_curve, num_simulations = 10_000):
+def run_monte_carlo_simulation(equity_curve, num_simulations = 100_000):
     """
     Runs a Monte Carlo simulation on an equity curve.
 
@@ -247,7 +247,7 @@ def calculate_monte_carlo_performance_metrics(monte_carlo_equity_curves):
     i = 1
     for curve in monte_carlo_equity_curves.columns:
 
-        print('\r {} / {}'.format(i, len(monte_carlo_equity_curves.columns)), end = '', flush = True)
+        # print('\r {} / {}'.format(i, len(monte_carlo_equity_curves.columns)), end = '', flush = True)
 
         i += 1
 

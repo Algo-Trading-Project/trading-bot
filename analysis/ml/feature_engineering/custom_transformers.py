@@ -1,5 +1,7 @@
 from sklearn.base import BaseEstimator, TransformerMixin
 from scipy.stats import norm
+from utils.db_utils import QUERY
+from analysis.ml.labeling import calculate_triple_barrier_labels
 
 import pandas as pd
 import numpy as np
@@ -20,29 +22,58 @@ class TAFeatures(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X):
+        X['log_open'] = np.log(X['open'])
+        X['log_high'] = np.log(X['high'])
+        X['log_low'] = np.log(X['low'])
+        X['log_close'] = np.log(X['close'])
+        X['log_volume'] = np.log(X['volume'])
+
         for window in self.windows:
             # EMA
             X[f'ema_{window}'] = ta.trend.ema_indicator(close = X['close'], window = window)
             X[f'close_above_ema_{window}'] = X['close'] > X[f'ema_{window}']
             X[f'close_below_ema_{window}'] = X['close'] < X[f'ema_{window}']
+
+            # Log EMA
+            X[f'log_ema_{window}'] = ta.trend.ema_indicator(close = X['log_close'], window = window)
+            X[f'log_close_above_ema_{window}'] = X['log_close'] > X[f'log_ema_{window}']
+            X[f'log_close_below_ema_{window}'] = X['log_close'] < X[f'log_ema_{window}']
             
             # Close cross over/under EMA
             X[f'close_cross_over_ema_{window}'] = (X['close'] > X[f'ema_{window}']) & (X['close'].shift(1) < X[f'ema_{window}'])
             X[f'close_cross_under_ema_{window}'] = (X['close'] < X[f'ema_{window}']) & (X['close'].shift(1) > X[f'ema_{window}'])
 
+            # Log Close cross over/under EMA
+            X[f'log_close_cross_over_ema_{window}'] = (X['log_close'] > X[f'log_ema_{window}']) & (X['log_close'].shift(1) < X[f'log_ema_{window}'])
+            X[f'log_close_cross_under_ema_{window}'] = (X['log_close'] < X[f'log_ema_{window}']) & (X['log_close'].shift(1) > X[f'log_ema_{window}'])
+
             # Bollinger Bands
             X[f'bb_hband_{window}'], X[f'bb_lband_{window}'] = ta.volatility.bollinger_hband(close = X['close'], window = window), ta.volatility.bollinger_lband(close = X['close'], window = window)
+
+            # Log Bollinger Bands
+            X[f'log_bb_hband_{window}'], X[f'log_bb_lband_{window}'] = ta.volatility.bollinger_hband(close = X['log_close'], window = window), ta.volatility.bollinger_lband(close = X['log_close'], window = window)
             
             # Close above/below Bollinger Bands
             X[f'close_above_bb_hband_{window}'] = (X['close'] > X[f'bb_hband_{window}']).astype(int)
             X[f'close_below_bb_lband_{window}'] = (X['close'] < X[f'bb_lband_{window}']).astype(int)
 
+            # Log Close above/below Bollinger Bands
+            X[f'log_close_above_bb_hband_{window}'] = (X['log_close'] > X[f'log_bb_hband_{window}']).astype(int)
+            X[f'log_close_below_bb_lband_{window}'] = (X['log_close'] < X[f'log_bb_lband_{window}']).astype(int)
+
             # Close cross over/under Bollinger Bands
             X[f'close_cross_over_bb_hband_{window}'] = (X['close'] > X[f'bb_hband_{window}']) & (X['close'].shift(1) < X[f'bb_hband_{window}'])
             X[f'close_cross_under_bb_lband_{window}'] = (X['close'] < X[f'bb_lband_{window}']) & (X['close'].shift(1) > X[f'bb_lband_{window}'])
+
+            # Log Close cross over/under Bollinger Bands
+            X[f'log_close_cross_over_bb_hband_{window}'] = (X['log_close'] > X[f'log_bb_hband_{window}']) & (X['log_close'].shift(1) < X[f'log_bb_hband_{window}'])
+            X[f'log_close_cross_under_bb_lband_{window}'] = (X['log_close'] < X[f'log_bb_lband_{window}']) & (X['log_close'].shift(1) > X[f'log_bb_lband_{window}'])
             
             # RSI
-            X[f'rsi_{window}'] = ta.momentum.rsi(close = X['close'], window = window) 
+            X[f'rsi_{window}'] = ta.momentum.rsi(close = X['close'], window = window)
+
+            # Log RSI
+            X[f'log_rsi_{window}'] = ta.momentum.rsi(close = X['log_close'], window = window)
 
         return X
         

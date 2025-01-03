@@ -34,7 +34,6 @@ class BaseStrategy:
         'output_names':['entries', 'exits', 'tp', 'sl', 'size']
     }
 
-    # TODO: make calculate_sl based on returns instead of close price
     def calculate_sl(self, open, high, low, close, volume, backtest_params, window):
         if type(backtest_params['sl_stop']) == float:
             sl = np.abs(np.full(len(close), backtest_params['sl_stop']))
@@ -65,7 +64,6 @@ class BaseStrategy:
         else:
             raise ValueError('Invalid stop-loss method')
 
-    # TODO: make calculate_tp based on returns instead of close price
     def calculate_tp(self, open, high, low, close, volume, backtest_params, window):
         if type(backtest_params['tp_stop']) == float:
             tp = np.abs(np.full(len(close), backtest_params['tp_stop']))
@@ -96,7 +94,6 @@ class BaseStrategy:
         else:
             raise ValueError('Invalid take-profit method')
 
-    # TODO: make calculate_size based on returns instead of close price
     def calculate_size(self, open, high, low, close, volume, backtest_params, window):
         if type(backtest_params['size']) == float:
             size = np.full(len(close), backtest_params['size'])
@@ -119,10 +116,7 @@ class BaseStrategy:
         elif backtest_params['size'] == 'std':
             # Calculate the rolling standard deviation of the close price
             # over the last week
-            rolling_std = pd.Series(close).rolling(window).std().values
-
-            # Normalize the standard deviation by dividing it by the close price
-            rolling_std = (rolling_std / close) * 100
+            rolling_std = pd.Series(close).pct_change().rolling(window).std().values * 100
 
             # Calculate the position size as the percentage of the account
             # that should be risked on each trade divided by the standard deviation

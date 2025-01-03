@@ -7,10 +7,9 @@ warnings.simplefilter('ignore', ConvergenceWarning)
 warnings.simplefilter('ignore', UserWarning)
 warnings.simplefilter('ignore', RuntimeWarning)
 
-import pandas as pd
-import numpy as np
-import json
 import duckdb
+import pickle
+import json
 
 from utils.db_utils import QUERY
 from backtest.strategies.single_asset.base_strategy import BaseStrategy
@@ -36,9 +35,10 @@ class BackTester:
     def __init__(
         self,  
         strategies: list,                  
-        optimization_metric: str = 'Sortino Ratio',
         resample_period: str = '1min',
-        use_dollar_bars: bool = False            
+        use_dollar_bars: bool = False,
+        start_date: str = '2021-04-01',
+        end_date: str = '2022-12-31'          
     ):
         """
         Coordinates the walk-forward optimization of a set of strategies over a set of tokens, 
@@ -50,16 +50,17 @@ class BackTester:
         strategies : list
             List of Strategy classes from backtest/strategies to backtest.
 
-        optimization_metric : str, default = 'Sharpe Ratio'
-            Performance metric to maximize/minimize during the in-sample parameter optimizations. 
-            The full list of metrics available to use can be found in the file 
-            backtest/core/walk_forward_optimization.py in the metric_map dictionary in the __init__ method.
-
         resample_period : str, default = '1min'
             Period to resample the OHLCV data to before backtesting.
 
         use_dollar_bars : bool, default = False
             Whether to use dollar bars instead of time bars for the backtest.
+
+        start_date : str, default = '2021-04-01'
+            Start date of the backtest.
+
+        end_date : str, default = '2022-12-31'
+            End date of the backtest.
         """
 
         # Load the price data for the universe
@@ -68,7 +69,9 @@ class BackTester:
             SELECT 
                 time_period_end,
                 asset_id_base || '_' || asset_id_quote || '_' || exchange_id as symbol_id,
-                close
+                close,
+                high,
+                low
             FROM market_data.ml_dataset
             """
         )
@@ -77,14 +80,15 @@ class BackTester:
         price_data = price_data.loc[price_data.index >= '2021-04-01']
         price_data = price_data[price_data['symbol_id'] != 'AMB_USDT_BINANCE']
 
-        # Pivot the data to get the asset universe
-        self.universe = price_data.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = 'close')
+        # Pivot the data to get the asset universe close, high, and low prices
+        self.universe = price_data.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = ['close', 'high', 'low'])
         self.universe = self.universe.sort_index()
 
-        self.optimization_metric = optimization_metric
         self.strategies = strategies
         self.resample_period = resample_period
         self.use_dollar_bars = use_dollar_bars
+        self.start_date = start_date
+        self.end_date = end_date
 
         self.conn = duckdb.connect(
             database = '/Users/louisspencer/Desktop/Trading-Bot-Data-Pipelines/data/database.db',
@@ -116,7 +120,7 @@ class BackTester:
             return float(obj)
 
         elif isinstance(obj, dict):
-            return {k: BackTester.__serialize_json_data(v) for k, v in obj.items()}
+            return {k: BackTester.__serialize_json_data for k, v in obj.items()}
 
         elif isinstance(obj, list):
             return obj
@@ -233,7 +237,7 @@ class BackTester:
             df = df.drop(columns = ['asset_id_base', 'asset_id_quote', 'exchange_id'])
             return df
 
-        # Execute query on DuckDB and return result as a DataFrame
+        # Execute the query on DuckDB and return result as a DataFrame
         df = self.conn.sql(query).df().set_index('origin_time').resample('1min', label = 'right', closed = 'left').agg({
             'open': 'first',
             'close': 'last',
@@ -278,7 +282,7 @@ class BackTester:
     def __upsert_into_table(
         self,
         symbol_id: str,
-        strat: str,
+        strat: BaseStrategy or BasePortfolioStrategy,
         table: str, 
         insert_str: str,
         df: pd.DataFrame = None
@@ -342,15 +346,29 @@ class BackTester:
             self.conn.unregister('backtest_equity_curves')
         
         elif table == 'backtest_trades':
-            delete_query = f"""
-            DELETE FROM backtest.{table}
-            WHERE 
-                symbol_id = '{symbol_id}' AND 
-                strat = '{strat}'
-            """
-            insert_query = f"""
-            INSERT INTO backtest.{table} VALUES {insert_str}
-            """
+            if issubclass(type(strat), BasePortfolioStrategy):
+                delete_query = f"""
+                DELETE FROM backtest.{table}
+                WHERE 
+                    strat = '{strat}'
+                """
+                insert_query = f"""
+                INSERT INTO backtest.{table} (strat, entry_date, exit_date, symbol_id, size, entry_fees, exit_fees, pnl, pnl_pct, is_long) VALUES {insert_str}
+                """
+
+            elif issubclass(type(strat), BaseStrategy):
+                delete_query = f"""
+                DELETE FROM backtest.{table}
+                WHERE 
+                    symbol_id = '{symbol_id}' AND 
+                    strat = '{strat}'
+                """
+                insert_query = f"""
+                INSERT INTO backtest.{table} (strat, entry_date, exit_date, symbol_id, size, entry_fees, exit_fees, pnl, pnl_pct, is_long) VALUES {insert_str}
+                """
+
+            else:
+                raise ValueError(f'Invalid strategy class: {strat}')
 
             self.conn.sql(delete_query)
             self.conn.sql(insert_query)
@@ -413,14 +431,13 @@ class BackTester:
             is_end_i = is_end_i,
             oos_start_i = oos_start_i,
             oos_end_i = oos_end_i,
-            optimization_metric = self.optimization_metric,
             resample_period = self.resample_period
         )
 
         optimal_params, optimal_is_portfolio = wfo.optimize()
-        oos_trades, oos_equity_curve = wfo.walk_forward(optimal_params)
+        oos_trades, oos_equity_curve, oos_port = wfo.walk_forward(optimal_params)
 
-        return oos_trades, oos_equity_curve, optimal_is_portfolio
+        return oos_trades, oos_equity_curve, optimal_is_portfolio, oos_port, optimal_params
 
     def __execute_wfo(
         self, 
@@ -461,15 +478,15 @@ class BackTester:
         Returns:
         --------
         DataFrame:
-            DataFrame containing the combined equity curves from all of the
+            DataFrame containing the combined equity curves from all the
             out-of-sample periods, sorted by date.
 
         DataFrame:
-            DataFrame containing the trades from all of the
+            DataFrame containing the trades from all the
             out-of-sample periods.
 
         DataFrame:
-            DataFrame containing token price data from all of the
+            DataFrame containing token price data from all the
             out-of-sample periods, sorted by date.
         """
 
@@ -495,18 +512,16 @@ class BackTester:
         else:
             raise ValueError(f'Invalid strategy class: {type(strat)}')
 
-        # Only use data after 2021-04-01
-        backtest_data = backtest_data[backtest_data.index >= '2021-04-01']
+        # Only use data between the start and end dates
+        backtest_data = backtest_data.loc[(backtest_data.index >= self.start_date) & (backtest_data.index <= self.end_date)]
 
         if backtest_data.empty:
-            return None, None, None, None, None
+            return None, None, None, None
         
         equity_curves = []
         trades = []
         price_data = []
-
-        is_sharpes = []
-        oos_sharpes = []
+        performance_metrics = []
 
         starting_equity = strat.backtest_params['init_cash']
 
@@ -534,8 +549,10 @@ class BackTester:
                 day_normalizer = 6
             elif self.resample_period == '1d':
                 day_normalizer = 1
+            else:
+                raise ValueError(f'Invalid resample period: {self.resample_period}')
             
-            print('Progress: {} / {} days...'.format(int((start) / day_normalizer), int(len(backtest_data) / day_normalizer)))
+            print('Progress: {} / {} days...'.format(int(start / day_normalizer), int(len(backtest_data) / day_normalizer)))
             print()
 
             if len(backtest_data.iloc[start:]) - (in_sample_size + out_of_sample_size) < out_of_sample_size:
@@ -557,7 +574,7 @@ class BackTester:
             oos_start_date = backtest_data.index[oos_start_i].strftime('%m-%d-%Y')
             end_date_index = min(oos_end_i, len(backtest_data) - 1)
             oos_end_date = backtest_data.index[end_date_index].strftime('%m-%d-%Y')
-            
+
             print(f'*** In-Sample Period: {is_start_date} - {is_end_date}')
             print()
             print(f'*** Out-of-Sample Period: {oos_start_date} - {oos_end_date}')
@@ -565,7 +582,7 @@ class BackTester:
             print('*** Starting Equity: ', starting_equity)
             print()
 
-            oos_trades, oos_equity_curve, optimal_is_portfolio = self.__walk_forward_optimization(
+            oos_trades, oos_equity_curve, optimal_is_portfolio, oos_port, optimal_params = self.__walk_forward_optimization(
                 strat = strat,
                 backtest_data = backtest_data,
                 is_start_i = is_start_i,
@@ -573,12 +590,6 @@ class BackTester:
                 oos_start_i = oos_start_i,
                 oos_end_i = oos_end_i
             )
-
-            is_sharpe = optimal_is_portfolio.returns_acc.sharpe_ratio()
-            oos_sharpe = sharpe_ratio(oos_equity_curve['equity'])
-
-            is_sharpes.append(is_sharpe)
-            oos_sharpes.append(oos_sharpe)
 
             tr = round(1 + ((oos_equity_curve['equity'].iloc[-1] - oos_equity_curve['equity'].iloc[0]) / oos_equity_curve['equity'].iloc[0]), 3)
             
@@ -596,6 +607,20 @@ class BackTester:
             
             equity_curves.append(oos_equity_curve)
             trades.append(oos_trades)
+
+            # Serialize the optimal in-sample portfolio and out-of-sample portfolio to a BLOB using pickle
+            # to store in the backtest_results table
+            performance_metrics_dict = {
+                'is_start_date': is_start_date,
+                'is_end_date': is_end_date,
+                'oos_start_date': oos_start_date,
+                'oos_end_date': oos_end_date,
+                'optimal_is_portfolio': pickle.dumps(optimal_is_portfolio),
+                'oos_port': pickle.dumps(oos_port),
+                'optimal_params': optimal_params
+            }
+
+            performance_metrics.append(performance_metrics_dict)
 
             if issubclass(type(strat), BaseStrategy):
                 price_data.append(backtest_data.iloc[oos_start_i:oos_end_i])
@@ -617,13 +642,15 @@ class BackTester:
             print('Trades: ')
             print(trades)
 
-            return None, None, None, None, None
+            return None, None, None, None
 
         equity_curves = pd.concat(equity_curves).sort_index()
         trades = pd.concat(trades, ignore_index = True)
-        price_data = pd.concat(price_data).sort_index()
+
+        if issubclass(type(strat), BaseStrategy):
+            price_data = pd.concat(price_data).sort_index()            
         
-        return equity_curves, trades, price_data, is_sharpes, oos_sharpes
+        return equity_curves, trades, price_data, performance_metrics
 
     def __upload_backtest_results(
         self, 
@@ -631,8 +658,7 @@ class BackTester:
         oos_equity_curves, 
         oos_trades, 
         oos_price_data, 
-        is_sharpes, 
-        oos_sharpes,
+        performance_metrics,
         base: str = None,
         quote: str = None,
         exchange: str = None
@@ -648,18 +674,18 @@ class BackTester:
             raise ValueError(f'Invalid strategy class: {strat}')
 
         for trade in oos_trades_dict:
-            pnl = float(trade['pnl'])
-            pnl_pct = float(trade['pnl_pct'])
+            strategy = strat.indicator_factory_dict['class_name']
+            token_traded = trade['symbol_id']
+            entry_date = trade['entry_date']
+            exit_date = trade['exit_date']
+            size = trade['size']
+            entry_fees = trade['entry_fees']
+            exit_fees = trade['exit_fees']
+            pnl = trade['pnl']
+            pnl_pct = trade['pnl_pct']
+            is_long = trade['is_long']
 
-            insert_str_backtest_trades += """('{}', '{}', '{}', '{}', '{}', '{}', '{}'), """.format(
-                symbol_id,
-                strat.indicator_factory_dict['class_name'],
-                trade['entry_date'],
-                trade['exit_date'],
-                pnl,
-                pnl_pct,
-                trade['is_long']
-            )
+            insert_str_backtest_trades += f"""('{strategy}', '{entry_date}', '{exit_date}', '{token_traded}', {size}, {entry_fees}, {exit_fees}, {pnl}, {pnl_pct}, {is_long}), """
 
         insert_str_backtest_trades = insert_str_backtest_trades[:-2]
         backtest_equity_curve_df = []
@@ -685,26 +711,23 @@ class BackTester:
             oos_price_data
         ).to_dict(orient = 'records')[0]
 
-        performance_metrics['is_sharpe'] = is_sharpes
-        performance_metrics['oos_sharpe'] = oos_sharpes
-        
         performance_metrics = json.dumps(performance_metrics, default = BackTester.__serialize_json_data)
         performance_metrics = performance_metrics.replace('NaN', 'null').replace('Infinity', 'null')
 
         insert_str_backtest_result = """
         ('{}', '{}', '{}', '{}', '{}', '{}')
         """.format(
-            strat.indicator_factory_dict['class_name'],
+            strat,
             symbol_id,
-            oos_price_data.index[0],
-            oos_price_data.index[-1],
+            oos_equity_curves.index[0],
+            oos_equity_curves.index[-1],
             performance_metrics,  
-            self.optimization_metric
+            strat.optimization_metric
         )
 
         self.__upsert_into_table(
             symbol_id = symbol_id,
-            strat = strat.indicator_factory_dict['class_name'],
+            strat = strat,
             table = 'backtest_results',
             insert_str = insert_str_backtest_result
         )
@@ -712,14 +735,14 @@ class BackTester:
         if len(oos_trades) > 0:
             self.__upsert_into_table(
                 symbol_id = symbol_id,
-                strat = strat.indicator_factory_dict['class_name'],
+                strat = strat,
                 table = 'backtest_trades',
                 insert_str = insert_str_backtest_trades
             )
             
         self.__upsert_into_table(
             symbol_id = symbol_id,
-            strat = strat.indicator_factory_dict['class_name'],
+            strat = strat,
             table = 'backtest_equity_curves',
             insert_str = '',
             df = backtest_equity_curve_df
@@ -734,7 +757,7 @@ class BackTester:
                 print()
 
                 # Execute walk-forward optimization of the strategy on the token
-                oos_equity_curves, oos_trades, oos_price_data, is_sharpes, oos_sharpes = self.__execute_wfo(
+                oos_equity_curves, oos_trades, oos_price_data, performance_metrics = self.__execute_wfo(
                     base = base,
                     quote = quote, 
                     exchange = exchange,
@@ -744,7 +767,7 @@ class BackTester:
                 )
 
                 # Reset starting equity for next token
-                strat.backtest_params['init_cash'] = 100_000
+                strat.backtest_params['init_cash'] = 10_000
 
                 # If the walk-forward optimization failed, skip to the next token
                 if (oos_equity_curves is None) or (oos_trades is None) or (oos_price_data is None):
@@ -756,8 +779,10 @@ class BackTester:
                     oos_equity_curves = oos_equity_curves,
                     oos_trades = oos_trades,
                     oos_price_data = oos_price_data,
-                    is_sharpes = is_sharpes,
-                    oos_sharpes = oos_sharpes
+                    performance_metrics = performance_metrics,
+                    base = base,
+                    quote = quote,
+                    exchange = exchange
                 )
 
         elif issubclass(type(strat), BasePortfolioStrategy):
@@ -766,7 +791,7 @@ class BackTester:
             print()
 
             # Execute walk-forward optimization of the strategy on the universe
-            oos_equity_curves, oos_trades, oos_price_data, is_sharpes, oos_sharpes = self.__execute_wfo(
+            oos_equity_curves, oos_trades, oos_price_data, performance_metrics = self.__execute_wfo(
                 strat = strat,
                 in_sample_size = 30 * 3,
                 out_of_sample_size = 30 * 3
@@ -782,8 +807,7 @@ class BackTester:
                 oos_equity_curves = oos_equity_curves,
                 oos_trades = oos_trades,
                 oos_price_data = oos_price_data,
-                is_sharpes = is_sharpes,
-                oos_sharpes = oos_sharpes
+                performance_metrics = performance_metrics
             )
 
         else:

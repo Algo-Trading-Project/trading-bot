@@ -11,16 +11,19 @@ import time
 
 
 if __name__ == '__main__':
-    # Execute a walk-forward optimization across all single-token strategies
+    # Execute a walk-forward optimization across all strategies
     # and log the results to DuckDB
 
     # Initialize a BackTester instance w/ the intended strategies to backtest and
     # a performance metric to optimize on
     b = BackTester(
-        strategies = [PortfolioMLStrategy()],
-        optimization_metric = 'Sortino Ratio',
+        strategies = [
+            PortfolioMLStrategy(optimization_metric = 'Sharpe Ratio'),
+        ],
         resample_period = '1d',
-        use_dollar_bars = False
+        use_dollar_bars = False,
+        start_date = '2021-04-01',
+        end_date = '2024-12-31',
     )
 
     backtest_start = time.time()

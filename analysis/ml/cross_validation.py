@@ -1,3 +1,7 @@
+from sklearn.model_selection import BaseCrossValidator
+import numpy as np
+import pandas as pd
+
 # Define a custom cross-validator for our crypto ml dataset
 class TimeSeriesSplitByToken(BaseCrossValidator):
     

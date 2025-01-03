@@ -1,5 +1,4 @@
 import numpy as np
-import pandas as pd
 import vectorbtpro as vbt
 
 class BasePortfolioStrategy:
@@ -7,13 +6,13 @@ class BasePortfolioStrategy:
     # Set backtest parameters
     
     # init_cash - Initial cash
-    # fees      - Comission percent
+    # fees      - Commission percent
     # sl_stop   - Stop-loss percent
-    # sl_trail  - Indicate whether or not want a trailing stop-loss
+    # sl_trail  - Indicate whether you want a trailing stop-loss
     # tp_stop   - Take-profit percent
     # size      - Percentage of capital to use for each trade
     # size_type - Indicates the 'size' parameter represents a percent
-    # cash_sharing - Indicate whether or not want to share cash across assets
+    # cash_sharing - Indicate whether you want to share cash across assets
 
     backtest_params = {
         'init_cash': 10_000,
@@ -36,15 +35,32 @@ class BasePortfolioStrategy:
         'output_names':['entries', 'exits', 'tp', 'sl', 'size']
     }
 
-    # TODO: make calculate_sl based on returns instead of close price
-    def calculate_sl(self, universe, backtest_params, window):
+    metric_map = {
+        'Total Return':'total_return',
+        'Max Drawdown':'drawdowns.max_drawdown',
+        'Max Drawdown Duration':'drawdowns.max_duration',
+        'Win Rate':'trades.win_rate',
+        'Profit Factor':'trades.profit_factor',
+        'Expectancy':'trades.expectancy',
+        'Sharpe Ratio':'sharpe_ratio',
+        'Calmar Ratio':'calmar_ratio',
+        'Omega Ratio':'omega_ratio',
+        'Sortino Ratio':'sortino_ratio'
+    }
+
+    def __init__(self, *args, **kwargs):
+        if kwargs.get('optimization_metric') is not None:
+            self.optimization_metric = self.metric_map[kwargs.get('optimization_metric')]
+
+    @staticmethod
+    def calculate_sl(universe, backtest_params, window):
         if type(backtest_params['sl_stop']) == float:
             sl = np.abs(np.full(universe.shape, backtest_params['sl_stop']))
             return sl
 
         elif backtest_params['sl_stop'] == 'std':
             # Calculate the rolling standard deviation over the entire universe
-            rolling_std = universe.pct_change().rolling(window, min_periods = 1).std()
+            rolling_std = universe.close.pct_change().rolling(window, min_periods = 1).std()
             # Calculate the stop-loss price as 2 times the rolling standard deviation of returns
             # below the close price
             sl = 2 * rolling_std
@@ -53,15 +69,15 @@ class BasePortfolioStrategy:
         else:
             raise ValueError('Invalid stop-loss method')
 
-    # TODO: make calculate_tp based on returns instead of close price
-    def calculate_tp(self, universe, backtest_params, window):
+    @staticmethod
+    def calculate_tp(universe, backtest_params, window):
         if type(backtest_params['tp_stop']) == float:
             tp = np.abs(np.full(universe.shape, backtest_params['tp_stop']))
             return tp
 
         elif backtest_params['tp_stop'] == 'std':
             # Calculate the rolling standard deviation over the entire universe
-            rolling_std = universe.pct_change().rolling(window, min_periods = 1).std()
+            rolling_std = universe.close.pct_change().rolling(window, min_periods = 1).std()
             # Calculate the take-profit price as 2 times the rolling standard deviation of returns
             # above the close price
             tp = 2 * rolling_std
@@ -70,8 +86,9 @@ class BasePortfolioStrategy:
         else:
             raise ValueError('Invalid take-profit method')
 
-    # TODO: make calculate_size based on returns instead of close price
-    def calculate_size(self, universe, backtest_params, window):
+    # Make calculate_size a static method
+    @staticmethod
+    def calculate_size(universe, backtest_params, window):
         if type(backtest_params['size']) == float:
             size = np.abs(np.full(universe.shape, backtest_params['size']))
             return size
@@ -84,12 +101,14 @@ class BasePortfolioStrategy:
             # that should be risked on each trade divided by the standard deviation
             size = 0.1 / rolling_std
             return size
-            
+
         else:
             raise ValueError('Invalid position sizing method')
 
-    # Must be overridden by the child class
-    def run_strategy_with_parameter_combination(self, universe, **params):
+    # Must be overridden by the child class with potentially a different signature
+    # to allow for arbitrary parameters
+    @staticmethod
+    def run_strategy_with_parameter_combination(universe, **params):
         pass
     
     @vbt.parameterized(merge_func = 'concat')
@@ -99,5 +118,7 @@ class BasePortfolioStrategy:
             universe = universe,
             **params
         )
-        # Return Portfolio Sortino Ratio
-        return portfolio.sortino_ratio
+        optimization_metric = getattr(portfolio, self.optimization_metric)
+
+        # Return Portfolio Performance Metric based on self.optimization_metric
+        return optimization_metric

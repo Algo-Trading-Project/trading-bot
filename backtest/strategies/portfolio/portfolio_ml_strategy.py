@@ -15,23 +15,30 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
 
     optimize_dict = {
         # Minimum predicted probability for entering a trade
-        'prediction_threshold': vbt.Param(np.array([0.5, 0.55, 0.6, 0.65, 0.7])),
-        
+        'prediction_threshold': vbt.Param(np.array([
+            0.5, 0.6, 0.7, 0.8
+        ])),
+
         # Only take positions in tokens with predicted probabilities 
         # that are above the prediction threshold and in the top p% of predicted probabilities
-        'target_prediction_percentile': vbt.Param(np.array([0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]))
+        'target_prediction_percentile': vbt.Param(np.array([
+            0.5, 0.6, 0.7, 0.8
+        ])),
     }
 
     backtest_params = {
         'init_cash': 10_000,
-        'fees': 0.0025,
+        'fees': 0.001,
+        'slippage': 0.0015,
         'sl_stop': 'std',
         'tp_stop': 'std',
         'size': 0.05,
-        'size_type': 2, # e.g. 2 if 'size' is 'Fixed Percent' and 0 otherwise,
+        'size_type': 2, # for example, 2 if 'size' is 'Fixed Percent' and 0 otherwise,
     }
 
-    def __init__(self):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
         self.month_to_quarter_map = {
             1: 'oct_to_dec',
             2: 'oct_to_dec',
@@ -55,7 +62,7 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
         )
         ml_features['symbol_id'] = ml_features['symbol_id'].astype('category')
 
-        # Columns we need to drop before training the model
+        # Columns needed to drop before training the model
         triple_barrier_label_cols = [
             col for col in ml_features if 'triple_barrier_label_h' in col
         ]
@@ -122,13 +129,13 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
             # Rank the predicted probabilities of the assets that are above the threshold
             rank = model_probs.loc[date, col_indices.loc[date]].rank(ascending=True, pct=True)
 
-            # Get tokens that are in the top (1 - p)% of the predicted probabilities
+            # Get tokens that are in the top (1–p)% of the predicted probabilities
             top_p = (rank >= target_prediction_percentile).astype(int)
 
             # Number of tokens in the top p% of predicted probabilities
             num_tokens = top_p.sum()
 
-            # Take an equal position in each token in the top (1 - p)% of predicted probabilities
+            # Take an equal position in each token in the top (1–p)% of predicted probabilities
             top_p /= num_tokens
 
             # Update the size DataFrame with the position sizes for this date
@@ -172,11 +179,13 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
         model_probs = model_probs.loc[universe.index]
 
         size, col_indices = self.calculate_size(model_probs, prediction_threshold, target_prediction_percentile)
+        # Position sizes for each day sum to 0.1 of the portfolio value
+        size = size * 0.1
         entries = size > 0
         exits = pd.DataFrame(np.full(size.shape, False), index = entries.index, columns = entries.columns)
         tp = self.calculate_tp(universe, self.backtest_params, 7)
         sl = self.calculate_sl(universe, self.backtest_params, 7)
-        td_stop = pd.DataFrame(pd.Timedelta(days=7), index = universe.index, columns = universe.columns)
+        td_stop = pd.DataFrame(pd.Timedelta(days=7), index = universe.index, columns = universe.close.columns)
 
         # Ensure that the signals are aligned with the universe
         entries = entries.loc[universe.index]
@@ -189,30 +198,35 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
         # Save these parameters temporarily
         sl_stop = self.backtest_params['sl_stop']
         tp_stop = self.backtest_params['tp_stop']
-        size = self.backtest_params['size']
+        default_size = self.backtest_params['size']
 
-        # Remove these parameters from the backtest_params dictionary so that they are not passed to the Portfolio
+        # Remove these parameters from the backtest_params dictionary so that they aren't passed to the Portfolio
         del self.backtest_params['sl_stop']
         del self.backtest_params['tp_stop']
         del self.backtest_params['size']
 
         # Simulate Portfolio
         portfolio = vbt.Portfolio.from_signals(
-            close = universe,
+            close = universe.close,
+            high = universe.high,
+            low = universe.low,
             entries = entries,
             exits = exits,
             size = size,
             sl_stop = sl,
             tp_stop = tp,
             td_stop = td_stop,
+            time_delta_format = 'rows',
             group_by = True,
             cash_sharing = True,
+            accumulate = False,
+            stop_exit_type = 0,
             **self.backtest_params
         )
 
         # Restore the parameters
         self.backtest_params['sl_stop'] = sl_stop
         self.backtest_params['tp_stop'] = tp_stop
-        self.backtest_params['size'] = size
+        self.backtest_params['size'] = default_size
 
         return portfolio
