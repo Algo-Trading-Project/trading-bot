@@ -12,9 +12,9 @@ def __calculate_labels(high, low, close, std_returns, max_holding_time):
 
     for i in prange(n - max_holding_time):
         # Upper barrier is 2 standard deviations of the returns above the close price
-        upper_barrier = close[i] * (1 + std_returns[i] * 2)
+        upper_barrier = close[i] * (1 + std_returns[i] * 1)
         # Lower barrier is 2 standard deviations of the returns below the close price
-        lower_barrier = close[i] * (1 - std_returns[i] * 2)
+        lower_barrier = close[i] * (1 - std_returns[i] * 1)
 
         # Store the start date of the trade
         start_date_indices[i] = i

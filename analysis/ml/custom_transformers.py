@@ -101,7 +101,6 @@ class RollingZScoreScaler(BaseEstimator, TransformerMixin):
     
     def __init__(self, window_sizes):
         self.window_sizes = window_sizes
-        
 
     def fit(self, X, y=None):
         return self
@@ -214,6 +213,10 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
             pivot_rank = pivot_rank.fillna(0)
             pivot_rank.columns = [f'{col}_returns_{window}_rank' for col in pivot_rank.columns]
 
+            # Cross-sectional returns percentile rank for each symbol for each time period
+            pivot_percentile_rank = pivot.rank(axis = 1, method = 'first', pct = True)
+
+
             # Average cross-sectional returns for each time period
             pivot_rank[f'avg_cross_sectional_returns_{window}'] = pivot.mean(axis = 1)
 
@@ -239,6 +242,9 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
             pivot_log_rank = pivot_log.rank(axis = 1, method = 'first', ascending = False)
             pivot_log_rank = pivot_log_rank.fillna(0)
             pivot_log_rank.columns = [f'{col}_log_returns_{window}_rank' for col in pivot_log_rank.columns]
+
+            # Cross-sectional log returns percentile rank for each symbol for each time period
+            pivot_log_percentile_rank = pivot_log.rank(axis = 1, method = 'first', pct = True)
 
             # Average cross-sectional log returns for each time period
             pivot_log_rank[f'avg_cross_sectional_log_returns_{window}'] = pivot_log.mean(axis = 1)
@@ -266,6 +272,9 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
             pivot_volume_rank = pivot_volume_rank.fillna(0)
             pivot_volume_rank.columns = [f'{col}_volume_rank' for col in pivot_volume_rank.columns]
 
+            # Cross-sectional volume percentile rank for each symbol for each time period
+            pivot_volume_percentile_rank = pivot_volume.rank(axis = 1, method = 'first', pct = True)
+
             # Average cross-sectional volume for each time period
             pivot_volume_rank[f'avg_cross_sectional_volume_{window}'] = pivot_volume.mean(axis = 1)
 
@@ -291,6 +300,9 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
             pivot_num_trades_rank = pivot_num_trades.rank(axis = 1, method = 'first', ascending = False)
             pivot_num_trades_rank = pivot_num_trades_rank.fillna(0)
             pivot_num_trades_rank.columns = [f'{col}_num_trades_rank' for col in pivot_num_trades_rank.columns]
+
+            # Cross-sectional number of trades percentile rank for each symbol for each time period
+            pivot_num_trades_percentile_rank = pivot_num_trades.rank(axis = 1, method = 'first', pct = True)
 
             # Average cross-sectional number of trades for each time period
             pivot_num_trades_rank[f'avg_cross_sectional_num_trades_{window}'] = pivot_num_trades.mean(axis = 1)
@@ -318,6 +330,10 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
             self.ml_dataset = pd.merge(self.ml_dataset, pivot_log_rank, left_index = True, right_index = True, how = 'left', suffixes = ('', '__remove'))
             self.ml_dataset = pd.merge(self.ml_dataset, pivot_volume_rank, left_index = True, right_index = True, how = 'left', suffixes = ('', '__remove'))
             self.ml_dataset = pd.merge(self.ml_dataset, pivot_num_trades_rank, left_index = True, right_index = True, how = 'left', suffixes = ('', '__remove'))
+            self.ml_dataset = pd.merge(self.ml_dataset, pivot_percentile_rank, left_index = True, right_index = True, how = 'left', suffixes = ('', '__remove'))
+            self.ml_dataset = pd.merge(self.ml_dataset, pivot_log_percentile_rank, left_index = True, right_index = True, how = 'left', suffixes = ('', '__remove'))
+            self.ml_dataset = pd.merge(self.ml_dataset, pivot_volume_percentile_rank, left_index = True, right_index = True, how = 'left', suffixes = ('', '__remove'))
+            self.ml_dataset = pd.merge(self.ml_dataset, pivot_num_trades_percentile_rank, left_index = True, right_index = True, how = 'left', suffixes = ('', '__remove'))
 
             # Drop the columns with '__remove' suffix
             self.ml_dataset = self.ml_dataset.drop(columns = [col for col in self.ml_dataset.columns if '__remove' in col], axis = 1)
@@ -540,11 +556,7 @@ class CorrelationFeatures(BaseEstimator, TransformerMixin):
 class OrderBookFeatures(BaseEstimator, TransformerMixin):
     
     def __init__(self):
-        # Set up the connection to the DuckDB database
-        self.conn = duckdb.connect(
-            database = '/Users/louisspencer/Desktop/Trading-Bot-Data-Pipelines/data/database.db',
-            read_only = False
-        )
+        pass
 
     def fit(self, X, y=None):
         return self
@@ -605,12 +617,6 @@ class OrderBookFeatures(BaseEstimator, TransformerMixin):
 
             total_bid_volume += ob_1d[bid_size_cols[i]]
             total_ask_volume += ob_1d[ask_size_cols[i]]
-            
-            ob_1d[f'bid_ask_spread_{i}'] = ob_1d[ask_cols[i]] - ob_1d[bid_cols[i]]
-            ob_1d[f'imbalance_{i}'] = (ob_1d[bid_size_cols[i]] - ob_1d[ask_size_cols[i]]) / (ob_1d[ask_size_cols[i]] + ob_1d[bid_size_cols[i]])
-
-            ob_1d[f'bid_dollar_volume_{i}'] = ob_1d[bid_cols[i]] * ob_1d[bid_size_cols[i]]
-            ob_1d[f'ask_dollar_volume_{i}'] = ob_1d[ask_cols[i]] * ob_1d[ask_size_cols[i]]
 
         total_dollar_imbalance = (total_bid_dollar_volume - total_ask_dollar_volume) / (total_bid_dollar_volume + total_ask_dollar_volume)
         total_volume_imbalance = (total_bid_volume - total_ask_volume) / (total_bid_volume + total_ask_volume)
@@ -626,6 +632,9 @@ class OrderBookFeatures(BaseEstimator, TransformerMixin):
         ob_1d['total_dollar_imbalance'] = total_dollar_imbalance
         ob_1d['total_volume_imbalance'] = total_volume_imbalance
 
+        # Normalize the spread by the mid-price
+        ob_1d['normalize_quoted_spread'] = (ob_1d[ask_cols[0]] - ob_1d[bid_cols[0]]) / ((ob_1d[ask_cols[0]] + ob_1d[bid_cols[0]]) / 2)
+
         # Drop unnecessary columns
         ob_1d = ob_1d.drop(columns = bid_cols + ask_cols + bid_size_cols + ask_size_cols, axis = 1)
 
@@ -635,39 +644,6 @@ class OrderBookFeatures(BaseEstimator, TransformerMixin):
         
         return X
 
-class MicroStructureFeatures(BaseEstimator, TransformerMixin):
-
-    def __init__(self, windows):
-        self.windows = windows
-
-    def fit(self, X, y=None):
-        return self
-
-    def transform(self, X):
-        for window in self.windows:
-            # Roll measure
-            diff_close = X['close'].diff()
-            diff_close_lag_1 = diff_close.shift(1)
-            X[f'roll_measure_{window}'] = 2 * np.sqrt(diff_close.rolling(window = window, min_periods = 1).cov(diff_close_lag_1).abs())
-
-            # Roll impact measure (Roll measure divided by dollar volume)
-            X[f'roll_impact_measure_{window}'] = X[f'roll_measure_{window}'] / (X['volume'] * X['close'])
-
-            # Amihud measure
-            X[f'amihud_measure_{window}'] = (X['close'].pct_change().abs() / (X['volume'] * X['close'])).rolling(window = window, min_periods = 1).mean()
-
-            # Kyle lambda
-            X[f'kyle_lambda_{window}'] = (X['close'] - X['close'].shift(window)) / (np.sign(diff_close) * X['volume']).rolling(window = window, min_periods = 1).sum()
-
-            # VPIN
-            diff_close_std = diff_close.rolling(window = window, min_periods = 1).std()
-            estimated_buy_volume = X['volume'] * norm.cdf(diff_close / diff_close_std)
-            estimated_sell_volume = X['volume'] - estimated_buy_volume
-            vpin_component = (estimated_buy_volume - estimated_sell_volume).abs() / X['volume']
-            X[f'vpin_{window}'] = vpin_component.rolling(window = window, min_periods = 1).mean()
-
-        return X
-            
 class TokenCategoryFeatures(BaseEstimator, TransformerMixin):
     
     def __init__(self):
@@ -678,156 +654,6 @@ class TokenCategoryFeatures(BaseEstimator, TransformerMixin):
 
     def transform(self, X):
         pass
-
-class MacroeconomicFeatures(BaseEstimator, TransformerMixin):
-    
-    def __init__(self):
-        pass
-
-    def fit(self, X, y=None):
-        return self
-
-    def transform(self, X):
-        pass
-
-class CrossTokenFeatures(BaseEstimator, TransformerMixin):
-    
-    def __init__(self, period, window_sizes):
-        self.period = period
-        self.window_sizes = window_sizes
-
-    def fit(self, X, y=None):
-        return self
-
-    def transform(self, X):
-        eth_usd_coinbase = QUERY(
-            """
-            SELECT
-                time_period_end, 
-                asset_id_base,
-                asset_id_quote,
-                exchange_id,
-                open,
-                high,
-                low,
-                close,
-                volume
-            FROM market_data.ml_dataset
-            WHERE
-                asset_id_base = 'ETH' AND
-                asset_id_quote = 'USDT' AND
-                exchange_id = 'BINANCE'
-            ORDER BY time_period_end
-            """
-        )
-        eth_usd_coinbase['time_period_end'] = pd.to_datetime(eth_usd_coinbase['time_period_end'])
-
-        btc_usd_coinbase = QUERY(
-            """
-            SELECT
-                time_period_end,
-                asset_id_base,
-                asset_id_quote,
-                exchange_id,
-                open,
-                high,
-                low,
-                close,
-                volume
-            FROM market_data.ml_dataset
-            WHERE
-                asset_id_base = 'BTC' AND
-                asset_id_quote = 'USDT' AND
-                exchange_id = 'BINANCE'
-            ORDER BY time_period_end
-            """
-        )
-        btc_usd_coinbase['time_period_end'] = pd.to_datetime(btc_usd_coinbase['time_period_end'])
-
-        if self.period == '1d':
-
-            eth_usd_coinbase = eth_usd_coinbase.set_index('time_period_end').sort_index().resample('1D', label = 'right', closed = 'left').agg({
-                'asset_id_base': 'first',
-                'asset_id_quote': 'first',
-                'exchange_id': 'first',
-                'open': 'first',
-                'high': 'max',
-                'low': 'min',
-                'close': 'last',
-                'volume': 'sum'
-            }).reset_index()
-
-            btc_usd_coinbase = btc_usd_coinbase.set_index('time_period_end').sort_index().resample('1D', label = 'right', closed = 'left').agg({
-                'asset_id_base': 'first',
-                'asset_id_quote': 'first',
-                'exchange_id': 'first',
-                'open': 'first',
-                'high': 'max',
-                'low': 'min',
-                'close': 'last',
-                'volume': 'sum'
-            }).reset_index()
-
-        elif self.period == '15min':
-                
-            eth_usd_coinbase = eth_usd_coinbase.set_index('time_period_end').sort_index().resample('15min', label = 'right', closed = 'left').agg({
-                'asset_id_base': 'first',
-                'asset_id_quote': 'first',
-                'exchange_id': 'first',
-                'open': 'first',
-                'high': 'max',
-                'low': 'min',
-                'close': 'last',
-                'volume': 'sum'
-            }).reset_index()
-
-            btc_usd_coinbase = btc_usd_coinbase.set_index('time_period_end').sort_index().resample('15min', label = 'right', closed = 'left').agg({
-                'asset_id_base': 'first',
-                'asset_id_quote': 'first',
-                'exchange_id': 'first',
-                'open': 'first',
-                'high': 'max',
-                'low': 'min',
-                'close': 'last',
-                'volume': 'sum'
-            }).reset_index()
-
-        elif self.period == '1h':
-                    
-            eth_usd_coinbase = eth_usd_coinbase.set_index('time_period_end').sort_index().resample('1H', label = 'right', closed = 'left').agg({
-                'asset_id_base': 'first',
-                'asset_id_quote': 'first',
-                'exchange_id': 'first',
-                'open': 'first',
-                'high': 'max',
-                'low': 'min',
-                'close': 'last',
-                'volume': 'sum'
-            }).reset_index()
-
-            btc_usd_coinbase = btc_usd_coinbase.set_index('time_period_end').sort_index().resample('1H', label = 'right', closed = 'left').agg({
-                'asset_id_base': 'first',
-                'asset_id_quote': 'first',
-                'exchange_id': 'first',
-                'open': 'first',
-                'high': 'max',
-                'low': 'min',
-                'close': 'last',
-                'volume': 'sum'
-            }).reset_index()
-        # Specify window sizes for TA features
-        ta_features = TAFeatures(self.window_sizes)
-        
-        eth_usd_coinbase = ta_features.fit_transform(eth_usd_coinbase)
-        btc_usd_coinbase = ta_features.fit_transform(btc_usd_coinbase)
-
-        eth_usd_coinbase.drop(columns = ['asset_id_base', 'asset_id_quote', 'exchange_id'], axis = 1, inplace = True)
-        btc_usd_coinbase.drop(columns = ['asset_id_base', 'asset_id_quote', 'exchange_id'], axis = 1, inplace = True)
-
-        merged = pd.merge(X, eth_usd_coinbase, on = 'time_period_end', suffixes = ('', '_ETH'), how = 'left',)
-        merged = pd.merge(merged, btc_usd_coinbase, on = 'time_period_end', suffixes = ('', '_BTC'), how = 'left')
-
-        return merged
 
 class FillNaTransformer(BaseEstimator, TransformerMixin):
     
@@ -849,5 +675,39 @@ class FillNaTransformer(BaseEstimator, TransformerMixin):
                 if X[col].isnull().sum() > 0:
                     # Fill missing values with the rolling mean
                     X[col] = X[col].fillna(X[col].rolling(window = 3, min_periods = 1).mean()).bfill().ffill()
+
+        return X
+
+class TradeFeatures(BaseEstimator, TransformerMixin):
+
+    def __init__(self):
+        pass
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        # Join the trade data with the features
+        asset_id_base = X['asset_id_base'].iloc[0]
+        asset_id_quote = X['asset_id_quote'].iloc[0]
+        exchange_id = X['exchange_id'].iloc[0]
+
+        query = f"""
+            SELECT *
+            FROM market_data.trade_features
+            WHERE
+                asset_id_base = '{asset_id_base}' AND
+                asset_id_quote = '{asset_id_quote}' AND
+                exchange_id = '{exchange_id}'
+            ORDER BY time_period_end
+        """
+
+        trade_features = QUERY(query)
+        trade_features['time_period_end'] = pd.to_datetime(trade_features['time_period_end'])
+        trade_features = trade_features.set_index('time_period_end')
+
+        # Merge the trade features with the original data
+        X = pd.merge(X, trade_features, on = 'time_period_end', suffixes = ('', '__remove'), how = 'left')
+        X = X.drop(columns = [col for col in X.columns if '__remove' in col], axis = 1)
 
         return X

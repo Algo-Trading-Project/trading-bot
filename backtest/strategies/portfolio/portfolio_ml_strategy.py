@@ -13,23 +13,32 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
         'class_name':'PortfolioMLStrategy'
     }
 
+    # Make sure there are > 1 total parameter combinations
+    # or else the optimization will error
     optimize_dict = {
         # Minimum predicted probability for entering a trade
+        # (Controls how conservative the strategy is in entering trades)
         'prediction_threshold': vbt.Param(np.array([
-            0.5, 0.6, 0.7, 0.8
+            0.7, 0.8
         ])),
 
-        # Only take positions in tokens with predicted probabilities 
-        # that are above the prediction threshold and in the top p% of predicted probabilities
-        'target_prediction_percentile': vbt.Param(np.array([
-            0.5, 0.6, 0.7, 0.8
+        # Only take positions in tokens with the n highest predicted probabilities
+        # (Controls how diversified the strategy is)
+        'top_n': vbt.Param(np.array([
+            5
         ])),
+
+        # Allocations for a week sum to this percentage of the portfolio value
+        # (Controls how much risk the strategy takes on)
+        'max_pos_size': vbt.Param(np.array([
+            0.2
+        ]))
     }
 
     backtest_params = {
         'init_cash': 10_000,
-        'fees': 0.001,
-        'slippage': 0.0015,
+        'fees': 0.005,
+        'slippage': 0.005,
         'sl_stop': 'std',
         'tp_stop': 'std',
         'size': 0.05,
@@ -108,7 +117,7 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
         model, model_performance = joblib.load(path)
         return model
 
-    def calculate_size(self, model_probs, prediction_threshold, target_prediction_percentile):
+    def calculate_size(self, model_probs, prediction_threshold, top_n):
         """
         Calculate position sizes from the model's cross-sectional predicted probabilities
         """
@@ -127,10 +136,10 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
         # For each date
         for date in col_indices.index:
             # Rank the predicted probabilities of the assets that are above the threshold
-            rank = model_probs.loc[date, col_indices.loc[date]].rank(ascending=True, pct=True)
+            rank = model_probs.loc[date, col_indices.loc[date]].rank(ascending=True, pct=False)
 
-            # Get tokens that are in the top (1–p)% of the predicted probabilities
-            top_p = (rank >= target_prediction_percentile).astype(int)
+            # Get N highest probability tokens
+            top_p = (rank <= top_n).astype(int)
 
             # Number of tokens in the top p% of predicted probabilities
             num_tokens = top_p.sum()
@@ -147,7 +156,8 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
         self, 
         universe: pd.DataFrame, 
         prediction_threshold: float,
-        target_prediction_percentile: float
+        top_n: float,
+        max_pos_size: float
     ):
         universe.index = pd.to_datetime(universe.index)
         min_date = universe.index.min()
@@ -178,9 +188,11 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
         model_probs = model_probs.sort_index().fillna(0)
         model_probs = model_probs.loc[universe.index]
 
-        size, col_indices = self.calculate_size(model_probs, prediction_threshold, target_prediction_percentile)
+        size, col_indices = self.calculate_size(model_probs, prediction_threshold, top_n)
+        # Position sizes for each day sum to p% of the portfolio value
+        size *= max_pos_size
+
         # Position sizes for each day sum to 0.1 of the portfolio value
-        size = size * 0.1
         entries = size > 0
         exits = pd.DataFrame(np.full(size.shape, False), index = entries.index, columns = entries.columns)
         tp = self.calculate_tp(universe, self.backtest_params, 7)
@@ -194,6 +206,11 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
         sl = sl.loc[universe.index]
         size = size.loc[universe.index]
         td_stop = td_stop.loc[universe.index]
+
+        # Only enter into new positions after 7 days
+        # to ensure all previous positions have been exited
+        for i in range(0, len(entries), 7):
+            entries.iloc[i + 1:i + 7] = False
 
         # Save these parameters temporarily
         sl_stop = self.backtest_params['sl_stop']
@@ -213,8 +230,8 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
             entries = entries,
             exits = exits,
             size = size,
-            sl_stop = sl,
-            tp_stop = tp,
+            tsl_stop = sl,
+            tsl_th = tp,
             td_stop = td_stop,
             time_delta_format = 'rows',
             group_by = True,

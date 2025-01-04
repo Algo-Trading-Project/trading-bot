@@ -63,7 +63,7 @@ class BasePortfolioStrategy:
             rolling_std = universe.close.pct_change().rolling(window, min_periods = 1).std()
             # Calculate the stop-loss price as 2 times the rolling standard deviation of returns
             # below the close price
-            sl = 2 * rolling_std
+            sl = rolling_std * 2
             return sl
 
         else:
@@ -80,7 +80,7 @@ class BasePortfolioStrategy:
             rolling_std = universe.close.pct_change().rolling(window, min_periods = 1).std()
             # Calculate the take-profit price as 2 times the rolling standard deviation of returns
             # above the close price
-            tp = 2 * rolling_std
+            tp = rolling_std * 2
             return tp
 
         else:
@@ -119,6 +119,8 @@ class BasePortfolioStrategy:
             **params
         )
         optimization_metric = getattr(portfolio, self.optimization_metric)
+        if np.isnan(optimization_metric):
+            return 0
 
         # Return Portfolio Performance Metric based on self.optimization_metric
         return optimization_metric

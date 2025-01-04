@@ -62,6 +62,9 @@ class BackTester:
         end_date : str, default = '2022-12-31'
             End date of the backtest.
         """
+        print()
+        print('Initializing BackTester...')
+        print()
 
         # Load the price data for the universe
         price_data = QUERY(
@@ -81,7 +84,14 @@ class BackTester:
         price_data = price_data[price_data['symbol_id'] != 'AMB_USDT_BINANCE']
 
         # Pivot the data to get the asset universe close, high, and low prices
-        self.universe = price_data.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = ['close', 'high', 'low'])
+        self.universe = (
+            price_data
+            .pivot_table(
+                index = 'time_period_end',
+                columns = 'symbol_id',
+                values = ['close', 'high', 'low']
+            ).ffill() # Not all tokens have data across all of history
+        )
         self.universe = self.universe.sort_index()
 
         self.strategies = strategies
@@ -311,6 +321,7 @@ class BackTester:
         -------
         None
         """
+        strat_name = strat.indicator_factory_dict['class_name']
         
         if table == 'backtest_results':
             upsert_query = f"""
@@ -331,7 +342,7 @@ class BackTester:
             DELETE FROM backtest.{table}
             WHERE 
                 symbol_id = '{symbol_id}' AND 
-                strat = '{strat}'
+                strat = '{strat_name}'
             """
             upsert_query = f"""
             INSERT INTO backtest.{table} (symbol_id, strat, date, equity)
@@ -350,7 +361,7 @@ class BackTester:
                 delete_query = f"""
                 DELETE FROM backtest.{table}
                 WHERE 
-                    strat = '{strat}'
+                    strat = '{strat_name}'
                 """
                 insert_query = f"""
                 INSERT INTO backtest.{table} (strat, entry_date, exit_date, symbol_id, size, entry_fees, exit_fees, pnl, pnl_pct, is_long) VALUES {insert_str}
@@ -361,14 +372,14 @@ class BackTester:
                 DELETE FROM backtest.{table}
                 WHERE 
                     symbol_id = '{symbol_id}' AND 
-                    strat = '{strat}'
+                    strat = '{strat_name}'
                 """
                 insert_query = f"""
                 INSERT INTO backtest.{table} (strat, entry_date, exit_date, symbol_id, size, entry_fees, exit_fees, pnl, pnl_pct, is_long) VALUES {insert_str}
                 """
 
             else:
-                raise ValueError(f'Invalid strategy class: {strat}')
+                raise ValueError(f'Invalid strategy class: {strat_name}')
 
             self.conn.sql(delete_query)
             self.conn.sql(insert_query)
@@ -591,7 +602,7 @@ class BackTester:
                 oos_end_i = oos_end_i
             )
 
-            tr = round(1 + ((oos_equity_curve['equity'].iloc[-1] - oos_equity_curve['equity'].iloc[0]) / oos_equity_curve['equity'].iloc[0]), 3)
+            tr = round(oos_equity_curve.iloc[-1]['equity'] / starting_equity, 3)
             
             print()
             print('*** Num. Trades: {}'.format(len(oos_trades)))
@@ -665,6 +676,7 @@ class BackTester:
     ):
         oos_trades_dict = oos_trades.to_dict(orient = 'records')
         insert_str_backtest_trades = ''
+        strategy = strat.indicator_factory_dict['class_name']
 
         if issubclass(type(strat), BasePortfolioStrategy):
             symbol_id = 'PORTFOLIO_UNIVERSE'
@@ -674,7 +686,6 @@ class BackTester:
             raise ValueError(f'Invalid strategy class: {strat}')
 
         for trade in oos_trades_dict:
-            strategy = strat.indicator_factory_dict['class_name']
             token_traded = trade['symbol_id']
             entry_date = trade['entry_date']
             exit_date = trade['exit_date']
@@ -717,7 +728,7 @@ class BackTester:
         insert_str_backtest_result = """
         ('{}', '{}', '{}', '{}', '{}', '{}')
         """.format(
-            strat,
+            strategy,
             symbol_id,
             oos_equity_curves.index[0],
             oos_equity_curves.index[-1],

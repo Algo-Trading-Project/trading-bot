@@ -98,18 +98,16 @@ class WalkForwardOptimization:
                     **params
                 )
                 # Get the maximizing index of the performance metric DataFrame/Series
-                best_param_comb = list(perf.idxmax())
-                
-                # perf is a Series, so there is only one parameter for the strategy
-                if type(best_param_comb) == float or type(best_param_comb) == int:
-                    best_param_comb = {perf.index.name: best_param_comb}
-
-                # perf is a DataFrame, so there are multiple parameters for the strategy
-                else:
-                    best_param_comb = dict(zip(perf.index.names, best_param_comb))
+                best_param_comb = perf.idxmax()
+                print(best_param_comb)
+                best_param_comb = dict(zip(self.strategy.optimize_dict.keys(), best_param_comb))
+                print(best_param_comb)
 
                 # Backtest the strategy on the out-of-sample period with the optimal 
                 # parameters for the in-sample period
+                print()
+                print('best_param_comb', best_param_comb)
+                print()
                 best_is_port = self.strategy.run_strategy_with_parameter_combination(
                     backtest_window, 
                     **best_param_comb
