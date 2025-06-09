@@ -12,7 +12,7 @@ def QUERY(query, conn = None):
     else:
         # Connect to DuckDB
         with duckdb.connect(
-            database = '/Users/louisspencer/Desktop/Trading-Bot-Data-Pipelines/data/database.db',
+            database = '~/LocalData/database.db'
             read_only = False
         ) as conn:
             # Execute the query

@@ -43,9 +43,9 @@ def construct_dataset_for_ml(resample_period):
 
         # Loop through each asset
         for i in range(len(assets_spot)):
-            print(f"Processing asset {i + 1} of {len(assets)} ({assets.iloc[i]['asset_id_base']}/{assets.iloc[i]['asset_id_quote']} on {assets.iloc[i]['exchange_id']})...")
+            print(f"(SPOT) Processing asset {i + 1} of {len(assets_spot)} ({assets_spot.iloc[i]['asset_id_base']}/{assets_spot.iloc[i]['asset_id_quote']} on {assets_spot.iloc[i]['exchange_id']})...")
             # Get the asset
-            asset = assets.iloc[i]
+            asset = assets_spot.iloc[i]
 
             # Get the asset data
             data_spot = conn.sql(
@@ -89,7 +89,7 @@ def construct_dataset_for_ml(resample_period):
             # Interpolate missing values
             numeric_cols_spot = [col for col in data_spot.columns if col not in ('asset_id_base', 'asset_id_quote', 'exchange_id')]
             categorical_cols = ['asset_id_base', 'asset_id_quote', 'exchange_id']
-            data_spot.loc[:,numeric_cols] = data_spot.loc[:,numeric_cols].interpolate(method = 'time')
+            data_spot.loc[:,numeric_cols_spot] = data_spot.loc[:,numeric_cols_spot].interpolate(method = 'time')
 
             for col in categorical_cols:
                 mode_spot = data_spot.loc[:,col].mode().iloc[0]
@@ -110,9 +110,9 @@ def construct_dataset_for_ml(resample_period):
             dataset_spot.append(data_spot)
 
         for i in range(len(assets_futures)):
-            print(f"Processing asset {i + 1} of {len(assets)} ({assets.iloc[i]['asset_id_base']}/{assets.iloc[i]['asset_id_quote']} on {assets.iloc[i]['exchange_id']})...")
+            print(f"(FUTURES) Processing asset {i + 1} of {len(assets_futures)} ({assets_futures.iloc[i]['asset_id_base']}/{assets_futures.iloc[i]['asset_id_quote']} on {assets_futures.iloc[i]['exchange_id']})...")
             # Get the asset
-            asset = assets.iloc[i]
+            asset = assets_futures.iloc[i]
 
             # Get the asset data
             data_futures = conn.sql(
@@ -190,19 +190,19 @@ def construct_dataset_for_ml(resample_period):
 
         # Save if the spot data file does not exist
         if not os.path.exists('/Users/louisspencer/Desktop/Trading-Bot/data/ml_dataset.csv'):
-            dataset.to_csv('/Users/louisspencer/Desktop/Trading-Bot/data/ml_dataset.csv.gz', index = False)
+            dataset.to_csv('/Users/louisspencer/Desktop/Trading-Bot/data/ml_dataset.csv', index = False)
             QUERY(
                 """
-                CREATE OR REPLACE TABLE market_data.ml_dataset as from read_csv('/Users/louisspencer/Desktop/Trading-Bot/data/ml_dataset.csv.gz');
+                CREATE OR REPLACE TABLE market_data.ml_dataset as from read_csv('/Users/louisspencer/Desktop/Trading-Bot/data/ml_dataset.csv');
                 """
             )
 
         # Save if the futures data file does not exist
         if not os.path.exists('/Users/louisspencer/Desktop/Trading-Bot/data/ml_dataset_futures.csv'):
-            dataset_futures.to_csv('/Users/louisspencer/Desktop/Trading-Bot/data/ml_dataset_futures.csv.gz', index = False)
+            dataset_futures.to_csv('/Users/louisspencer/Desktop/Trading-Bot/data/ml_dataset_futures.csv', index = False)
             QUERY(
                 """
-                CREATE OR REPLACE TABLE market_data.ml_dataset_futures as from read_csv('/Users/louisspencer/Desktop/Trading-Bot/data/ml_dataset_futures.csv.gz');
+                CREATE OR REPLACE TABLE market_data.ml_dataset_futures as from read_csv('/Users/louisspencer/Desktop/Trading-Bot/data/ml_dataset_futures.csv');
                 """
             )
 
