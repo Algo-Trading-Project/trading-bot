@@ -190,7 +190,7 @@ def construct_dataset_for_ml(resample_period):
 
         # Save if the spot data file does not exist
         if not os.path.exists('/Users/louisspencer/Desktop/Trading-Bot/data/ml_dataset.csv'):
-            dataset.to_csv('/Users/louisspencer/Desktop/Trading-Bot/data/ml_dataset.csv', index = False)
+            dataset_spot.to_csv('/Users/louisspencer/Desktop/Trading-Bot/data/ml_dataset.csv', index = False)
             QUERY(
                 """
                 CREATE OR REPLACE TABLE market_data.ml_dataset as from read_csv('/Users/louisspencer/Desktop/Trading-Bot/data/ml_dataset.csv');

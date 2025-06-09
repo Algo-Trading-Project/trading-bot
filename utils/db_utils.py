@@ -12,7 +12,7 @@ def QUERY(query, conn = None):
     else:
         # Connect to DuckDB
         with duckdb.connect(
-            database = '~/LocalData/database.db'
+            database = '~/LocalData/database.db',
             read_only = False
         ) as conn:
             # Execute the query
