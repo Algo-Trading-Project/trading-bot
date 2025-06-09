@@ -1,10 +1,14 @@
 import numpy as np
 import vectorbtpro as vbt
 
+# Suppress all warnings
+import warnings
+warnings.filterwarnings('ignore')
+
 class BasePortfolioStrategy:
 
     # Set backtest parameters
-    
+
     # init_cash - Initial cash
     # fees      - Commission percent
     # sl_stop   - Stop-loss percent
@@ -38,10 +42,7 @@ class BasePortfolioStrategy:
     metric_map = {
         'Total Return':'total_return',
         'Max Drawdown':'drawdowns.max_drawdown',
-        'Max Drawdown Duration':'drawdowns.max_duration',
         'Win Rate':'trades.win_rate',
-        'Profit Factor':'trades.profit_factor',
-        'Expectancy':'trades.expectancy',
         'Sharpe Ratio':'sharpe_ratio',
         'Calmar Ratio':'calmar_ratio',
         'Omega Ratio':'omega_ratio',
@@ -52,6 +53,8 @@ class BasePortfolioStrategy:
         if kwargs.get('optimization_metric') is not None:
             self.optimization_metric = self.metric_map[kwargs.get('optimization_metric')]
 
+        self.start_date = None
+
     @staticmethod
     def calculate_sl(universe, backtest_params, window):
         if type(backtest_params['sl_stop']) == float:
@@ -60,10 +63,11 @@ class BasePortfolioStrategy:
 
         elif backtest_params['sl_stop'] == 'std':
             # Calculate the rolling standard deviation over the entire universe
-            rolling_std = universe.close.pct_change().rolling(window, min_periods = 1).std()
+            # Resample to daily frequency
+            rolling_std = universe.close.pct_change().rolling(window).std()
             # Calculate the stop-loss price as 2 times the rolling standard deviation of returns
             # below the close price
-            sl = rolling_std * 2
+            sl = rolling_std
             return sl
 
         else:
@@ -77,10 +81,10 @@ class BasePortfolioStrategy:
 
         elif backtest_params['tp_stop'] == 'std':
             # Calculate the rolling standard deviation over the entire universe
-            rolling_std = universe.close.pct_change().rolling(window, min_periods = 1).std()
+            rolling_std = universe.close.pct_change().rolling(window).std()
             # Calculate the take-profit price as 2 times the rolling standard deviation of returns
             # above the close price
-            tp = rolling_std * 2
+            tp = rolling_std
             return tp
 
         else:
@@ -95,7 +99,7 @@ class BasePortfolioStrategy:
 
         elif backtest_params['size'] == 'std':
             # Calculate the rolling standard deviation over the entire universe
-            rolling_std = universe.pct_change().rolling(window, min_periods = 1).std().values * 100
+            rolling_std = universe.pct_change().rolling(window).std().values * 100
 
             # Calculate the position size as the percentage of the account
             # that should be risked on each trade divided by the standard deviation
@@ -119,8 +123,25 @@ class BasePortfolioStrategy:
             **params
         )
         optimization_metric = getattr(portfolio, self.optimization_metric)
-        if np.isnan(optimization_metric):
-            return 0
+
+        rename_dict = {
+            'Entry Index':'entry_date', 'Exit Index':'exit_date',
+            'Column':'symbol_id', 'Size':'size', 'Entry Fees':'entry_fees',
+            'Exit Fees':'exit_fees', 'PnL':'pnl', 'Return':'pnl_pct', 'Direction':'is_long',
+            'Status':'status'
+        }
+        cols = ['Entry Index', 'Exit Index', 'Column', 'Size', 'Entry Fees', 'Exit Fees', 'PnL', 'Return', 'Direction', 'Status']
+
+        positions = portfolio.positions.records_readable
+        positions = positions[cols]
+        positions = positions.rename(rename_dict, axis = 1)
+
+        # replace nan or inf values with 0
+        if np.isnan(optimization_metric) or np.isinf(optimization_metric):
+            optimization_metric = 0.0
+
+        print(f'Optimization Metric: {optimization_metric}')
+        print()
 
         # Return Portfolio Performance Metric based on self.optimization_metric
         return optimization_metric

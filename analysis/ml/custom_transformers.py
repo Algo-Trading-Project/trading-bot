@@ -1,82 +1,14 @@
 from sklearn.base import BaseEstimator, TransformerMixin
-from scipy.stats import norm
 from utils.db_utils import QUERY
 from analysis.ml.labeling import calculate_triple_barrier_labels
 
 import pandas as pd
 import numpy as np
 import warnings
-import ta
-import duckdb
-import holidays
 
 warnings.filterwarnings("ignore", category=pd.errors.SettingWithCopyWarning)
 warnings.filterwarnings("ignore", category=pd.errors.PerformanceWarning)
 
-class TAFeatures(BaseEstimator, TransformerMixin):
-
-    def __init__(self, windows):
-        self.windows = windows
-
-    def fit(self, X, y=None):
-        return self
-
-    def transform(self, X):
-        X['log_open'] = np.log(X['open'])
-        X['log_high'] = np.log(X['high'])
-        X['log_low'] = np.log(X['low'])
-        X['log_close'] = np.log(X['close'])
-        X['log_volume'] = np.log(X['volume'])
-
-        for window in self.windows:
-            # EMA
-            X[f'ema_{window}'] = ta.trend.ema_indicator(close = X['close'], window = window)
-            X[f'close_above_ema_{window}'] = X['close'] > X[f'ema_{window}']
-            X[f'close_below_ema_{window}'] = X['close'] < X[f'ema_{window}']
-
-            # Log EMA
-            X[f'log_ema_{window}'] = ta.trend.ema_indicator(close = X['log_close'], window = window)
-            X[f'log_close_above_ema_{window}'] = X['log_close'] > X[f'log_ema_{window}']
-            X[f'log_close_below_ema_{window}'] = X['log_close'] < X[f'log_ema_{window}']
-            
-            # Close cross over/under EMA
-            X[f'close_cross_over_ema_{window}'] = (X['close'] > X[f'ema_{window}']) & (X['close'].shift(1) < X[f'ema_{window}'])
-            X[f'close_cross_under_ema_{window}'] = (X['close'] < X[f'ema_{window}']) & (X['close'].shift(1) > X[f'ema_{window}'])
-
-            # Log Close cross over/under EMA
-            X[f'log_close_cross_over_ema_{window}'] = (X['log_close'] > X[f'log_ema_{window}']) & (X['log_close'].shift(1) < X[f'log_ema_{window}'])
-            X[f'log_close_cross_under_ema_{window}'] = (X['log_close'] < X[f'log_ema_{window}']) & (X['log_close'].shift(1) > X[f'log_ema_{window}'])
-
-            # Bollinger Bands
-            X[f'bb_hband_{window}'], X[f'bb_lband_{window}'] = ta.volatility.bollinger_hband(close = X['close'], window = window), ta.volatility.bollinger_lband(close = X['close'], window = window)
-
-            # Log Bollinger Bands
-            X[f'log_bb_hband_{window}'], X[f'log_bb_lband_{window}'] = ta.volatility.bollinger_hband(close = X['log_close'], window = window), ta.volatility.bollinger_lband(close = X['log_close'], window = window)
-            
-            # Close above/below Bollinger Bands
-            X[f'close_above_bb_hband_{window}'] = (X['close'] > X[f'bb_hband_{window}']).astype(int)
-            X[f'close_below_bb_lband_{window}'] = (X['close'] < X[f'bb_lband_{window}']).astype(int)
-
-            # Log Close above/below Bollinger Bands
-            X[f'log_close_above_bb_hband_{window}'] = (X['log_close'] > X[f'log_bb_hband_{window}']).astype(int)
-            X[f'log_close_below_bb_lband_{window}'] = (X['log_close'] < X[f'log_bb_lband_{window}']).astype(int)
-
-            # Close cross over/under Bollinger Bands
-            X[f'close_cross_over_bb_hband_{window}'] = (X['close'] > X[f'bb_hband_{window}']) & (X['close'].shift(1) < X[f'bb_hband_{window}'])
-            X[f'close_cross_under_bb_lband_{window}'] = (X['close'] < X[f'bb_lband_{window}']) & (X['close'].shift(1) > X[f'bb_lband_{window}'])
-
-            # Log Close cross over/under Bollinger Bands
-            X[f'log_close_cross_over_bb_hband_{window}'] = (X['log_close'] > X[f'log_bb_hband_{window}']) & (X['log_close'].shift(1) < X[f'log_bb_hband_{window}'])
-            X[f'log_close_cross_under_bb_lband_{window}'] = (X['log_close'] < X[f'log_bb_lband_{window}']) & (X['log_close'].shift(1) > X[f'log_bb_lband_{window}'])
-            
-            # RSI
-            X[f'rsi_{window}'] = ta.momentum.rsi(close = X['close'], window = window)
-
-            # Log RSI
-            X[f'log_rsi_{window}'] = ta.momentum.rsi(close = X['log_close'], window = window)
-
-        return X
-        
 class TimeFeatures(BaseEstimator, TransformerMixin):
 
     def __init__(self):
@@ -86,15 +18,8 @@ class TimeFeatures(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X):        
-        X['day_of_week'] = X['time_period_end'].dt.dayofweek
-        X['day_of_month'] = X['time_period_end'].dt.day
-        X['month'] = X['time_period_end'].dt.month
-        X['year'] = X['time_period_end'].dt.year
-
-        # Holidays
-        us_holidays = holidays.US()
-        X['is_holiday'] = X['time_period_end'].dt.date.astype(str).map(lambda x: x in us_holidays).astype(int)
-
+        X['day_of_week'] = X['time_period_end'].dt.dayofweek.astype('category')
+        X['month'] = X['time_period_end'].dt.month.astype('category')
         return X
     
 class RollingZScoreScaler(BaseEstimator, TransformerMixin):
@@ -110,24 +35,19 @@ class RollingZScoreScaler(BaseEstimator, TransformerMixin):
 
         triple_barrier_label_cols = [col for col in X if 'triple_barrier_label_h' in col]
         trade_returns_cols = [col for col in X if 'trade_returns_h' in col]
-        cols_1d = [col for col in X if '_1d' in col]
 
         for col in X.columns:
-            if '_rmm_' in col \
-            or 'num_consecutive' in col \
-            or '_ind' in col \
-            or col in ('symbol_id', 'asset_id_base', 'asset_id_quote', 'exchange_id', 'time_period_end') \
+            if col in ('symbol_id', 'asset_id_base', 'asset_id_quote', 'exchange_id', 'time_period_end') \
             or col in triple_barrier_label_cols \
             or col in ('hour', 'day_of_week', 'day_of_month', 'month', 'year', 'is_holiday') \
-            or col in cols_1d \
             or col in trade_returns_cols:
                 continue
 
             for window_size in self.window_sizes:
                 col_name = col + '_rz_' + str(window_size)
-                rolling_mean = X[col].rolling(window = window_size, min_periods = 1).mean()
-                rolling_std = X[col].rolling(window = window_size, min_periods = 1).std()
-                new_col = pd.Series((X[col] - rolling_mean) / rolling_std, name = col_name)
+                rolling_mean = X[col].shift(1).rolling(window = window_size, min_window = 7).mean()
+                rolling_std = X[col].shift(1).rolling(window = window_size, min_window = 7).std()
+                new_col = pd.Series((X[col] - rolling_mean) / rolling_std, name = col_name).clip(-10, 10)
 
                 new_cols.append(new_col)   
 
@@ -148,13 +68,16 @@ class LagFeatures(BaseEstimator, TransformerMixin):
         for col in X.columns:
             if col in ('symbol_id', 'asset_id_base', 'asset_id_quote', 'exchange_id', 'time_period_end') or \
             col in ('hour', 'day_of_week', 'day_of_month', 'month') or \
+            col in ('open', 'high', 'low', 'close', 'volume', 'trades') or \
             'triple_barrier_label' in col or \
             'trade_returns' in col:
                 continue
 
             for lag in self.lags:
-                col_name = col + '_lag_' + str(lag)
-                cols.append(pd.Series(X[col].shift(lag), name = col_name))
+                col_name = str(col) + '_lag_' + str(lag)
+                new_col = X[col].shift(lag)
+                new_col.name = col_name
+                cols.append(new_col)
 
         X = pd.concat([X] + cols, axis = 1)
 
@@ -166,6 +89,7 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
         self.window_sizes = window_sizes
         self.lookback_windows = lookback_windows
 
+        # 1 day ml_dataset
         self.ml_dataset = QUERY(
             """
             SELECT *
@@ -174,267 +98,128 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
             """
         )
         self.ml_dataset['symbol_id'] = self.ml_dataset['asset_id_base'] + '_' + self.ml_dataset['asset_id_quote'] + '_' + self.ml_dataset['exchange_id']
-        tokens = self.ml_dataset['symbol_id'].unique().tolist()
+        self.ml_dataset['time_period_end'] = pd.to_datetime(self.ml_dataset['time_period_end'])
+        tokens = sorted(self.ml_dataset['symbol_id'].unique().tolist())
 
+        # Calculate cross-sectional 1d returns features
+        final_features = []
+
+        # N-day returns
         for window in self.window_sizes:
-            self.ml_dataset[f'returns_{window}'] = 0
-            self.ml_dataset[f'log_returns_{window}'] = 0
+            self.ml_dataset[f'returns_{window}'] = np.nan
+            self.ml_dataset[f'log_returns_{window}'] = np.nan
 
         for token in tokens:
             filter = self.ml_dataset['symbol_id'] == token
             for window in self.window_sizes:
-                self.ml_dataset.loc[filter, f'returns_{window}'] = self.ml_dataset.loc[filter, 'close'].pct_change(window).fillna(0)
-                self.ml_dataset.loc[filter, f'log_returns_{window}'] = np.log(self.ml_dataset.loc[filter, 'close'] / self.ml_dataset.loc[filter, 'close'].shift(window)).fillna(0)
+                if window == 1:
+                    clip_upper_bound = 1
+                elif window == 7:
+                    clip_upper_bound = 3
+                else:
+                    clip_upper_bound = 5
+
+                self.ml_dataset.loc[filter, f'returns_{window}'] = self.ml_dataset.loc[filter, 'close'].pct_change(window).clip(-1, clip_upper_bound)
+                self.ml_dataset.loc[filter, f'log_returns_{window}'] = np.log(self.ml_dataset.loc[filter, 'close'] / self.ml_dataset.loc[filter, 'close'].shift(window))
+
+                for lookback in self.lookback_windows:
+                    # Avg returns
+                    self.ml_dataset.loc[filter, f'avg_returns_{window}_{lookback}'] = self.ml_dataset.loc[filter, f'returns_{window}'].rolling(lookback, min_window = 7).mean()
+                    # Std returns
+                    self.ml_dataset.loc[filter, f'std_returns_{window}_{lookback}'] = self.ml_dataset.loc[filter, f'returns_{window}'].rolling(lookback, min_window = 7).std()
+                    # Sharpe ratio
+                    self.ml_dataset.loc[filter, f'sharpe_ratio_{window}_{lookback}'] = self.ml_dataset.loc[filter, f'avg_returns_{window}_{lookback}'] / self.ml_dataset.loc[filter, f'std_returns_{window}_{lookback}']
+                    # Std negative returns
+                    self.ml_dataset.loc[filter, f'std_negative_returns_{window}_{lookback}'] = self.ml_dataset.loc[filter, f'returns_{window}'].rolling(lookback, min_window = 7).apply(lambda x: np.std(x[x < 0]), raw = False)
+                    # Sortino ratio
+                    self.ml_dataset.loc[filter, f'sortino_ratio_{window}_{lookback}'] = self.ml_dataset.loc[filter, f'avg_returns_{window}_{lookback}'] / self.ml_dataset.loc[filter, f'std_negative_returns_{window}_{lookback}']
 
         for window in self.window_sizes:
-            # Cross-sectional returns for each symbol for each time period
-            pivot = self.ml_dataset.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'returns_{window}')
-            pivot = pivot.fillna(0)
-            pivot.columns = [f'{col}_returns_{window}' for col in pivot.columns]
+            print(f'Calculating cross-sectional returns for window size {window}')
 
-            # Cross-sectional log returns for each symbol for each time period
-            pivot_log = self.ml_dataset.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'log_returns_{window}')
-            pivot_log = pivot_log.fillna(0)
-            pivot_log.columns = [f'{col}_log_returns_{window}' for col in pivot_log.columns]
+            returns_pivot = self.ml_dataset.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'returns_{window}', dropna = False)
+            returns_pivot_percentile = returns_pivot.rank(axis = 1, pct = True)
+            returns_pivot_percentile.columns = [col + f'_returns_percentile_{window}' for col in returns_pivot.columns]
 
-            # Cross-sectional dollar volume for each symbol for each time period
-            self.ml_dataset['dollar_volume'] = self.ml_dataset['close'] * self.ml_dataset['volume']
-            pivot_volume = self.ml_dataset.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = 'dollar_volume')
-            pivot_volume = pivot_volume.fillna(0)
-            pivot_volume.columns = [f'{col}_volume' for col in pivot_volume.columns]
+            final_features.append(returns_pivot_percentile)
 
-            # Cross-sectional number of trades for each symbol for each time period
-            pivot_num_trades = self.ml_dataset.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = 'trades')
-            pivot_num_trades = pivot_num_trades.fillna(0)
-            pivot_num_trades.columns = [f'{col}_num_trades' for col in pivot_num_trades.columns]
+        for lookback in self.lookback_windows:
+            # Cross-sectional sharpe ratios for each symbol for each time period
+            pivot_sharpe = self.ml_dataset.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'sharpe_ratio_1_{lookback}', dropna = False)
+            pivot_sharpe_decile = pivot_sharpe.rank(axis = 1, pct = True)
+            pivot_sharpe_decile.columns = [col + f'_sharpe_percentile_{lookback}' for col in pivot_sharpe_decile.columns]
+            final_features.append(pivot_sharpe_decile)
 
-            # Cross-sectional returns rank for each symbol for each time period
-            pivot_rank = pivot.rank(axis = 1, method = 'first', ascending = False)
-            pivot_rank = pivot_rank.fillna(0)
-            pivot_rank.columns = [f'{col}_returns_{window}_rank' for col in pivot_rank.columns]
+            # Cross-sectional sortino ratios for each symbol for each time period
+            pivot_sortino = self.ml_dataset.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'sortino_ratio_1_{lookback}', dropna = False)
+            pivot_sortino_decile = pivot_sortino.rank(axis = 1, pct = True)
+            pivot_sortino_decile.columns = [col + f'_sortino_percentile_{lookback}' for col in pivot_sortino_decile.columns]
+            final_features.append(pivot_sortino_decile)
 
-            # Cross-sectional returns percentile rank for each symbol for each time period
-            pivot_percentile_rank = pivot.rank(axis = 1, method = 'first', pct = True)
-
-
-            # Average cross-sectional returns for each time period
-            pivot_rank[f'avg_cross_sectional_returns_{window}'] = pivot.mean(axis = 1)
-
-            # Standard deviation of cross-sectional returns for each time period
-            pivot_rank[f'std_cross_sectional_returns_{window}'] = pivot.std(axis = 1)
-
-            # Skewness of cross-sectional returns for each time period
-            pivot_rank[f'skewness_cross_sectional_returns_{window}'] = pivot.skew(axis = 1)
-
-            # Kurtosis of cross-sectional returns for each time period
-            pivot_rank[f'kurtosis_cross_sectional_returns_{window}'] = pivot.kurt(axis = 1)
-
-            # Median of cross-sectional returns for each time period
-            pivot_rank[f'median_cross_sectional_returns_{window}'] = pivot.median(axis = 1)
-
-            # 10th percentile of cross-sectional returns for each time period
-            pivot_rank[f'10th_percentile_cross_sectional_returns_{window}'] = pivot.quantile(0.1, axis = 1)
-
-            # 90th percentile of cross-sectional returns for each time period
-            pivot_rank[f'90th_percentile_cross_sectional_returns_{window}'] = pivot.quantile(0.9, axis = 1)
-
-            # Cross-sectional log returns rank for each symbol for each time period
-            pivot_log_rank = pivot_log.rank(axis = 1, method = 'first', ascending = False)
-            pivot_log_rank = pivot_log_rank.fillna(0)
-            pivot_log_rank.columns = [f'{col}_log_returns_{window}_rank' for col in pivot_log_rank.columns]
-
-            # Cross-sectional log returns percentile rank for each symbol for each time period
-            pivot_log_percentile_rank = pivot_log.rank(axis = 1, method = 'first', pct = True)
-
-            # Average cross-sectional log returns for each time period
-            pivot_log_rank[f'avg_cross_sectional_log_returns_{window}'] = pivot_log.mean(axis = 1)
-
-            # Standard deviation of cross-sectional log returns for each time period
-            pivot_log_rank[f'std_cross_sectional_log_returns_{window}'] = pivot_log.std(axis = 1)
-
-            # Skewness of cross-sectional log returns for each time period
-            pivot_log_rank[f'skewness_cross_sectional_log_returns_{window}'] = pivot_log.skew(axis = 1)
-
-            # Kurtosis of cross-sectional log returns for each time period
-            pivot_log_rank[f'kurtosis_cross_sectional_log_returns_{window}'] = pivot_log.kurt(axis = 1)
-
-            # Median of cross-sectional log returns for each time period
-            pivot_log_rank[f'median_cross_sectional_log_returns_{window}'] = pivot_log.median(axis = 1)
-
-            # 10th percentile of cross-sectional log returns for each time period
-            pivot_log_rank[f'10th_percentile_cross_sectional_log_returns_{window}'] = pivot_log.quantile(0.1, axis = 1)
-
-            # 90th percentile of cross-sectional log returns for each time period
-            pivot_log_rank[f'90th_percentile_cross_sectional_log_returns_{window}'] = pivot_log.quantile(0.9, axis = 1)
-
-            # Cross-sectional volume rank for each symbol for each time period
-            pivot_volume_rank = pivot_volume.rank(axis = 1, method = 'first', ascending = False)
-            pivot_volume_rank = pivot_volume_rank.fillna(0)
-            pivot_volume_rank.columns = [f'{col}_volume_rank' for col in pivot_volume_rank.columns]
-
-            # Cross-sectional volume percentile rank for each symbol for each time period
-            pivot_volume_percentile_rank = pivot_volume.rank(axis = 1, method = 'first', pct = True)
-
-            # Average cross-sectional volume for each time period
-            pivot_volume_rank[f'avg_cross_sectional_volume_{window}'] = pivot_volume.mean(axis = 1)
-
-            # Standard deviation of cross-sectional volume for each time period
-            pivot_volume_rank[f'std_cross_sectional_volume_{window}'] = pivot_volume.std(axis = 1)
-
-            # Skewness of cross-sectional volume for each time period
-            pivot_volume_rank[f'skewness_cross_sectional_volume_{window}'] = pivot_volume.skew(axis = 1)
-
-            # Kurtosis of cross-sectional volume for each time period
-            pivot_volume_rank[f'kurtosis_cross_sectional_volume_{window}'] = pivot_volume.kurt(axis = 1)
-
-            # Median of cross-sectional volume for each time period
-            pivot_volume_rank[f'median_cross_sectional_volume_{window}'] = pivot_volume.median(axis = 1)
-
-            # 10th percentile of cross-sectional volume for each time period
-            pivot_volume_rank[f'10th_percentile_cross_sectional_volume_{window}'] = pivot_volume.quantile(0.1, axis = 1)
-
-            # 90th percentile of cross-sectional volume for each time period
-            pivot_volume_rank[f'90th_percentile_cross_sectional_volume_{window}'] = pivot_volume.quantile(0.9, axis = 1)
-
-            # Cross-sectional number of trades rank for each symbol for each time period
-            pivot_num_trades_rank = pivot_num_trades.rank(axis = 1, method = 'first', ascending = False)
-            pivot_num_trades_rank = pivot_num_trades_rank.fillna(0)
-            pivot_num_trades_rank.columns = [f'{col}_num_trades_rank' for col in pivot_num_trades_rank.columns]
-
-            # Cross-sectional number of trades percentile rank for each symbol for each time period
-            pivot_num_trades_percentile_rank = pivot_num_trades.rank(axis = 1, method = 'first', pct = True)
-
-            # Average cross-sectional number of trades for each time period
-            pivot_num_trades_rank[f'avg_cross_sectional_num_trades_{window}'] = pivot_num_trades.mean(axis = 1)
-
-            # Standard deviation of cross-sectional number of trades for each time period
-            pivot_num_trades_rank[f'std_cross_sectional_num_trades_{window}'] = pivot_num_trades.std(axis = 1)
-
-            # Skewness of cross-sectional number of trades for each time period
-            pivot_num_trades_rank[f'skewness_cross_sectional_num_trades_{window}'] = pivot_num_trades.skew(axis = 1)
-
-            # Kurtosis of cross-sectional number of trades for each time period
-            pivot_num_trades_rank[f'kurtosis_cross_sectional_num_trades_{window}'] = pivot_num_trades.kurt(axis = 1)
-
-            # Median of cross-sectional number of trades for each time period
-            pivot_num_trades_rank[f'median_cross_sectional_num_trades_{window}'] = pivot_num_trades.median(axis = 1)
-
-            # 10th percentile of cross-sectional number of trades for each time period
-            pivot_num_trades_rank[f'10th_percentile_cross_sectional_num_trades_{window}'] = pivot_num_trades.quantile(0.1, axis = 1)
-
-            # 90th percentile of cross-sectional number of trades for each time period
-            pivot_num_trades_rank[f'90th_percentile_cross_sectional_num_trades_{window}'] = pivot_num_trades.quantile(0.9, axis = 1)
-            
-            # Merge the cross-sectional features back into the original data
-            self.ml_dataset = pd.merge(self.ml_dataset, pivot_rank, left_index = True, right_index = True, how = 'left', suffixes = ('', '__remove'))
-            self.ml_dataset = pd.merge(self.ml_dataset, pivot_log_rank, left_index = True, right_index = True, how = 'left', suffixes = ('', '__remove'))
-            self.ml_dataset = pd.merge(self.ml_dataset, pivot_volume_rank, left_index = True, right_index = True, how = 'left', suffixes = ('', '__remove'))
-            self.ml_dataset = pd.merge(self.ml_dataset, pivot_num_trades_rank, left_index = True, right_index = True, how = 'left', suffixes = ('', '__remove'))
-            self.ml_dataset = pd.merge(self.ml_dataset, pivot_percentile_rank, left_index = True, right_index = True, how = 'left', suffixes = ('', '__remove'))
-            self.ml_dataset = pd.merge(self.ml_dataset, pivot_log_percentile_rank, left_index = True, right_index = True, how = 'left', suffixes = ('', '__remove'))
-            self.ml_dataset = pd.merge(self.ml_dataset, pivot_volume_percentile_rank, left_index = True, right_index = True, how = 'left', suffixes = ('', '__remove'))
-            self.ml_dataset = pd.merge(self.ml_dataset, pivot_num_trades_percentile_rank, left_index = True, right_index = True, how = 'left', suffixes = ('', '__remove'))
-
-            # Drop the columns with '__remove' suffix
-            self.ml_dataset = self.ml_dataset.drop(columns = [col for col in self.ml_dataset.columns if '__remove' in col], axis = 1)
-
-        for window in self.window_sizes:
-            self.ml_dataset = self.ml_dataset.drop(columns = [f'returns_{window}', f'log_returns_{window}'], axis = 1)
+        self.final_features = pd.concat(final_features, axis = 1)
+        self.final_features = self.final_features.reset_index()
 
     def fit(self, X, y=None):
         return self
 
     def transform(self, X):
-        def pos_volatility(returns):
-            pos = returns[returns > 0]
-            return pos.mean() / pos.std()
-
-        def neg_volatility(returns):
-            neg = returns[returns < 0]
-            return neg.mean() / neg.std()
-
+        X['dollar_volume'] = X['close'] * X['volume']
         for window_size in self.window_sizes:
+            if window_size == 1:
+                clip_upper_bound = 1
+            elif window_size == 7:
+                clip_upper_bound = 3
+            else:
+                clip_upper_bound = 5
+
+            X[f'returns_{window_size}'] = X['close'].pct_change(window_size).clip(-1, clip_upper_bound)
+            X[f'returns_high_{window_size}'] = X['high'].pct_change(window_size).clip(-1, clip_upper_bound)
+            X[f'returns_low_{window_size}'] = X['low'].pct_change(window_size).clip(-1, clip_upper_bound)
+            X[f'returns_open_{window_size}'] = X['open'].pct_change(window_size).clip(-1, clip_upper_bound)
+            X[f'returns_volume_{window_size}'] = X['volume'].pct_change(window_size).clip(-1, clip_upper_bound)
+            X[f'returns_dollar_volume_{window_size}'] = X['dollar_volume'].pct_change(window_size).clip(-1, clip_upper_bound)
+            X[f'forward_returns_{window_size}'] = X[f'returns_{window_size}'].shift(-window_size)
+
+            # Returns per dollar volume
+            X[f'returns_per_dollar_volume_{window_size}'] = X[f'returns_{window_size}'] / X['dollar_volume']
+
+            # Absolute returns per dollar volume
+            X[f'abs_returns_per_dollar_volume_{window_size}'] = X[f'returns_{window_size}'].abs() / X['dollar_volume']
+
             for lookback_window in self.lookback_windows:
-                # Calculate returns
-                X[f'returns_{window_size}'] = X['close'].pct_change(window_size).fillna(0)
+                # Calculate returns distributional features
+                X[f'avg_returns_{window_size}_{lookback_window}'] = X[f'returns_{window_size}'].rolling(window = lookback_window, min_window = 7).mean()
+                X[f'10th_percentile_returns_{window_size}_{lookback_window}'] = X[f'returns_{window_size}'].rolling(window = lookback_window, min_window = 7).quantile(0.1)
+                X[f'median_returns_{window_size}_{lookback_window}'] = X[f'returns_{window_size}'].rolling(window = lookback_window, min_window = 7).median()
+                X[f'90th_percentile_returns_{window_size}_{lookback_window}'] = X[f'returns_{window_size}'].rolling(window = lookback_window, min_window = 7).quantile(0.9)
+                X[f'std_returns_{window_size}_{lookback_window}'] = X[f'returns_{window_size}'].rolling(window = lookback_window, min_window = 7).std()
+                X[f'skewness_{window_size}_{lookback_window}'] = X[f'returns_{window_size}'].rolling(window = lookback_window, min_window = 7).skew()
+                X[f'kurtosis_{window_size}_{lookback_window}'] = X[f'returns_{window_size}'].rolling(window = lookback_window, min_window = 7).kurt()
 
-                # Calculate rolling mean of returns
-                X[f'avg_returns_{window_size}_{lookback_window}'] = X[f'returns_{window_size}'].rolling(window = lookback_window, min_periods = 1).mean()
+                # Sharpe ratio
+                X[f'sharpe_ratio_{window_size}_{lookback_window}'] = X[f'avg_returns_{window_size}_{lookback_window}'] / X[f'std_returns_{window_size}_{lookback_window}']
 
-                # Calculate 10th percentile of returns
-                X[f'10th_percentile_returns_{window_size}_{lookback_window}'] = X[f'returns_{window_size}'].rolling(window = lookback_window, min_periods = 1).quantile(0.1)
-
-                # Calculate rolling median of returns
-                X[f'median_returns_{window_size}_{lookback_window}'] = X[f'returns_{window_size}'].rolling(window = lookback_window, min_periods = 1).median()
-
-                # Calculate 90th percentile of returns
-                X[f'90th_percentile_returns_{window_size}_{lookback_window}'] = X[f'returns_{window_size}'].rolling(window = lookback_window, min_periods = 1).quantile(0.9)
-
-                # Calculate rolling min of returns
-                X[f'min_returns_{window_size}_{lookback_window}'] = X[f'returns_{window_size}'].rolling(window = lookback_window, min_periods = 1).min()
-
-                # Calculate rolling max of returns
-                X[f'max_returns_{window_size}_{lookback_window}'] = X[f'returns_{window_size}'].rolling(window = lookback_window, min_periods = 1).max()
-                
-                # Calculate rolling standard deviation of returns
-                X[f'volatility_{window_size}_{lookback_window}'] = X[f'returns_{window_size}'].rolling(window = lookback_window, min_periods = 1).std()
-
-                # Calculate rolling skewness of returns
-                X[f'skewness_{window_size}_{lookback_window}'] = X[f'returns_{window_size}'].rolling(window = lookback_window, min_periods = 1).skew()
-
-                # Calculate rolling kurtosis of returns
-                X[f'kurtosis_{window_size}_{lookback_window}'] = X[f'returns_{window_size}'].rolling(window = lookback_window, min_periods = 1).kurt()
-                
-                # Calculate log returns
-                X[f'log_returns_{window_size}'] = np.log(X['close'] / X['close'].shift(window_size))
-
-                # Calculate rolling mean of log returns
-                X[f'avg_log_returns_{window_size}_{lookback_window}'] = X[f'log_returns_{window_size}'].rolling(window = lookback_window, min_periods = 1).mean()
-
-                # Calculate 10th percentile of log returns
-                X[f'10th_percentile_log_returns_{window_size}_{lookback_window}'] = X[f'log_returns_{window_size}'].rolling(window = lookback_window, min_periods = 1).quantile(0.1)
-
-                # Calculate rolling median of log returns
-                X[f'median_log_returns_{window_size}_{lookback_window}'] = X[f'log_returns_{window_size}'].rolling(window = lookback_window, min_periods = 1).median()
-
-                # Calculate 90th percentile of log returns
-                X[f'90th_percentile_log_returns_{window_size}_{lookback_window}'] = X[f'log_returns_{window_size}'].rolling(window = lookback_window, min_periods = 1).quantile(0.9)
-
-                # Calculate rolling min of log returns
-                X[f'min_log_returns_{window_size}_{lookback_window}'] = X[f'log_returns_{window_size}'].rolling(window = lookback_window, min_periods = 1).min()
-
-                # Calculate rolling max of log returns
-                X[f'max_log_returns_{window_size}_{lookback_window}'] = X[f'log_returns_{window_size}'].rolling(window = lookback_window, min_periods = 1).max()
-
-                # Calculate rolling standard deviation of log returns
-                X[f'volatility_log_{window_size}_{lookback_window}'] = X[f'log_returns_{window_size}'].rolling(window = lookback_window, min_periods = 1).std()
-
-                # Calculate rolling skewness of log returns
-                X[f'skewness_log_{window_size}_{lookback_window}'] = X[f'log_returns_{window_size}'].rolling(window = lookback_window, min_periods = 1).skew()
-
-                # Calculate rolling kurtosis of log returns
-                X[f'kurtosis_log_{window_size}_{lookback_window}'] = X[f'log_returns_{window_size}'].rolling(window = lookback_window, min_periods = 1).kurt()
-
-                # Positive / Negative Volatility ratio (returns)
-                X[f'pos_volatility_ratio_{lookback_window}'] = X[f'returns_1'].rolling(window = lookback_window, min_periods = 1).apply(pos_volatility, raw = True)
-                X[f'neg_volatility_ratio_{lookback_window}'] = X[f'returns_1'].rolling(window = lookback_window, min_periods = 1).apply(neg_volatility, raw = True)
-                X[f'pos_neg_volatility_ratio_{lookback_window}'] = (X[f'returns_1'].rolling(window = lookback_window, min_periods = 1).apply(pos_volatility, raw = True) / X[f'returns_1'].rolling(window = lookback_window, min_periods = 1).apply(neg_volatility, raw = True)).replace([np.inf, -np.inf], np.nan)
-
-                # Positive / Negative Volatility ratio (log returns)
-                X[f'pos_volatility_ratio_log_{lookback_window}'] = X[f'log_returns_1'].rolling(window = lookback_window, min_periods = 1).apply(pos_volatility, raw = True)
-                X[f'neg_volatility_ratio_log_{lookback_window}'] = X[f'log_returns_1'].rolling(window = lookback_window, min_periods = 1).apply(neg_volatility, raw = True)
-                X[f'pos_neg_volatility_ratio_log_{lookback_window}'] = (X[f'log_returns_1'].rolling(window = lookback_window, min_periods = 1).apply(pos_volatility, raw = True) / X[f'log_returns_1'].rolling(window = lookback_window, min_periods = 1).apply(neg_volatility, raw = True)).replace([np.inf, -np.inf], np.nan)
+                # Sortino ratio
+                X[f'std_negative_returns_{window_size}_{lookback_window}'] = X[f'returns_{window_size}'].rolling(window = lookback_window, min_window = 7).apply(lambda x: np.std(x[x < 0]), raw = False)
+                X[f'sortino_ratio_{window_size}_{lookback_window}'] = X[f'avg_returns_{window_size}_{lookback_window}'] / X[f'std_negative_returns_{window_size}_{lookback_window}']
 
         # Cross-sectional rank features for current token and time period
-        curr_token = X['symbol_id'].iloc[0]
-        # Columns specific to the current token and columns for cross-sectional metrics
-        cols = [col for col in self.ml_dataset.columns if (any([x in col for x in ('avg', 'std', 'skewness', 'kurtosis', 'median', '10th_percentile', '90th_percentile')])) or (col[:len(curr_token)] == curr_token and 'rank' in col)]
+        symbol_id = X.iloc[0]['symbol_id']
 
-        X = pd.merge(X, self.ml_dataset[cols + ['time_period_end', 'symbol_id']], on = ['time_period_end', 'symbol_id'], how = 'left', suffixes = ('', '__remove'))
+        # Get cross_sectional decile columns for the current token
+        cross_sectional_decile_cols = [col for col in self.final_features.columns if col.startswith(symbol_id)]
+        valid_cols = cross_sectional_decile_cols
+
+        # Merge data to final features
+        X = pd.merge(X, self.final_features[['time_period_end'] + valid_cols], on = 'time_period_end', how = 'left', suffixes = ('', '__remove'))
+
+        # Drop the columns with '__remove' suffix
         X = X.drop(columns = [col for col in X.columns if '__remove' in col], axis = 1)
 
-        # Rename cross-sectional features to a standard format
-        X = X.rename(columns = {col: col.replace(curr_token + '_', '') for col in X.columns if curr_token in col})
+        # Rename the cross-sectional decile columns to remove the symbol_id from it
+        for col in cross_sectional_decile_cols:
+            new_col = col.replace(symbol_id + '_', '')
+            X = X.rename(columns = {col: new_col})
 
         return X
     
@@ -530,8 +315,8 @@ class CorrelationFeatures(BaseEstimator, TransformerMixin):
         btc_usd_coinbase['time_period_end'] = pd.to_datetime(btc_usd_coinbase['time_period_end'])
 
         for window_size in self.window_sizes:
-            eth_usd_coinbase[f'returns_{window_size}'] = eth_usd_coinbase['close'].pct_change(window_size).fillna(0)
-            btc_usd_coinbase[f'returns_{window_size}'] = btc_usd_coinbase['close'].pct_change(window_size).fillna(0)
+            eth_usd_coinbase[f'returns_{window_size}'] = eth_usd_coinbase['close'].pct_change(window_size)
+            btc_usd_coinbase[f'returns_{window_size}'] = btc_usd_coinbase['close'].pct_change(window_size)
 
         X.time_period_end = pd.to_datetime(X.time_period_end)
 
@@ -541,9 +326,9 @@ class CorrelationFeatures(BaseEstimator, TransformerMixin):
         for window_size in self.window_sizes:
             for lookback_window in self.lookback_windows:
                 # Calculate autocorrelation of returns
-                X[f'autocorrelation_returns_{window_size}_{lookback_window}'] = X[f'returns_{window_size}'].rolling(window = lookback_window, min_periods = 1).corr(X[f'returns_{window_size}'])
+                X[f'autocorrelation_returns_{window_size}_{lookback_window}'] = X[f'returns_{window_size}'].rolling(window = lookback_window, min_window = 7).corr(X[f'returns_{window_size}'])
 
-                merged_rolling = merged[f'returns_{window_size}'].rolling(window = lookback_window, min_periods = 1)
+                merged_rolling = merged[f'returns_{window_size}'].rolling(window = lookback_window, min_window = 7)
 
                 # Calculate cross-correlation of returns with ETH
                 X[f'cross_correlation_returns_{window_size}_{lookback_window}_ETH'] = merged_rolling.corr(merged[f'returns_{window_size}_ETH'])
@@ -644,17 +429,6 @@ class OrderBookFeatures(BaseEstimator, TransformerMixin):
         
         return X
 
-class TokenCategoryFeatures(BaseEstimator, TransformerMixin):
-    
-    def __init__(self):
-        pass
-
-    def fit(self, X, y=None):
-        return self
-
-    def transform(self, X):
-        pass
-
 class FillNaTransformer(BaseEstimator, TransformerMixin):
     
     def __init__(self):
@@ -667,47 +441,323 @@ class FillNaTransformer(BaseEstimator, TransformerMixin):
         for col in X.columns:
             if col == 'time_period_end':
                 continue
-            elif X[col].dtype in ('O', 'object'):
+            elif X[col].dtype in ('O', 'object', 'category'):
                 if X[col].isnull().sum() > 0:
                     mode = X[col].mode().loc[0]
                     X[col] = X[col].fillna(mode)
             else:
                 if X[col].isnull().sum() > 0:
                     # Fill missing values with the rolling mean
-                    X[col] = X[col].fillna(X[col].rolling(window = 3, min_periods = 1).mean()).bfill().ffill()
+                    X[col] = X[col].fillna(X[col].rolling(window = 7).mean().fillna(0))
 
         return X
 
 class TradeFeatures(BaseEstimator, TransformerMixin):
 
-    def __init__(self):
-        pass
+    def __init__(self, windows, lookback_windows = (30, 60, 90, 180)):
+        self.windows = windows
+        self.lookback_windows = lookback_windows
+
+        trade_features = QUERY(
+            """
+            SELECT *
+            FROM market_data.trade_features_rolling
+            ORDER BY asset_id_base, asset_id_quote, exchange_id, time_period_end
+            """
+        )
+        trade_features['symbol_id'] = trade_features['asset_id_base'] + '_' + trade_features['asset_id_quote'] + '_' + trade_features['exchange_id']
+        trade_features['time_period_end'] = pd.to_datetime(trade_features['time_period_end'])
+
+        final_features = []
+
+        for window in self.windows:
+            # Cross-sectional features
+            print(f'Calculating cross-sectional features for window size {window}...')
+            print()
+            total_buy_dollar_volume_pivot = trade_features.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'total_buy_dollar_volume_{window}d', dropna=False).sort_index()
+            total_buy_dollar_volume_percentile = total_buy_dollar_volume_pivot.rank(axis=1, pct=True)
+            total_buy_dollar_volume_percentile.columns = [f'{col}_total_buy_dollar_volume_percentile_{window}d' for col in total_buy_dollar_volume_percentile.columns]
+
+            total_sell_dollar_volume_pivot = trade_features.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'total_sell_dollar_volume_{window}d', dropna=False).sort_index()
+            total_sell_dollar_volume_percentile = total_sell_dollar_volume_pivot.rank(axis=1, pct=True)
+            total_sell_dollar_volume_percentile.columns = [f'{col}_total_sell_dollar_volume_percentile_{window}d' for col in total_sell_dollar_volume_percentile.columns]
+
+            num_buys_pivot = trade_features.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'num_buys_{window}d', dropna=False).sort_index()
+            num_buys_percentile = num_buys_pivot.rank(axis=1, pct=True)
+            num_buys_percentile.columns = [f'{col}_num_buys_percentile_{window}d' for col in num_buys_percentile.columns]
+
+            num_sells_pivot = trade_features.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'num_sells_{window}d', dropna=False).sort_index()
+            num_sells_percentile = num_sells_pivot.rank(axis=1, pct=True)
+            num_sells_percentile.columns = [f'{col}_num_sells_percentile_{window}d' for col in num_sells_percentile.columns]
+
+            pct_buys_pivot = trade_features.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'pct_buys_{window}d', dropna=False).sort_index()
+            pct_buys_percentile = pct_buys_pivot.rank(axis=1, pct=True)
+            pct_buys_percentile.columns = [f'{col}_pct_buys_percentile_{window}d' for col in pct_buys_percentile.columns]
+
+            pct_sells_pivot = trade_features.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'pct_sells_{window}d', dropna=False).sort_index()
+            pct_sells_percentile = pct_sells_pivot.rank(axis=1, pct=True)
+            pct_sells_percentile.columns = [f'{col}_pct_sells_percentile_{window}d' for col in pct_sells_percentile.columns]
+
+            trade_dollar_volume_imbalance_pivot = trade_features.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'trade_imbalance_{window}d', dropna=False).sort_index()
+            trade_dollar_volume_imbalance_percentile = trade_dollar_volume_imbalance_pivot.rank(axis=1, pct=True)
+            trade_dollar_volume_imbalance_percentile.columns = [f'{col}_trade_dollar_volume_imbalance_percentile_{window}d' for col in trade_dollar_volume_imbalance_percentile.columns]
+
+            pct_buy_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id',values=f'pct_buy_dollar_volume_{window}d', dropna=False).sort_index()
+            pct_buy_dollar_volume_percentile = pct_buy_dollar_volume_pivot.rank(axis=1, pct=True)
+            pct_buy_dollar_volume_percentile.columns = [f'{col}_pct_buy_dollar_volume_percentile_{window}d' for col in pct_buy_dollar_volume_percentile.columns]
+
+            pct_sell_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id',values=f'pct_sell_dollar_volume_{window}d', dropna=False).sort_index()
+            pct_sell_dollar_volume_percentile = pct_sell_dollar_volume_pivot.rank(axis=1, pct=True)
+            pct_sell_dollar_volume_percentile.columns = [f'{col}_pct_sell_dollar_volume_percentile_{window}d' for col in pct_sell_dollar_volume_percentile.columns]
+
+            # Append the features to the final list
+            final_features.append(total_buy_dollar_volume_percentile)
+            final_features.append(total_sell_dollar_volume_percentile)
+            final_features.append(num_buys_percentile)
+            final_features.append(num_sells_percentile)
+            final_features.append(pct_buys_percentile)
+            final_features.append(pct_sells_percentile)
+            final_features.append(trade_dollar_volume_imbalance_percentile)
+            final_features.append(pct_buy_dollar_volume_percentile)
+            final_features.append(pct_sell_dollar_volume_percentile)
+
+        trade_features = pd.concat(final_features, axis = 1)
+        self.trade_features = trade_features.reset_index()
 
     def fit(self, X, y=None):
         return self
 
     def transform(self, X):
-        # Join the trade data with the features
-        asset_id_base = X['asset_id_base'].iloc[0]
-        asset_id_quote = X['asset_id_quote'].iloc[0]
-        exchange_id = X['exchange_id'].iloc[0]
-
-        query = f"""
+        # Cross-sectional rank features for current token and time period
+        asset_id_base, asset_id_quote, exchange_id = X['symbol_id'].iloc[0].split('_')
+        symbol_id = f'{asset_id_base}_{asset_id_quote}_{exchange_id}'
+        curr_token_trade_features = QUERY(
+            f"""
             SELECT *
-            FROM market_data.trade_features
+            FROM market_data.trade_features_rolling
             WHERE
                 asset_id_base = '{asset_id_base}' AND
                 asset_id_quote = '{asset_id_quote}' AND
                 exchange_id = '{exchange_id}'
-            ORDER BY time_period_end
-        """
+            ORDER BY time_period_end 
+            """
+        )
+        curr_token_trade_features['time_period_end'] = pd.to_datetime(curr_token_trade_features['time_period_end'])
 
-        trade_features = QUERY(query)
-        trade_features['time_period_end'] = pd.to_datetime(trade_features['time_period_end'])
-        trade_features = trade_features.set_index('time_period_end')
+        for window in self.windows:
+            for lookback in self.lookback_windows:
+                # Rolling five moments of pct_buys
+                curr_token_trade_features[f'avg_pct_buys_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_buys_{window}d'].rolling(window = lookback, min_window = 7).mean()
+                curr_token_trade_features[f'std_pct_buys_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_buys_{window}d'].rolling(window = lookback, min_window = 7).std()
+                curr_token_trade_features[f'skewness_pct_buys_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_buys_{window}d'].rolling(window = lookback, min_window = 7).skew()
+                curr_token_trade_features[f'kurtosis_pct_buys_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_buys_{window}d'].rolling(window = lookback, min_window = 7).kurt()
+                curr_token_trade_features[f'median_pct_buys_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_buys_{window}d'].rolling(window = lookback, min_window = 7).median()
+                curr_token_trade_features[f'10th_percentile_pct_buys_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_buys_{window}d'].rolling(window = lookback, min_window = 7).quantile(0.1)
+                curr_token_trade_features[f'90th_percentile_pct_buys_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_buys_{window}d'].rolling(window = lookback, min_window = 7).quantile(0.9)
 
-        # Merge the trade features with the original data
-        X = pd.merge(X, trade_features, on = 'time_period_end', suffixes = ('', '__remove'), how = 'left')
+                # Rolling five moments of pct_sells
+                curr_token_trade_features[f'avg_pct_sells_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_sells_{window}d'].rolling(window = lookback, min_window = 7).mean()
+                curr_token_trade_features[f'std_pct_sells_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_sells_{window}d'].rolling(window = lookback, min_window = 7).std()
+                curr_token_trade_features[f'skewness_pct_sells_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_sells_{window}d'].rolling(window = lookback, min_window = 7).skew()
+                curr_token_trade_features[f'kurtosis_pct_sells_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_sells_{window}d'].rolling(window = lookback, min_window = 7).kurt()
+                curr_token_trade_features[f'median_pct_sells_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_sells_{window}d'].rolling(window = lookback, min_window = 7).median()
+                curr_token_trade_features[f'10th_percentile_pct_sells_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_sells_{window}d'].rolling(window = lookback, min_window = 7).quantile(0.1)
+                curr_token_trade_features[f'90th_percentile_pct_sells_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_sells_{window}d'].rolling(window = lookback, min_window = 7).quantile(0.9)
+
+                # Rolling five moments of trade dollar volume imbalance
+                curr_token_trade_features[f'avg_trade_dollar_volume_imbalance_{window}d_{lookback}d'] = curr_token_trade_features[f'trade_imbalance_{window}d'].rolling(window = lookback, min_window = 7).mean()
+                curr_token_trade_features[f'std_trade_dollar_volume_imbalance_{window}d_{lookback}d'] = curr_token_trade_features[f'trade_imbalance_{window}d'].rolling(window = lookback, min_window = 7).std()
+                curr_token_trade_features[f'skewness_trade_dollar_volume_imbalance_{window}d_{lookback}d'] = curr_token_trade_features[f'trade_imbalance_{window}d'].rolling(window = lookback, min_window = 7).skew()
+                curr_token_trade_features[f'kurtosis_trade_dollar_volume_imbalance_{window}d_{lookback}d'] = curr_token_trade_features[f'trade_imbalance_{window}d'].rolling(window = lookback, min_window = 7).kurt()
+                curr_token_trade_features[f'median_trade_dollar_volume_imbalance_{window}d_{lookback}d'] = curr_token_trade_features[f'trade_imbalance_{window}d'].rolling(window = lookback, min_window = 7).median()
+                curr_token_trade_features[f'10th_percentile_trade_dollar_volume_imbalance_{window}d_{lookback}d'] = curr_token_trade_features[f'trade_imbalance_{window}d'].rolling(window = lookback, min_window = 7).quantile(0.1)
+                curr_token_trade_features[f'90th_percentile_trade_dollar_volume_imbalance_{window}d_{lookback}d'] = curr_token_trade_features[f'trade_imbalance_{window}d'].rolling(window = lookback, min_window = 7).quantile(0.9)
+
+                # Rolling five moments of pct buy dollar volume
+                curr_token_trade_features[f'avg_pct_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_buy_dollar_volume_{window}d'].rolling(window = lookback, min_window = 7).mean()
+                curr_token_trade_features[f'std_pct_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_buy_dollar_volume_{window}d'].rolling(window = lookback, min_window = 7).std()
+                curr_token_trade_features[f'skewness_pct_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_buy_dollar_volume_{window}d'].rolling(window = lookback, min_window = 7).skew()
+                curr_token_trade_features[f'kurtosis_pct_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_buy_dollar_volume_{window}d'].rolling(window = lookback, min_window = 7).kurt()
+                curr_token_trade_features[f'median_pct_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_buy_dollar_volume_{window}d'].rolling(window = lookback, min_window = 7).median()
+                curr_token_trade_features[f'10th_percentile_pct_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_buy_dollar_volume_{window}d'].rolling(window = lookback, min_window = 7).quantile(0.1)
+                curr_token_trade_features[f'90th_percentile_pct_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_buy_dollar_volume_{window}d'].rolling(window = lookback, min_window = 7).quantile(0.9)
+
+                # Rolling five moments of pct sell dollar volume
+                curr_token_trade_features[f'avg_pct_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_sell_dollar_volume_{window}d'].rolling(window = lookback, min_window = 7).mean()
+                curr_token_trade_features[f'std_pct_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_sell_dollar_volume_{window}d'].rolling(window = lookback, min_window = 7).std()
+                curr_token_trade_features[f'skewness_pct_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_sell_dollar_volume_{window}d'].rolling(window = lookback, min_window = 7).skew()
+                curr_token_trade_features[f'kurtosis_pct_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_sell_dollar_volume_{window}d'].rolling(window = lookback, min_window = 7).kurt()
+                curr_token_trade_features[f'median_pct_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_sell_dollar_volume_{window}d'].rolling(window = lookback, min_window = 7).median()
+                curr_token_trade_features[f'10th_percentile_pct_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_sell_dollar_volume_{window}d'].rolling(window = lookback, min_window = 7).quantile(0.1)
+                curr_token_trade_features[f'90th_percentile_pct_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_sell_dollar_volume_{window}d'].rolling(window = lookback, min_window = 7).quantile(0.9)
+
+        cross_sectional_percentile_cols = [col for col in self.trade_features.columns if col.startswith(symbol_id)]
+
+        # Merge current token trade features with the cross-sectional percentile features
+        curr_token_trade_features = pd.merge(curr_token_trade_features, self.trade_features[['time_period_end'] + cross_sectional_percentile_cols], on = 'time_period_end', how = 'left', suffixes = ('', '__remove'))
+        curr_token_trade_features = curr_token_trade_features.drop(columns = [col for col in curr_token_trade_features.columns if '__remove' in col], axis = 1)
+
+        # Rename the cross-sectional percentile columns to remove the symbol_id from it
+        for col in cross_sectional_percentile_cols:
+            new_col = col.replace(symbol_id + '_', '')
+            curr_token_trade_features = curr_token_trade_features.rename(columns = {col: new_col})
+
+        # Merge data to final features
+        X = pd.merge(X, curr_token_trade_features, on = 'time_period_end', suffixes = ('', '__remove'), how = 'left')
+
+        # Drop the columns with '__remove' suffix
         X = X.drop(columns = [col for col in X.columns if '__remove' in col], axis = 1)
+
+        # # Drop duplicate columns
+        X = X.loc[:,~X.columns.duplicated()].copy()
+
+        return X
+
+class RiskFeatures(BaseEstimator, TransformerMixin):
+    def __init__(self, windows, lookback_windows):
+        self.windows = windows
+        self.lookback_windows = lookback_windows
+
+        # 1 day ml_dataset
+        self.ml_dataset = QUERY(
+            """
+            SELECT *
+            FROM market_data.ml_dataset
+            ORDER BY asset_id_base, asset_id_quote, exchange_id, time_period_end
+            """
+        )
+        self.ml_dataset['symbol_id'] = self.ml_dataset['asset_id_base'] + '_' + self.ml_dataset['asset_id_quote'] + '_' + self.ml_dataset['exchange_id']
+        self.ml_dataset['time_period_end'] = pd.to_datetime(self.ml_dataset['time_period_end'])
+        # Set index to time_period_end for consistent indexing when calculating rolling risk features
+        self.ml_dataset = self.ml_dataset.set_index('time_period_end').sort_index()
+
+        tokens = sorted(self.ml_dataset['symbol_id'].unique().tolist())
+
+        # Calculate cross-sectional risk features
+        final_features = []
+
+        # N-day returns
+        for window in self.windows:
+            self.ml_dataset[f'returns_{window}'] = np.nan
+
+        for token in tokens:
+            filter = self.ml_dataset['symbol_id'] == token
+            for window in self.windows:
+                if window == 1:
+                    clip_upper_bound = 1
+                elif window == 7:
+                    clip_upper_bound = 3
+                else:
+                    clip_upper_bound = 5
+
+                # Calculate returns
+                self.ml_dataset.loc[filter, f'returns_{window}'] = self.ml_dataset.loc[filter, 'close'].pct_change(window).clip(-1, clip_upper_bound)
+
+        btc = self.ml_dataset[self.ml_dataset['symbol_id'] == 'BTC_USDT_BINANCE'][[f'returns_{window}' for window in self.windows]]
+        eth = self.ml_dataset[self.ml_dataset['symbol_id'] == 'ETH_USDT_BINANCE'][[f'returns_{window}' for window in self.windows]]
+        market = pd.merge(btc, eth, left_index = True, right_index = True, suffixes = ('_btc', '_eth'), how = 'outer')
+
+        for window in self.windows:
+            # Calculate market returns
+            market[f'market_returns_{window}'] = market[[f'returns_{window}_btc', f'returns_{window}_eth']].mean(axis = 1)
+
+        # Merge market returns with the ml_dataset for rolling beta and alpha calculations later
+        self.ml_dataset = pd.merge(self.ml_dataset, market, left_index = True, right_index = True, how = 'left')
+
+        for token in tokens:
+            print(f'Calculating risk features for {token}')
+            filter = self.ml_dataset['symbol_id'] == token
+            for window in self.windows:
+                for lookback_window in self.lookback_windows:
+                    # Rolling beta
+                    self.ml_dataset.loc[filter, f'beta_{window}d_{lookback_window}d'] = (
+                        self.ml_dataset.loc[filter, f'returns_{window}']
+                        .rolling(window = lookback_window)
+                        .cov(self.ml_dataset.loc[filter, f'market_returns_{window}'])
+                        / self.ml_dataset.loc[filter, f'market_returns_{window}'].rolling(window = lookback_window, min_windows = 7).var()
+                    )
+
+                    # Rolling alpha
+                    self.ml_dataset.loc[filter, f'alpha_{window}d_{lookback_window}d'] = (
+                        self.ml_dataset.loc[filter, f'returns_{window}']
+                        .rolling(window = lookback_window)
+                        .mean()
+                        - self.ml_dataset.loc[filter, f'beta_{window}d_{lookback_window}d'] * self.ml_dataset.loc[filter, f'market_returns_{window}'].rolling(window = lookback_window, min_windows = 7).mean()
+                    )
+
+                    # Rolling alpha_div_beta
+                    self.ml_dataset.loc[filter, f'alpha_div_beta_{window}d_{lookback_window}d'] = (
+                        self.ml_dataset.loc[filter, f'alpha_{window}d_{lookback_window}d'] / self.ml_dataset.loc[filter, f'beta_{window}d_{lookback_window}d']
+                    )
+
+        # Cross-sectional risk features
+        for window in self.windows:
+            for lookback_window in self.lookback_windows:
+                if lookback_window is None:
+                    continue
+
+                # Cross-sectional alpha
+                alpha_pivot = self.ml_dataset.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'alpha_{window}d_{lookback_window}d', dropna = False)
+                cs_alpha_percentile = alpha_pivot.rank(axis = 1, pct = True)
+                cs_alpha_percentile.columns = [col + f'_alpha_percentile_{lookback_window}' for col in cs_alpha_percentile.columns]
+
+                alpha_pivot[f'cs_avg_alpha_{window}d_{lookback_window}d'] = alpha_pivot.mean(axis = 1)
+                alpha_pivot[f'avg_cs_avg_alpha_{window}d_{lookback_window}d'] = alpha_pivot[f'cs_avg_alpha_{window}d_{lookback_window}d'].rolling(window = lookback_window, min_windows = 7).mean()
+
+                # Cross-sectional beta
+                beta_pivot = self.ml_dataset.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'beta_{window}d_{lookback_window}d', dropna = False)
+                cs_beta_percentile = beta_pivot.rank(axis = 1, pct = True)
+                cs_beta_percentile.columns = [col + f'_beta_percentile_{lookback_window}' for col in cs_beta_percentile.columns]
+
+                beta_pivot[f'cs_avg_beta_{window}d_{lookback_window}d'] = beta_pivot.mean(axis = 1)
+                beta_pivot[f'avg_cs_avg_beta_{window}d_{lookback_window}d'] = beta_pivot[f'cs_avg_beta_{window}d_{lookback_window}d'].rolling(window = lookback_window, min_windows = 7).mean()
+
+                # Cross-sectional alpha_div_beta
+                alpha_div_beta_pivot = self.ml_dataset.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'alpha_div_beta_{window}d_{lookback_window}d', dropna = False)
+                cs_alpha_div_beta_percentile = alpha_div_beta_pivot.rank(axis = 1, pct = True)
+                cs_alpha_div_beta_percentile.columns = [col + f'_alpha_div_beta_percentile_{lookback_window}' for col in cs_alpha_div_beta_percentile.columns]
+
+                final_features.append(alpha_pivot)
+                final_features.append(beta_pivot)
+                final_features.append(alpha_div_beta_pivot)
+                final_features.append(cs_alpha_div_beta_percentile)
+                final_features.append(cs_alpha_percentile)
+                final_features.append(cs_beta_percentile)
+
+        final_features = pd.concat(final_features, axis = 1)
+        self.risk_features = final_features.reset_index()
+        self.ml_dataset = self.ml_dataset.reset_index()
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        # Cross-sectional rank features for current token and time period
+        symbol_id = X['symbol_id'].iloc[0]
+
+        alpha_cols = list(set([col for col in self.ml_dataset.columns if 'alpha' in col]))
+        beta_cols = list(set([col for col in self.ml_dataset.columns if 'beta' in col]))
+        alpha_div_beta_cols = list(set([col for col in self.ml_dataset.columns if 'alpha_div_beta' in col]))
+        risk_cols = [col for col in self.risk_features.columns if col.startswith(symbol_id + '_')]
+
+        # Filter the ml_dataset for the current token and columns of interest
+        data = self.ml_dataset[self.ml_dataset['symbol_id'] == symbol_id][['time_period_end'] + alpha_cols + beta_cols + alpha_div_beta_cols]
+
+        # Merge X to ml_dataset for rolling alpha and beta features
+        X = pd.merge(X, data, on = 'time_period_end', suffixes = ('', '__remove'), how = 'left')
+
+        # Merge data to risk_features for cross-sectional risk features
+        X = pd.merge(X, self.risk_features[['time_period_end'] + risk_cols], on = 'time_period_end', suffixes = ('', '__remove'), how = 'left')
+
+        # Drop the columns with '__remove' suffix
+        X = X.drop(columns = [col for col in X.columns if '__remove' in col], axis = 1)
+
+        # Rename the cross-sectional decile columns to remove the symbol_id from it
+        for col in risk_cols:
+            new_col = col.replace(symbol_id + '_', '')
+            X = X.rename(columns = {col: new_col})
+
+        # Drop duplicate columns
+        X = X.loc[:,~X.columns.duplicated()].copy()
 
         return X

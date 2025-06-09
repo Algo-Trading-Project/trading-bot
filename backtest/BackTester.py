@@ -2,6 +2,8 @@
 #             MISC              #
 #################################
 import warnings
+
+import pandas as pd
 from statsmodels.tools.sm_exceptions import ConvergenceWarning
 warnings.simplefilter('ignore', ConvergenceWarning)
 warnings.simplefilter('ignore', UserWarning)
@@ -10,6 +12,7 @@ warnings.simplefilter('ignore', RuntimeWarning)
 import duckdb
 import pickle
 import json
+import calendar
 
 from utils.db_utils import QUERY
 from backtest.strategies.single_asset.base_strategy import BaseStrategy
@@ -60,28 +63,38 @@ class BackTester:
             Start date of the backtest.
 
         end_date : str, default = '2022-12-31'
-            End date of the backtest.
+             End date of the backtest.
         """
         print()
         print('Initializing BackTester...')
         print()
 
         # Load the price data for the universe
-        price_data = QUERY(
-            """
-            SELECT 
-                time_period_end,
-                asset_id_base || '_' || asset_id_quote || '_' || exchange_id as symbol_id,
-                close,
-                high,
-                low
-            FROM market_data.ml_dataset
-            """
-        )
+        # price_data = QUERY(
+        #     """
+        #     SELECT
+        #         time_period_end,
+        #         asset_id_base || '_' || asset_id_quote || '_' || exchange_id as symbol_id,
+        #         open,
+        #         close,
+        #         high,
+        #         low
+        #     FROM market_data.ml_dataset
+        #     WHERE
+        #       asset_id_base || '_' || asset_id_quote || '_' || exchange_id IN (
+        #         SELECT DISTINCT asset_id_base || '_' || asset_id_quote || '_' || exchange_id
+        #         FROM market_data.ml_features
+        #     )
+        #     """
+        # )
+        price_data = pd.read_csv('/Users/louisspencer/Desktop/Trading-Bot/data/ml_dataset_1d.csv.gz')
+        price_data[['asset_id_base', 'asset_id_quote', 'exchange_id']] = price_data[['asset_id_base', 'asset_id_quote', 'exchange_id']].astype(str)
+        price_data['symbol_id'] = price_data['asset_id_base'] + '_' + price_data['asset_id_quote'] + '_' + price_data['exchange_id']
         price_data['time_period_end'] = pd.to_datetime(price_data['time_period_end'])
         price_data = price_data.set_index('time_period_end')
-        price_data = price_data.loc[price_data.index >= '2021-04-01']
-        price_data = price_data[price_data['symbol_id'] != 'AMB_USDT_BINANCE']
+
+        # Remove LUNA_USDT_BINANCE from the dataset
+        price_data = price_data[price_data['symbol_id'] != 'LUNA_USDT_BINANCE']
 
         # Pivot the data to get the asset universe close, high, and low prices
         self.universe = (
@@ -89,16 +102,17 @@ class BackTester:
             .pivot_table(
                 index = 'time_period_end',
                 columns = 'symbol_id',
-                values = ['close', 'high', 'low']
-            ).ffill() # Not all tokens have data across all of history
+                values = ['open', 'high', 'low', 'close'],
+                dropna = False
+            )
         )
         self.universe = self.universe.sort_index()
 
         self.strategies = strategies
         self.resample_period = resample_period
         self.use_dollar_bars = use_dollar_bars
-        self.start_date = start_date
-        self.end_date = end_date
+        self.start_date = pd.to_datetime(start_date)
+        self.end_date = pd.to_datetime(end_date)
 
         self.conn = duckdb.connect(
             database = '/Users/louisspencer/Desktop/Trading-Bot-Data-Pipelines/data/database.db',
@@ -248,28 +262,19 @@ class BackTester:
             return df
 
         # Execute the query on DuckDB and return result as a DataFrame
-        df = self.conn.sql(query).df().set_index('origin_time').resample('1min', label = 'right', closed = 'left').agg({
-            'open': 'first',
-            'close': 'last',
-            'high': 'max',
-            'low': 'min',
-            'volume': 'sum',
-            'trades': 'sum',
-            'symbol_id': 'first'
-        })
-        df.index = pd.to_datetime(df.index)
+        df = self.conn.sql(query).df().set_index('origin_time').asfreq('1min')
 
         # Skip over tokens with more than 25% missing data
-        pct_missing_price_close = df['close'].isna().mean() * 100
-        
-        if pct_missing_price_close > 25:
-            symbol_id = base + '_' + quote + '_' + exchange
-            print(f'Skipping {symbol_id} due to {pct_missing_price_close} of the data missing')
-            return pd.DataFrame()
-        
-        # Interpolate numeric values
-        numeric_cols = [c for c in df.columns if c not in ('symbol_id')]
-        df[numeric_cols] = df[numeric_cols].interpolate(method = 'linear')
+        # pct_missing_price_close = df['close'].isna().mean() * 100
+        #
+        # if pct_missing_price_close > 25:
+        #     symbol_id = base + '_' + quote + '_' + exchange
+        #     print(f'Skipping {symbol_id} due to {pct_missing_price_close} of the data missing')
+        #     return pd.DataFrame()
+        #
+        # # Interpolate numeric values
+        # numeric_cols = [c for c in df.columns if c not in ('symbol_id')]
+        # df[numeric_cols] = df[numeric_cols].interpolate(method = 'linear')
 
         # Interpolate symbol_id with the most common value
         df['symbol_id'] = df['symbol_id'].fillna(df['symbol_id'].mode().iloc[0])
@@ -285,7 +290,7 @@ class BackTester:
                 'volume': 'sum',
                 'trades': 'sum',
                 'symbol_id': 'first'
-            })
+            }).ffill(method = 'ffill')
         
         return df
             
@@ -566,25 +571,43 @@ class BackTester:
             print('Progress: {} / {} days...'.format(int(start / day_normalizer), int(len(backtest_data) / day_normalizer)))
             print()
 
-            if len(backtest_data.iloc[start:]) - (in_sample_size + out_of_sample_size) < out_of_sample_size:
+            if strat.indicator_factory_dict['class_name'] == 'MLStrategy':
                 is_start_i = start
-                is_end_i = start + in_sample_size
+                # Get date associated with is_start_i
+                is_start_date = backtest_data.index[is_start_i]
+                # Get end of month date
+                is_end_date = pd.Timestamp(month = is_start_date.month, year = is_start_date.year, day = calendar.monthrange(is_start_date.year, is_start_date.month)[1])
+                # Get integer index of is_end_date
+                is_end_i = backtest_data.index.get_loc(is_end_date)
 
-                oos_start_i = start + in_sample_size
-                oos_end_i = len(backtest_data)
+                oos_start_i = is_end_i + 1
+                # Get date associated with oos_start_i
+                oos_start_date = backtest_data.index[oos_start_i]
+                # Get end of month date
+                oos_end_date = pd.Timestamp(month = oos_start_date.month, year = oos_start_date.year, day = calendar.monthrange(oos_start_date.year, oos_start_date.month)[1])
+                # Get integer index of oos_end_date
+                oos_end_i = backtest_data.index.get_loc(oos_end_date)
+
+                # Print the start and end dates of the in-sample and out-of-sample periods
+                # Format the dates to be human-readable
+                is_start_date = is_start_date.strftime('%Y-%m-%d')
+                is_end_date = is_end_date.strftime('%Y-%m-%d')
+                oos_start_date = oos_start_date.strftime('%Y-%m-%d')
+                oos_end_date = oos_end_date.strftime('%Y-%m-%d')
+
+                start = oos_end_i
             else:
                 is_start_i = start
+                is_start_date = backtest_data.index[is_start_i].strftime('%Y-%m-%d')
                 is_end_i = start + in_sample_size
+                is_end_date = backtest_data.index[is_end_i].strftime('%Y-%m-%d')
 
-                oos_start_i = start + in_sample_size
+                oos_start_i = is_end_i
+                oos_start_date = backtest_data.index[oos_start_i].strftime('%Y-%m-%d')
                 oos_end_i = start + in_sample_size + out_of_sample_size
+                oos_end_date = backtest_data.index[oos_end_i].strftime('%Y-%m-%d')
 
-            # Print the start and end dates of the in-sample and out-of-sample periods
-            is_start_date = backtest_data.index[is_start_i].strftime('%m-%d-%Y')
-            is_end_date = backtest_data.index[is_end_i].strftime('%m-%d-%Y')
-            oos_start_date = backtest_data.index[oos_start_i].strftime('%m-%d-%Y')
-            end_date_index = min(oos_end_i, len(backtest_data) - 1)
-            oos_end_date = backtest_data.index[end_date_index].strftime('%m-%d-%Y')
+                start += out_of_sample_size
 
             print(f'*** In-Sample Period: {is_start_date} - {is_end_date}')
             print()
@@ -601,19 +624,26 @@ class BackTester:
                 oos_start_i = oos_start_i,
                 oos_end_i = oos_end_i
             )
+            # Filter the oos trade to only include trades that occurred during the out-of-sample period
+            oos_trades = oos_trades[
+                (oos_trades['entry_date'] >= oos_start_date) &
+                (oos_trades['exit_date'] <= oos_end_date)
+            ].sort_values('entry_date')
+            print(oos_trades)
 
-            tr = round(oos_equity_curve.iloc[-1]['equity'] / starting_equity, 3)
-            
+            tr = (oos_trades['pnl'].sum() / starting_equity) + 1
+
             print()
             print('*** Num. Trades: {}'.format(len(oos_trades)))
             print()
-            print('*** Avg. Trade: {}'.format(round(oos_trades['pnl_pct'].mean(), 3)))
+            print('*** Total PnL: {}'.format(oos_trades['pnl'].sum()))
             print()
             print('*** Total Return: {}'.format(tr))
             print()
             print()
             
-            starting_equity = oos_equity_curve.iloc[-1]['equity']
+            # starting_equity = oos_equity_curve.iloc[-1]['equity']
+            starting_equity *= tr
             strat.backtest_params['init_cash'] = starting_equity
             
             equity_curves.append(oos_equity_curve)
@@ -626,8 +656,8 @@ class BackTester:
                 'is_end_date': is_end_date,
                 'oos_start_date': oos_start_date,
                 'oos_end_date': oos_end_date,
-                'optimal_is_portfolio': pickle.dumps(optimal_is_portfolio),
-                'oos_port': pickle.dumps(oos_port),
+                'optimal_is_portfolio': None,
+                'oos_port': None,
                 'optimal_params': optimal_params
             }
 
@@ -639,8 +669,6 @@ class BackTester:
                 pass
             else:
                 raise ValueError(f'Invalid strategy class: {strat}')
-                            
-            start += out_of_sample_size
 
         if len(equity_curves) == 0 or len(trades) == 0:
             print('Walk-forward optimization failed for {} on {}'.format(
@@ -770,11 +798,11 @@ class BackTester:
                 # Execute walk-forward optimization of the strategy on the token
                 oos_equity_curves, oos_trades, oos_price_data, performance_metrics = self.__execute_wfo(
                     base = base,
-                    quote = quote, 
+                    quote = quote,
                     exchange = exchange,
                     strat = strat,
                     in_sample_size = 30 * 3,
-                    out_of_sample_size = 30 * 3
+                    out_of_sample_size = 30
                 )
 
                 # Reset starting equity for next token
@@ -804,8 +832,8 @@ class BackTester:
             # Execute walk-forward optimization of the strategy on the universe
             oos_equity_curves, oos_trades, oos_price_data, performance_metrics = self.__execute_wfo(
                 strat = strat,
-                in_sample_size = 30 * 3,
-                out_of_sample_size = 30 * 3
+                in_sample_size = 180,
+                out_of_sample_size = 90
             )
 
             # If the walk-forward optimization failed, raise an error

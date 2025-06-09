@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
+from numba import njit
 
 # Numba implementation of the permutation test
 @njit(parallel = True)
@@ -116,18 +117,7 @@ def run_oos_statistical_tests(y_pred, trade_returns, n_simulations, sample_stati
     plt.show()
 
 @njit
-def returns_nb(arr: np.ndarray) -> np.ndarray:
-    """
-    Calculate the returns of an array of values.
-
-    Args:
-        arr: numpy.ndarray
-            An array of values.
-
-    Returns:
-        numpy.ndarray
-            An array of returns.
-    """
+def custom_diff(arr):
     return np.array([(arr[i] - arr[i - 1]) / arr[i - 1] for i in range(1, len(arr))])
 
 @njit
@@ -143,7 +133,7 @@ def custom_rolling_max(arr):
 @njit(nopython=True)
 def value_at_risk(equity_curve, holding_period, confidence_level):
     # Calculate daily returns
-    returns = returns_nb(equity_curve)
+    returns = custom_diff(equity_curve) / equity_curve[:-1]
 
     # Calculate the VaR percentage using np.percentile
     var_percent = -np.percentile(returns, (1 - confidence_level) * 100)
@@ -153,10 +143,11 @@ def value_at_risk(equity_curve, holding_period, confidence_level):
 
     return abs(var_scaled_percent)
 
+
 @njit(nopython=True)
 def conditional_value_at_risk(equity_curve, holding_period, confidence_level):
     # Calculate daily returns
-    returns = returns_nb(equity_curve)
+    returns = custom_diff(equity_curve) / equity_curve[:-1]
 
     # Calculate the VaR percentage using np.percentile
     var_percent = -np.percentile(returns, (1 - confidence_level) * 100)
@@ -179,10 +170,12 @@ def max_drawdown(equity):
     max_dd_pct = drawdown.min() * 100
     return max_dd_pct
 
+
 @njit
 def avg_drawdown(equity):
     rolling_max = custom_rolling_max(equity)
     drawdowns = equity / rolling_max - 1.0
+
     # Compute average drawdown
     # Exclude the periods with no drawdown (drawdowns >= 0)
     negative_drawdowns = drawdowns[drawdowns < 0]
@@ -193,10 +186,11 @@ def avg_drawdown(equity):
 
     return avg_dd_pct
 
+
 @njit
 def sharpe_ratio(equity):
     # Sharpe Ratio of non-zero returns
-    returns = returns_nb(equity)
+    returns = custom_diff(equity)
     mean_returns = np.mean(returns)
     std_returns = np.std(returns)
 
@@ -206,10 +200,11 @@ def sharpe_ratio(equity):
     else:
         return np.nan
 
+
 @njit
 def sortino_ratio(equity):
     # Sortino Ratio of non-zero returns
-    returns = returns_nb(equity)
+    returns = custom_diff(equity)
     mean_returns = np.mean(returns)
     negative_returns = returns[returns < 0]
     std_negative_returns = np.std(negative_returns)
@@ -223,10 +218,11 @@ def sortino_ratio(equity):
     else:
         return np.nan
 
+
 @njit
 def calmar_ratio(equity):
     num_years = len(equity) / (365)
-    returns = returns_nb(equity)
+    returns = custom_diff(equity)
     cum_ret_final = np.prod(1 + returns)
 
     if num_years != 0:
@@ -244,149 +240,174 @@ def calmar_ratio(equity):
     except:
         return np.nan
 
-def calculate_maximum_adverse_excursion(equity_curve):
-    pass
-
-def calculate_maximum_favorable_excursion(equity_curve):
-    pass
-
-def calculate_edge_ratio(equity_curve):
-    pass
-
-def calculate_single_monte_carlo_equity_curve(resampled_trades, equity_curve):
+@njit
+def simulate_equity_curves_with_block_bootstrap(
+        returns,
+        initial_equity,
+        n,
+        block_size
+):
     """
-    Calculates a single equity curve trajectory by resampling trades.
-
-    Args:
-        resampled_trades: pandas.DataFrame
-            A DataFrame with columns:
-                - 'entry_date': The entry date of the trade.
-                - 'exit_date': The exit date of the trade.
-                - 'symbol_id': The symbol identifier of the token traded.
-                - 'size': The size of the trade.
-                - 'entry_fees': The fees paid when entering the trade.
-                - 'exit_fees': The fees paid when exiting the trade.
-                - 'pnl': The profit and loss of the trade.
-                - 'pnl_pct': The profit and loss percentage of the trade.
-                - 'is_long': A boolean indicating if the trade is long (True) or short (False).
-
-        equity_curve: pandas.DataFrame
-            A DataFrame with a column 'equity' representing the value of an equity over time.
-
-    Returns:
-        pandas.Series
-            A Series representing the simulated equity curve trajectory.
-    """
-    initial_equity = equity_curve['equity'][0]
-    new_equity_curve = pd.Series(index=equity_curve.index)
-    equity_curve['returns'] = equity_curve['equity'].pct_change().fillna(0)
-    start_index_date = equity_curve.index[0]
-
-    for i, trade in resampled_trades.iterrows():
-        # Get the entry and exit dates of the trade
-        entry_date = trade['entry_date']
-        exit_date = trade['exit_date']
-        position_len_days = (exit_date - entry_date).days
-
-        # Fill in the next n days with the original equity curve returns using the
-        # position length of the trade and the start index date
-        min_end_date = min(start_index_date + pd.Timedelta(days=position_len_days), equity_curve.index[-1])
-        new_equity_curve.loc[start_index_date:min_end_date] = equity_curve.loc[entry_date:exit_date]['returns']
-
-        # Update the start index date
-        start_index_date = min_end_date + pd.Timedelta(days=1)
-
-    # Fill in the remaining days with 0 returns
-    new_equity_curve.loc[start_index_date:] = 0
-
-    # Calculate the equity curve
-    new_equity_curve = (1 + new_equity_curve).cumprod() * initial_equity
-    new_equity_curve = new_equity_curve.fillna(method='ffill')
-
-    return new_equity_curve
-
-def calculate_monte_carlo_equity_curves(oos_trades, equity_curve, num_simulations=100_000):
-    """
-    Simulates multiple equity curves by resampling trades.
-
-    Given out-of-sample trades, this function resamples the trades and calculates
-    multiple possible future equity curve trajectories.
+    Simulates multiple equity curves by block bootstrapping historical returns.
 
     Parameters:
     ----------
-    oos_trades : pandas.DataFrame
-        A DataFrame with columns:
-            - 'entry_date': The entry date of the trade.
-            - 'exit_date': The exit date of the trade.
-            - 'symbol_id': The symbol identifier of the token traded.
-            - 'size': The size of the trade.
-            - 'entry_fees': The fees paid when entering the trade.
-            - 'exit_fees': The fees paid when exiting the trade.
-            - 'pnl': The profit and loss of the trade.
-            - 'pnl_pct': The profit and loss percentage of the trade.
-            -  'is_long': A boolean indicating if the trade is long (True) or short (False).
+    returns : numpy.ndarray
+        An array of historical returns.
 
+    initial_equity : float
+        The initial value of equity at the start of the simulation.
+
+    num_simulations : int
+        The number of simulated equity curves to generate.
+
+    block_size : int
+        The size of each block to sample.
+
+    Returns:
+    -------
+    numpy.ndarray
+        A 2D array where each column represents a simulated equity curve and each row corresponds
+        to a time point in the simulation.
+    """
+    num_days = len(returns)
+    num_blocks = num_days // block_size
+    simulated_curves = np.empty((num_days, n))
+
+    for sim in range(n):
+        # Initialize equity curve for this simulation
+        equity_curve = np.empty(num_days)
+        equity_curve[0] = initial_equity
+
+        # Perform block bootstrapping
+        for block_start in range(0, num_days, block_size):
+            block_end = min(block_start + block_size, num_days)
+            sampled_block_start = np.random.randint(0, num_days - block_size + 1)
+            sampled_block_end = sampled_block_start + block_end - block_start
+
+            sampled_returns = returns[sampled_block_start:sampled_block_end]
+
+            # Compute the equity values for this block
+            for i in range(block_start, block_end):
+                if i == 0:
+                    equity_curve[i] = initial_equity * (1 + sampled_returns[i - block_start])
+                else:
+                    equity_curve[i] = equity_curve[i - 1] * (1 + sampled_returns[i - block_start])
+
+        simulated_curves[:, sim] = equity_curve
+
+    return simulated_curves
+
+
+def run_block_bootstrap(equity_curve, num_simulations=100_000):
+    """
+    Runs a block bootstrap on an equity curve.
+
+    Given an equity curve, this function calculates daily returns and then uses these returns
+    to simulate multiple possible future equity curve trajectories.
+
+    Parameters:
+    ----------
     equity_curve : pandas.DataFrame
         A DataFrame with a column 'equity' representing the value of an equity over time.
-
     num_simulations : int, default 1000
         The number of simulated equity curves to generate.
 
     Returns:
     -------
     pandas.DataFrame
-        A DataFrame where each column is a simulated equity curve, indexed by the same dates as the input
-        equity_curve.
+        A DataFrame where each column is a simulated equity curve, indexed by the same dates as the input equity_curve.
 
-    pandas.DataFrame
-        A DataFrame with columns:
-            - 'avg_pnl': The average profit and loss of the resampled trades.
-            - 'avg_pnl_pct': The average profit and loss percentage of the resampled trades.
-            - 'expectancy': The expectancy of the resampled trades.
-            - 'win_rate': The win rate of the resampled trades.
-            - 'maximum_adverse_excursion': The maximum adverse excursion of the resampled trades.
-            - 'maximum_favorable_excursion': The maximum favorable excursion of the resampled trades.
-            - 'edge_ratio': The edge ratio of the resampled trades.
+    Notes:
+    -----
+    - The initial equity value for simulations is taken from the first value of the 'equity' column in the input DataFrame.
     """
-    # Initialize dictionary to store trade-level metrics
-    metrics_dict = {
-        'avg_pnl': [], 'avg_pnl_pct': [], 'expectancy': [], 'win_rate': [],
-        'maximum_adverse_excursion': [], 'maximum_favorable_excursion': [], 'edge_ratio': []
-    }
 
-    # Initialize DataFrame to store simulated equity curves
-    simulated_equity_curves = pd.DataFrame(index=equity_curve.index)
+    # Calculate daily returns from the equity curve
+    equity_curve['returns'] = equity_curve['equity'].pct_change().fillna(0)
 
-    for i in range(num_simulations):
-        print(f'Simulating equity curve {i + 1}/{num_simulations}...', end='\r', flush=True)
-        # Sample trades with replacement
-        sampled_trades = oos_trades.sample(frac=1, replace=True)
+    # Extract the initial equity value for the simulation
+    initial_equity = equity_curve['equity'].iloc[0]
 
-        # Calculate trade-level metrics
-        avg_pnl = sampled_trades['pnl'].mean()
-        avg_pnl_pct = sampled_trades['pnl_pct'].mean()
-        avg_win_pnl_pct = sampled_trades[sampled_trades['pnl'] > 0]['pnl_pct'].mean()
-        avg_loss_pnl_pct = sampled_trades[sampled_trades['pnl'] < 0]['pnl_pct'].mean()
-        win_rate = (sampled_trades['pnl'] > 0).mean()
-        expectancy = avg_win_pnl_pct * win_rate - abs(avg_loss_pnl_pct) * (1 - win_rate)
-        # max_adverse_excursion = calculate_maximum_adverse_excursion(sampled_trades)
-        # max_favorable_excursion = calculate_maximum_favorable_excursion(sampled_trades)
-        # edge_ratio = calculate_edge_ratio(sampled_trades)
+    # Generate simulated equity curves
+    simulated_curves_np = simulate_equity_curves_with_block_bootstrap(equity_curve['returns'].values, initial_equity,
+                                                                      num_simulations, 7)
 
-        # Assign to appropriate keys in the dictionary
-        metrics_dict['avg_pnl'].append(avg_pnl)
-        metrics_dict['avg_pnl_pct'].append(avg_pnl_pct)
-        metrics_dict['win_rate'].append(win_rate)
-        metrics_dict['expectancy'].append(expectancy)
-        # metrics_dict['maximum_adverse_excursion'].append(max_adverse_excursion)
-        # metrics_dict['maximum_favorable_excursion'].append(max_favorable_excursion)
-        # metrics_dict['edge_ratio'].append(edge_ratio)
+    # Convert the numpy array of simulated curves to a pandas DataFrame
+    dates = equity_curve.index
+    simulated_curves_df = pd.DataFrame(simulated_curves_np, index=dates)
 
-        # Calculate the simulated equity curve
-        simulated_equity_curve = calculate_single_monte_carlo_equity_curve(sampled_trades, equity_curve)
-        simulated_equity_curves[f'sim_{i}'] = simulated_equity_curve
+    return simulated_curves_df
 
-    return simulated_equity_curves, metrics_dict
+
+def calculate_block_bootstrap_performance_metrics(monte_carlo_equity_curves):
+    """
+    Calculates performance metrics for each block bootstrapped equity curve.
+
+    Parameters:
+    ----------
+    monte_carlo_equity_curves : pandas.DataFrame
+        A DataFrame where each column represents a simulated equity curve.
+
+    Returns:
+    -------
+    metrics_dict : dict
+        A dictionary where keys are metric names and values are lists of metric values for each simulated equity curve.
+    """
+
+    # Define holding periods and confidence level
+    holding_periods = [1, 7, 30]  # 1 day, 1 week, 1 month in days
+    confidence_level = 0.99
+
+    # Initialize dictionary to store metrics
+    metrics_dict = {'1_day_var': [], '1_week_var': [], '1_month_var': [],
+                    '1_day_cvar': [], '1_week_cvar': [], '1_month_cvar': [],
+                    'sharpe_ratio': [], 'sortino_ratio': [], 'calmar_ratio': [],
+                    'max_dd': [], 'avg_dd': []}
+
+    # Iterate over each simulated equity curve
+    i = 1
+    for curve in monte_carlo_equity_curves.columns:
+
+        # print('\r {} / {}'.format(i, len(monte_carlo_equity_curves.columns)), end = '', flush = True)
+
+        i += 1
+
+        equity_curve = monte_carlo_equity_curves[curve].values
+
+        sharpe = sharpe_ratio(equity_curve)
+        try:
+            sortino = sortino_ratio(equity_curve)
+        except:
+            sortino = float('-inf')
+
+        calmar = calmar_ratio(equity_curve)
+        max_dd = max_drawdown(equity_curve)
+        avg_dd = avg_drawdown(equity_curve)
+
+        metrics_dict['sharpe_ratio'].append(sharpe)
+        metrics_dict['sortino_ratio'].append(sortino)
+        metrics_dict['calmar_ratio'].append(calmar)
+        metrics_dict['max_dd'].append(max_dd)
+        metrics_dict['avg_dd'].append(avg_dd)
+
+        # Calculate VaR and CVaR for each holding period
+        for holding_period in holding_periods:
+            var = value_at_risk(equity_curve, holding_period, confidence_level)
+            cvar = conditional_value_at_risk(equity_curve, holding_period, confidence_level)
+
+            # Assign to appropriate keys in the dictionary
+            if holding_period == 1:  # 1 day
+                metrics_dict['1_day_var'].append(var)
+                metrics_dict['1_day_cvar'].append(cvar)
+            elif holding_period == 7:  # 1 week
+                metrics_dict['1_week_var'].append(var)
+                metrics_dict['1_week_cvar'].append(cvar)
+            elif holding_period == 30:  # 1 month
+                metrics_dict['1_month_var'].append(var)
+                metrics_dict['1_month_cvar'].append(cvar)
+
+    return metrics_dict
 
 def run_monte_carlo_simulation(oos_trades, equity_curve, num_simulations=100_000):
     """
@@ -415,19 +436,28 @@ def run_monte_carlo_simulation(oos_trades, equity_curve, num_simulations=100_000
     Returns:
     -------
     pandas.DataFrame
-        A DataFrame where each column is a simulated equity curve, indexed by the same dates as the input
-        equity_curve.
-
-    pandas.DataFrame
         A DataFrame with columns:
             - 'avg_pnl': The average profit and loss of the resampled trades.
             - 'avg_pnl_pct': The average profit and loss percentage of the resampled trades.
             - 'expectancy': The expectancy of the resampled trades.
             - 'win_rate': The win rate of the resampled trades.
-            - 'maximum_adverse_excursion': The maximum adverse excursion of the resampled trades.
-            - 'maximum_favorable_excursion': The maximum favorable excursion of the resampled trades.
-            - 'edge_ratio': The edge ratio of the res
     """
-    # Run Monte Carlo simulation on resampled trades
-    simulated_equity_curves, metrics_df = calculate_monte_carlo_equity_curves(oos_trades, equity_curve, num_simulations=num_simulations)
-    return simulated_equity_curves, metrics_df
+    i = 0
+    results = np.zeros((num_simulations, 4))
+
+    while i < num_simulations:
+        # print(f'Running simulation {i + 1}/{num_simulations}', end='\r', flush=True)
+
+        # Resample the trades
+        resampled_trades = oos_trades.sample(frac=1, replace=True)
+
+        # Calculate the trade-level performance metrics
+        avg_pnl = resampled_trades['pnl'].mean()
+        avg_pnl_pct = resampled_trades['pnl_pct'].mean()
+        expectancy = avg_pnl_pct
+        win_rate = (resampled_trades['pnl'] > 0).mean()
+
+        results[i] = [avg_pnl, avg_pnl_pct, expectancy, win_rate]
+        i += 1
+
+    return pd.DataFrame(results, columns=['avg_pnl', 'avg_pnl_pct', 'expectancy', 'win_rate'])

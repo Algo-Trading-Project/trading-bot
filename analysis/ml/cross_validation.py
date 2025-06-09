@@ -15,7 +15,7 @@ class TimeSeriesSplitByToken(BaseCrossValidator):
         self.date_series = pd.to_datetime(self.date_series)
 
         # Determine global date ranges for splits across all tokens
-        global_dates = self.date_series.sort_values().unique()
+        global_dates = sorted(self.date_series.unique().tolist())
         split_size = len(global_dates) // (self.n_splits + 1)
 
         # Generate train and validation indices for each split
@@ -44,9 +44,13 @@ class TimeSeriesSplitByToken(BaseCrossValidator):
                     (self.date_series < val_end_date)
                 )
 
-                # Append the row positions (not indices) to the split lists
-                train_indices.extend(np.where(train_mask)[0].tolist())
-                val_indices.extend(np.where(val_mask)[0].tolist())
+                # Get row positions (not indices) for each token
+                train = np.where(train_mask)[0].tolist()
+                val = np.where(val_mask)[0].tolist()
+
+                if len(train) > 0 and len(val) > 0:
+                    train_indices.extend(train)
+                    val_indices.extend(val)
 
             # Yield the indices as numpy arrays
             yield np.array(train_indices), np.array(val_indices)

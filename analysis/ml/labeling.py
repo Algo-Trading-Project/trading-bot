@@ -7,13 +7,14 @@ def __calculate_labels(high, low, close, std_returns, max_holding_time):
     n = len(close)
     labels = np.zeros(n)
     trade_returns = np.zeros(n)
+    trade_drawdowns = np.zeros(n)
     start_date_indices = np.full(n, np.nan)
     end_date_indices = np.full(n, np.nan)
 
     for i in prange(n - max_holding_time):
-        # Upper barrier is 2 standard deviations of the returns above the close price
+        # Upper barrier is 1 standard deviation of the returns above the close price
         upper_barrier = close[i] * (1 + std_returns[i] * 1)
-        # Lower barrier is 2 standard deviations of the returns below the close price
+        # Lower barrier is 1 standard deviation of the returns below the close price
         lower_barrier = close[i] * (1 - std_returns[i] * 1)
 
         # Store the start date of the trade
