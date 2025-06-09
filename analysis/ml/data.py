@@ -42,7 +42,7 @@ def construct_dataset_for_ml(resample_period):
         total_skipped_futures = 0
 
         # Loop through each asset
-        for i in range(len(assets)):
+        for i in range(len(assets_spot)):
             print(f"Processing asset {i + 1} of {len(assets)} ({assets.iloc[i]['asset_id_base']}/{assets.iloc[i]['asset_id_quote']} on {assets.iloc[i]['exchange_id']})...")
             # Get the asset
             asset = assets.iloc[i]
@@ -80,6 +80,41 @@ def construct_dataset_for_ml(resample_period):
                 'trades': 'sum'
             }).ffill()
 
+            # Skip over tokens with more than 25% missing data
+            pct_missing_price_close_spot = data_spot.loc[:,'close'].isna().mean() * 100
+
+            print(f"Percentage of missing data for {asset['asset_id_base']}/{asset['asset_id_quote']} on {asset['exchange_id']}: {pct_missing_price_close_spot:.2f}% (spot)")
+            print()
+                        
+            # Interpolate missing values
+            numeric_cols_spot = [col for col in data_spot.columns if col not in ('asset_id_base', 'asset_id_quote', 'exchange_id')]
+            categorical_cols = ['asset_id_base', 'asset_id_quote', 'exchange_id']
+            data_spot.loc[:,numeric_cols] = data_spot.loc[:,numeric_cols].interpolate(method = 'time')
+
+            for col in categorical_cols:
+                mode_spot = data_spot.loc[:,col].mode().iloc[0]
+                data_spot.loc[:,col] = data_spot.loc[:,col].fillna(mode_spot)
+
+            # Downsample to resample_period
+            data_spot = data_spot.resample(resample_period, label = 'right', closed = 'left').agg({
+                'asset_id_base': 'last',
+                'asset_id_quote': 'last',
+                'exchange_id': 'last',
+                'open': 'first',
+                'high': 'max',
+                'low': 'min',
+                'close': 'last',
+                'volume': 'sum',
+                'trades': 'sum'
+            })
+            dataset_spot.append(data_spot)
+
+        for i in range(len(assets_futures)):
+            print(f"Processing asset {i + 1} of {len(assets)} ({assets.iloc[i]['asset_id_base']}/{assets.iloc[i]['asset_id_quote']} on {assets.iloc[i]['exchange_id']})...")
+            # Get the asset
+            asset = assets.iloc[i]
+
+            # Get the asset data
             data_futures = conn.sql(
                 f"""
                 SELECT 
@@ -113,39 +148,21 @@ def construct_dataset_for_ml(resample_period):
             }).ffill()
 
             # Skip over tokens with more than 25% missing data
-            pct_missing_price_close_spot = data_spot.loc[:,'close'].isna().mean() * 100
             pct_missing_price_close_futures = data_futures.loc[:,'close'].isna().mean() * 100
 
-            print(f"Percentage of missing data for {asset['asset_id_base']}/{asset['asset_id_quote']} on {asset['exchange_id']}: {pct_missing_price_close_spot:.2f}% (spot), {pct_missing_price_close_futures:.2f}% (futures)")
+            print(f"Percentage of missing data for {asset['asset_id_base']}/{asset['asset_id_quote']} on {asset['exchange_id']}: {pct_missing_price_close_futures:.2f}% (futures)")
             print()
                         
             # Interpolate missing values
-            numeric_cols_spot = [col for col in data_spot.columns if col not in ('asset_id_base', 'asset_id_quote', 'exchange_id')]
             numeric_cols_futures = [col for col in data_futures.columns if col not in ('asset_id_base', 'asset_id_quote', 'exchange_id')]
             categorical_cols = ['asset_id_base', 'asset_id_quote', 'exchange_id']
-
-            data_spot.loc[:,numeric_cols] = data_spot.loc[:,numeric_cols].interpolate(method = 'time')
             data_futures.loc[:,numeric_cols_futures] = data_futures.loc[:,numeric_cols_futures].interpolate(method = 'time')
 
             for col in categorical_cols:
-                mode_spot = data_spot.loc[:,col].mode().iloc[0]
                 mode_futures = data_futures.loc[:,col].mode().iloc[0]
-
-                data_spot.loc[:,col] = data_spot.loc[:,col].fillna(mode_spot)
                 data_futures.loc[:,col] = data_futures.loc[:,col].fillna(mode_futures)
 
             # Downsample to resample_period
-            data_spot = data_spot.resample(resample_period, label = 'right', closed = 'left').agg({
-                'asset_id_base': 'last',
-                'asset_id_quote': 'last',
-                'exchange_id': 'last',
-                'open': 'first',
-                'high': 'max',
-                'low': 'min',
-                'close': 'last',
-                'volume': 'sum',
-                'trades': 'sum'
-            })
             data_futures = data_futures.resample(resample_period, label = 'right', closed = 'left').agg({
                 'asset_id_base': 'last',
                 'asset_id_quote': 'last',
@@ -157,8 +174,6 @@ def construct_dataset_for_ml(resample_period):
                 'volume': 'sum',
                 'trades': 'sum'
             })
-            
-            dataset_spot.append(data_spot)
             dataset_futures.append(data_futures)
 
         dataset_spot = pd.concat(dataset_spot)
@@ -170,8 +185,8 @@ def construct_dataset_for_ml(resample_period):
         dataset_spot['time_period_end'] = pd.to_datetime(dataset_spot['time_period_end'])
         dataset_futures['time_period_end'] = pd.to_datetime(dataset_futures['time_period_end'])
 
-        print(f"Total assets skipped due to missing data: {total_skipped}")
-        print(f'Percentage of assets skipped: {total_skipped / len(assets) * 100:.2f}%')
+        print(f"Total assets skipped due to missing data: {total_skipped_spot + total_skipped_futures}")
+        print(f'Percentage of assets skipped: {(total_skipped_spot + total_skipped_futures) / len(assets_spot + assets_futures) * 100:.2f}%')
 
         # Save if the spot data file does not exist
         if not os.path.exists('/Users/louisspencer/Desktop/Trading-Bot/data/ml_dataset.csv'):
