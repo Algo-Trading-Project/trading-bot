@@ -83,7 +83,7 @@ def construct_dataset_for_ml(resample_period):
             # Skip over tokens with more than 25% missing data
             pct_missing_price_close_spot = data_spot.loc[:,'close'].isna().mean() * 100
 
-            print(f"Percentage of missing data for {asset['asset_id_base']}/{asset['asset_id_quote']} on {asset['exchange_id']}: {pct_missing_price_close_spot:.2f}% (spot)")
+            # print(f"Percentage of missing data for {asset['asset_id_base']}/{asset['asset_id_quote']} on {asset['exchange_id']}: {pct_missing_price_close_spot:.2f}% (spot)")
             print()
                         
             # Interpolate missing values
