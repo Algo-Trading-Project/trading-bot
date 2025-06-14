@@ -195,7 +195,7 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
             # Perform cross-sectional rank features for each time period
             spot_returns_pivot = self.ml_dataset.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'spot_returns_{window}', dropna = False)
             spot_returns_pivot_percentile = spot_returns_pivot.rank(axis = 1, pct = True)
-            spot_returns_pivot_percentile.columns = [col + f'cs_spot_returns_percentile_{window}' for col in returns_pivot.columns]
+            spot_returns_pivot_percentile.columns = [col + f'cs_spot_returns_percentile_{window}' for col in spot_returns_pivot.columns]
 
             # 4 moments of cross-sectional returns for each symbol for each time period
             spot_returns_pivot[f'cs_spot_returns_mean_{window}'] = spot_returns_pivot.mean(axis = 1)
