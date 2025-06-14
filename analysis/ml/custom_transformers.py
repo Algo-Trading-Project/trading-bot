@@ -96,6 +96,8 @@ class LagFeatures(BaseEstimator, TransformerMixin):
 class ReturnsFeatures(BaseEstimator, TransformerMixin):
     
     def __init__(self, window_sizes, lookback_windows):
+        print('ReturnsFeatures...')
+        print()
         self.window_sizes = window_sizes
         self.lookback_windows = lookback_windows
 
@@ -235,11 +237,11 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
             final_features.append(futures_returns_pivot_zscore)
 
             # Append the 4 moments of cross-sectional returns to the final features list
-            # spot_cs_returns_moments_cols = [col for col in spot_returns_pivot.columns any([x in col for x in ['mean', 'std', 'skew', 'kurtosis', 'median', '10th_percentile', '90th_percentile']])]
-            # futures_cs_returns_moments_cols = [col for col in futures_returns_pivot.columns any([x in col for x in ['mean', 'std', 'skew', 'kurtosis', 'median', '10th_percentile', '90th_percentile']])]
+            spot_cs_returns_moments_cols = [col for col in spot_returns_pivot.columns any([x in col for x in ['mean', 'std', 'skew', 'kurtosis', 'median', '10th_percentile', '90th_percentile']])]
+            futures_cs_returns_moments_cols = [col for col in futures_returns_pivot.columns any([x in col for x in ['mean', 'std', 'skew', 'kurtosis', 'median', '10th_percentile', '90th_percentile']])]
 
-            # final_features.append(spot_returns_pivot[spot_cs_returns_moments_cols])
-            # final_features.append(futures_returns_pivot[futures_cs_returns_moments_cols])
+            final_features.append(spot_returns_pivot[spot_cs_returns_moments_cols])
+            final_features.append(futures_returns_pivot[futures_cs_returns_moments_cols])
 
         for lookback in self.lookback_windows:
             # Spot
@@ -612,6 +614,7 @@ class FillNaTransformer(BaseEstimator, TransformerMixin):
 class TradeFeatures(BaseEstimator, TransformerMixin):
 
     def __init__(self, windows, lookback_windows = (30, 90, 180)):
+        print('Trade features...')
         self.windows = windows
         self.lookback_windows = lookback_windows
 
@@ -2408,6 +2411,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
 
 class RiskFeatures(BaseEstimator, TransformerMixin):
     def __init__(self, windows, lookback_windows):
+        print('RiskFeatures...')
         self.windows = windows
         self.lookback_windows = lookback_windows
 
@@ -2631,6 +2635,7 @@ class RiskFeatures(BaseEstimator, TransformerMixin):
 
 class SpotFuturesInteractionFeatures(BaseEstimator, TransformerMixin):
     def __init__(self, windows, lookback_windows):
+        print('SpotFuturesInteractionFeatures...')
         self.windows = windows
         self.lookback_windows = lookback_windows
 
