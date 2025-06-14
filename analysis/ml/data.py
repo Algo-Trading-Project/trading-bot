@@ -212,14 +212,17 @@ def get_ml_dataset(resample_period = '1d'):
         construct_dataset_for_ml(resample_period = resample_period)
 
 def get_ml_features(feature_engineering_pipeline):
-    tokens = QUERY(
+    tokens_spot = QUERY(
         """
         SELECT DISTINCT asset_id_base, asset_id_quote, exchange_id
         FROM market_data.ml_dataset
-        WHERE asset_id_base || '_' || asset_id_quote || '_' || exchange_id IN (
-            SELECT DISTINCT asset_id_base || '_' || asset_id_quote || '_' || exchange_id
-            FROM market_data.trade_features_1d
-        )
+        ORDER BY asset_id_base, asset_id_quote, exchange_id
+        """
+    )
+    tokens_futures = QUERY(
+        """
+        SELECT DISTINCT asset_id_base, asset_id_quote, exchange_id
+        FROM market_data.ml_dataset_futures
         ORDER BY asset_id_base, asset_id_quote, exchange_id
         """
     )
@@ -249,7 +252,7 @@ def get_ml_features(feature_engineering_pipeline):
 
             print(f'Processing symbol_id: {symbol_id} ({idx + 1}/{n})')
 
-            token = QUERY(
+            token_spot = QUERY(
                 f"""
                 SELECT 
                     asset_id_base || '_' || asset_id_quote || '_' || exchange_id AS symbol_id,
@@ -262,11 +265,34 @@ def get_ml_features(feature_engineering_pipeline):
                 ORDER BY time_period_end
                 """
             )
+            token_futures = QUERY(
+                f"""
+                SELECT 
+                    asset_id_base || '_' || asset_id_quote || '_' || exchange_id AS symbol_id,
+                    *
+                FROM market_data.ml_dataset_futures
+                WHERE
+                    asset_id_base = '{asset_id_base}' AND
+                    asset_id_quote = '{asset_id_quote}' AND
+                    exchange_id = '{exchange_id}'
+                ORDER BY time_period_end
+                """
+            )
+            merged = pd.merge(token_spot, token_futures, on = 'time_period_end', how = 'left', suffixes = ('_spot', '_futures'))
+
+            merged.rename(columns = {
+                'asset_id_base_spot': 'asset_id_base',
+                'asset_id_quote_spot': 'asset_id_quote',
+                'exchange_id_spot': 'exchange_id',
+                'symbol_id_spot': 'symbol_id',
+                'time_period_end_spot': 'time_period_end',
+            }, inplace = True)
+            merged.drop(columns = ['asset_id_base_futures', 'asset_id_quote_futures', 'exchange_id_futures', 'symbol_id_futures', 'time_period_end_futures'], inplace = True)
 
             # Ensure that the input data is sorted by time_period_end
-            assert token['time_period_end'].is_monotonic_increasing, 'Input data is not sorted by time_period_end'
+            assert merged['time_period_end'].is_monotonic_increasing, 'Input data is not sorted by time_period_end'
 
-            features = feature_engineering_pipeline.fit_transform(token)
+            features = feature_engineering_pipeline.fit_transform(merged)
 
             # Ensure that the output data is sorted by time_period_end
             assert features['time_period_end'].is_monotonic_increasing, 'Output data is not sorted by time_period_end'
@@ -284,7 +310,7 @@ def get_ml_features(feature_engineering_pipeline):
                     prev_data = features
 
             conn = duckdb.connect(
-                database = '/Users/louisspencer/Desktop/Trading-Bot-Data-Pipelines/data/database.db',
+                database = '~/LocalData/database.db',
                 read_only = False
             )
             conn.register('features', features)
@@ -313,16 +339,7 @@ def get_ml_features(feature_engineering_pipeline):
             conn.unregister('features')
         
     else:
-        # X = QUERY(
-        #     """
-        #     SELECT *
-        #     FROM market_data.ml_features
-        #     """
-        # )
-        # X['time_period_end'] = pd.to_datetime(X['time_period_end'])
-        # X.sort_values(['asset_id_base', 'asset_id_quote', 'exchange_id', 'time_period_end'], inplace=True)
         X = pd.read_parquet('/Users/louisspencer/Desktop/Trading-Bot/data/ml_features.parquet') 
         X['time_period_end'] = pd.to_datetime(X['time_period_end'])
         X.sort_values(['asset_id_base', 'asset_id_quote', 'exchange_id', 'time_period_end'], inplace=True)
-        
         return X

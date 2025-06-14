@@ -142,17 +142,27 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
         for token in tokens:
             filter = self.ml_dataset['symbol_id'] == token
             for window in self.window_sizes:
+                # Spot clipping of returns
                 if window == 1:
-                    clip_upper_bound = 1
+                    clip_upper_bound = 0.57
                 elif window == 7:
-                    clip_upper_bound = 5
-                else:
-                    clip_upper_bound = 10
-
+                    clip_upper_bound = 3.55
+                elif window == 30:
+                    clip_upper_bound = 9.44
+                elif window == 180:
+                    clip_upper_bound = 59
                 self.ml_dataset.loc[filter, f'spot_returns_{window}'] = self.ml_dataset.loc[filter, 'close_spot'].pct_change(window).clip(-1, clip_upper_bound)
-                self.ml_dataset.loc[filter, f'spot_log_returns_{window}'] = np.log(self.ml_dataset.loc[filter, 'close_spot'] / self.ml_dataset.loc[filter, 'close_spot'].shift(window))
+                
+                # Futures clipping of returns
+                if window == 1:
+                    clip_upper_bound = 0.47
+                elif window == 7:
+                    clip_upper_bound = 2.05
+                elif window == 30:
+                    clip_upper_bound = 7.09
+                elif window == 180:
+                    clip_upper_bound = 22.7
                 self.ml_dataset.loc[filter, f'futures_returns_{window}'] = self.ml_dataset.loc[filter, 'close_futures'].pct_change(window).clip(-1, clip_upper_bound)
-                self.ml_dataset.loc[filter, f'futures_log_returns_{window}'] = np.log(self.ml_dataset.loc[filter, 'close_futures'] / self.ml_dataset.loc[filter, 'close_futures'].shift(window))
 
                 for lookback in self.lookback_windows:
                     # Spot metrics
@@ -352,35 +362,40 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
         X['dollar_volume_spot'] = X['close_spot'] * X['volume_spot']
         X['dollar_volume_futures'] = X['close_futures'] * X['volume_futures']
         for window_size in self.window_sizes:
+            # Clipping of returns (spot)
             if window_size == 1:
-                clip_upper_bound = 1
+                clip_upper_bound = 0.57
             elif window_size == 7:
-                clip_upper_bound = 5
-            else:
-                clip_upper_bound = 10
+                clip_upper_bound = 3.55
+            elif window_size == 30:
+                clip_upper_bound = 9.44
+            elif window_size == 180:
+                clip_upper_bound = 59
 
             # Spot
             X[f'spot_returns_{window_size}'] = X['close_spot'].pct_change(window_size).clip(-1, clip_upper_bound)
-            X[f'spot_returns_high_{window_size}'] = X['high_spot'].pct_change(window_size).clip(-1, clip_upper_bound)
-            X[f'spot_returns_low_{window_size}'] = X['low_spot'].pct_change(window_size).clip(-1, clip_upper_bound)
-            X[f'spot_returns_open_{window_size}'] = X['open_spot'].pct_change(window_size).clip(-1, clip_upper_bound)
-            X[f'spot_returns_volume_{window_size}'] = X['volume_spot'].pct_change(window_size).clip(-1, clip_upper_bound)
-            X[f'spot_returns_dollar_volume_{window_size}'] = X['dollar_volume_spot'].pct_change(window_size).clip(-1, clip_upper_bound)
+            X[f'spot_returns_dollar_volume_{window_size}'] = X['dollar_volume_spot'].pct_change(window_size)
             X[f'spot_returns_per_dollar_volume_{window_size}'] = X[f'spot_returns_{window_size}'] / X['dollar_volume_spot']
             X[f'spot_abs_returns_per_dollar_volume_{window_size}'] = X[f'spot_returns_{window_size}'].abs() / X['dollar_volume_spot']
+
+            # Clipping of returns (futures)
+            if window_size == 1:
+                clip_upper_bound = 0.47
+            elif window_size == 7:
+                clip_upper_bound = 2.05
+            elif window_size == 30:
+                clip_upper_bound = 7.09
+            elif window_size == 180:
+                clip_upper_bound = 22.7
             
             # Futures 
             X[f'futures_returns_{window_size}'] = X['close_futures'].pct_change(window_size).clip(-1, clip_upper_bound)
-            X[f'futures_returns_high_{window_size}'] = X['high_futures'].pct_change(window_size).clip(-1, clip_upper_bound)
-            X[f'futures_returns_low_{window_size}'] = X['low_futures'].pct_change(window_size).clip(-1, clip_upper_bound)
-            X[f'futures_returns_open_{window_size}'] = X['open_futures'].pct_change(window_size).clip(-1, clip_upper_bound)
-            X[f'futures_returns_volume_{window_size}'] = X['volume_futures'].pct_change(window_size).clip(-1, clip_upper_bound)
-            X[f'futures_returns_dollar_volume_{window_size}'] = X['dollar_volume_futures'].pct_change(window_size).clip(-1, clip_upper_bound)
+            X[f'futures_returns_dollar_volume_{window_size}'] = X['dollar_volume_futures'].pct_change(window_size)
             X[f'futures_returns_per_dollar_volume_{window_size}'] = X[f'futures_returns_{window_size}'] / X['dollar_volume_futures']
             X[f'futures_abs_returns_per_dollar_volume_{window_size}'] = X[f'futures_returns_{window_size}'].abs() / X['dollar_volume_futures']
             
-            # Unclipped forward returns for future prediction evaluation
-            X[f'forward_returns_{window_size}'] = X['close_spot'].pct_change(-window_size)
+            # Forward returns for future prediction evaluation
+            X[f'forward_returns_{window_size}'] = X[f'spot_returns_{window_size}'].shift(-window_size)
 
             for lookback_window in self.lookback_windows:
                 # Spot
@@ -479,85 +494,6 @@ class TripleBarrierLabelFeatures(BaseEstimator, TransformerMixin):
                             X.loc[i, f'end_date_triple_barrier_label_h{max_holding_time}'] = X.loc[end_date_index, 'time_period_end']
                 
             return X
-
-class CorrelationFeatures(BaseEstimator, TransformerMixin):
-    
-    def __init__(self, window_sizes, lookback_windows, period = None):
-        self.window_sizes = window_sizes
-        self.lookback_windows = lookback_windows
-        self.period = period
-
-    def fit(self, X, y=None):
-        return self
-
-    def transform(self, X):
-        eth_usd_coinbase = QUERY(
-            """
-            SELECT
-                time_period_end, 
-                asset_id_base,
-                asset_id_quote,
-                exchange_id,
-                open,
-                high,
-                low,
-                close,
-                volume
-            FROM market_data.ml_dataset
-            WHERE
-                asset_id_base = 'ETH' AND
-                asset_id_quote = 'USDT' AND
-                exchange_id = 'BINANCE'
-            ORDER BY time_period_end
-            """
-        )
-        eth_usd_coinbase['time_period_end'] = pd.to_datetime(eth_usd_coinbase['time_period_end'])
-
-        btc_usd_coinbase = QUERY(
-            """
-            SELECT
-                time_period_end,
-                asset_id_base,
-                asset_id_quote,
-                exchange_id,
-                open,
-                high,
-                low,
-                close,
-                volume
-            FROM market_data.ml_dataset
-            WHERE
-                asset_id_base = 'BTC' AND
-                asset_id_quote = 'USDT' AND
-                exchange_id = 'BINANCE'
-            ORDER BY time_period_end
-            """
-        )
-        btc_usd_coinbase['time_period_end'] = pd.to_datetime(btc_usd_coinbase['time_period_end'])
-
-        for window_size in self.window_sizes:
-            eth_usd_coinbase[f'returns_{window_size}'] = eth_usd_coinbase['close'].pct_change(window_size)
-            btc_usd_coinbase[f'returns_{window_size}'] = btc_usd_coinbase['close'].pct_change(window_size)
-
-        X.time_period_end = pd.to_datetime(X.time_period_end)
-
-        merged = pd.merge(X, eth_usd_coinbase, on = 'time_period_end', suffixes = ('', '_ETH'), how = 'left',)
-        merged = pd.merge(merged, btc_usd_coinbase, on = 'time_period_end', suffixes = ('', '_BTC'), how = 'left')
-
-        for window_size in self.window_sizes:
-            for lookback_window in self.lookback_windows:
-                # Calculate autocorrelation of returns
-                X[f'autocorrelation_returns_{window_size}_{lookback_window}'] = X[f'returns_{window_size}'].rolling(window = lookback_window, min_window = 7).corr(X[f'returns_{window_size}'])
-
-                merged_rolling = merged[f'returns_{window_size}'].rolling(window = lookback_window, min_window = 7)
-
-                # Calculate cross-correlation of returns with ETH
-                X[f'cross_correlation_returns_{window_size}_{lookback_window}_ETH'] = merged_rolling.corr(merged[f'returns_{window_size}_ETH'])
-
-                # Calculate cross-correlation of returns with BTC
-                X[f'cross_correlation_returns_{window_size}_{lookback_window}_BTC'] = merged_rolling.corr(merged[f'returns_{window_size}_BTC'])
-
-        return X
         
 class OrderBookFeatures(BaseEstimator, TransformerMixin):
     
@@ -669,9 +605,9 @@ class FillNaTransformer(BaseEstimator, TransformerMixin):
             else:
                 if X[col].isnull().sum() > 0:
                     # Fill missing values with the rolling mean
-                    X[col] = X[col].fillna(X[col].rolling(window = 7).mean().fillna(0))
+                    X[col] = X[col].fillna(X[col].rolling(window = 7).mean())
 
-        return X.fillna(0)
+        return X
 
 class TradeFeatures(BaseEstimator, TransformerMixin):
 
@@ -2501,12 +2437,14 @@ class RiskFeatures(BaseEstimator, TransformerMixin):
             filter = self.ml_dataset['symbol_id'] == token
             for window in self.windows:
                 if window == 1:
-                    clip_upper_bound = 1
+                    clip_upper_bound = 0.57
                 elif window == 7:
-                    clip_upper_bound = 5
-                else:
-                    clip_upper_bound = 10
-
+                    clip_upper_bound = 3.55
+                elif window == 30:
+                    clip_upper_bound = 9.44
+                elif window == 180:
+                    clip_upper_bound = 59
+                    
                 # Calculate returns
                 self.ml_dataset.loc[filter, f'returns_{window}'] = self.ml_dataset.loc[filter, 'close'].pct_change(window).clip(-1, clip_upper_bound)
 
