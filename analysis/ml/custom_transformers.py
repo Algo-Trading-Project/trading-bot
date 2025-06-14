@@ -127,7 +127,7 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
             how = 'left', 
             suffixes = ('_spot', '_futures')
         )
-        tokens = sorted(self.ml_dataset['symbol_id_spot'].unique().tolist())
+        tokens = sorted(self.ml_dataset['symbol_id'].unique().tolist())
 
         # Calculate cross-sectional 1d returns features
         final_features = []
