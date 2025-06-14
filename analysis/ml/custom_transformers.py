@@ -237,8 +237,8 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
             final_features.append(futures_returns_pivot_zscore)
 
             # Append the 4 moments of cross-sectional returns to the final features list
-            spot_cs_returns_moments_cols = [col for col in spot_returns_pivot.columns any([x in col for x in ['mean', 'std', 'skew', 'kurtosis', 'median', '10th_percentile', '90th_percentile']])]
-            futures_cs_returns_moments_cols = [col for col in futures_returns_pivot.columns any([x in col for x in ['mean', 'std', 'skew', 'kurtosis', 'median', '10th_percentile', '90th_percentile']])]
+            spot_cs_returns_moments_cols = [col for col in spot_returns_pivot.columns if any([x in col for x in ['mean', 'std', 'skew', 'kurtosis', 'median', '10th_percentile', '90th_percentile']])]
+            futures_cs_returns_moments_cols = [col for col in futures_returns_pivot.columns if any([x in col for x in ['mean', 'std', 'skew', 'kurtosis', 'median', '10th_percentile', '90th_percentile']])]
 
             final_features.append(spot_returns_pivot[spot_cs_returns_moments_cols])
             final_features.append(futures_returns_pivot[futures_cs_returns_moments_cols])
