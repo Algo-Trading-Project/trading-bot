@@ -163,26 +163,22 @@ class WalkForwardOptimization:
             else:
                 raise ValueError('Invalid strategy type')
 
-        # If we are in an out-of-sample period, we apply the strategy to the in-sample and out-of-sample data
-        # This allows us to access historical data in the in-sample period to help generate signals for the out-of-sample period
         else:
-            backtest_window = self.backtest_data.iloc[self.is_start_i:self.oos_end_i + 1]
+            # If we are in an out-of-sample period, we apply the strategy to the in-sample and out-of-sample data
+            # This allows us to access historical data in the in-sample period to help generate signals for the out-of-sample period.
+            # Only do this for non-ML strategies
+            if issubclass(type(self.strategy), BasePortfolioStrategy):
+                backtest_window = self.backtest_data.iloc[self.oos_start_i:self.oos_end_i + 1]
+            else:
+                backtest_window = self.backtest_data.iloc[self.is_start_i:self.oos_end_i + 1]
 
             if issubclass(type(self.strategy), BasePortfolioStrategy):
-                # Set the start date of the strategy to the start of the out-of-sample period
-                self.strategy.start_date = self.backtest_data.index[self.oos_start_i]
-
                 oos_port = self.strategy.run_strategy_with_parameter_combination(
                     backtest_window, 
                     **params
                 )
                 
-                # Return out-of-sample portfolio backtested on 
-                # the optimal in-sample parameters
-
-                # Switch the strategy back to train mode after walk-forward optimization
-                # self.strategy.is_train = True
-
+                # Return out-of-sample portfolio backtested on the optimal in-sample parameters
                 return oos_port
 
             elif issubclass(type(self.strategy), BaseStrategy):

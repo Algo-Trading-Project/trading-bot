@@ -36,28 +36,39 @@ class RollingZScoreScaler(BaseEstimator, TransformerMixin):
         triple_barrier_label_cols = [col for col in X if 'triple_barrier_label_h' in col]
         trade_returns_cols = [col for col in X if 'trade_returns_h' in col]
         z_cols = [col for col in X if 'zscore' in col]
-        percentile_cols = [col for col in X if 'percentile' in col]
 
         for col in X.columns:
             if col in ('symbol_id', 'asset_id_base', 'asset_id_quote', 'exchange_id', 'time_period_end') \
             or col in triple_barrier_label_cols \
             or col in z_cols \
-            or col in percentile_cols \
             or col in ('hour', 'day_of_week', 'day_of_month', 'month', 'year', 'is_holiday') \
+            or X[col].dtype in ['object', 'category'] \
             or col in trade_returns_cols:
                 continue
+
+            # If col has all NaNs, fill with NaN
+            if X[col].isna().all():
+                col_name = col + '_rz_'
 
             for window_size in self.window_sizes:
                 if window_size == 'expanding':
                     col_name = col + '_rz_expanding'
-                    rolling_mean = X[col].shift(1).expanding().mean()
-                    rolling_std = X[col].shift(1).expanding().std()
-                    new_col = pd.Series((X[col] - rolling_mean) / rolling_std, name = col_name).clip(-10, 10)
+                    # If col has all NaNs, fill with NaN
+                    if X[col].isna().all():
+                        new_col = pd.Series([np.nan] * len(X), name = col_name)
+                    else:
+                        rolling_mean = X[col].shift(1).expanding().mean()
+                        rolling_std = X[col].shift(1).expanding().std()
+                        new_col = pd.Series((X[col] - rolling_mean) / rolling_std, name = col_name).clip(-10, 10)
                 else:
                     col_name = col + '_rz_' + str(window_size)
-                    rolling_mean = X[col].shift(1).rolling(window = window_size, min_periods = 7).mean()
-                    rolling_std = X[col].shift(1).rolling(window = window_size, min_periods = 7).std()
-                    new_col = pd.Series((X[col] - rolling_mean) / rolling_std, name = col_name).clip(-10, 10)
+                    # If col has all NaNs, fill with NaN
+                    if X[col].isna().all():
+                        new_col = pd.Series([np.nan] * len(X), name = col_name)
+                    else:
+                        rolling_mean = X[col].shift(1).rolling(window = window_size, min_periods = 7).mean()
+                        rolling_std = X[col].shift(1).rolling(window = window_size, min_periods = 7).std()
+                        new_col = pd.Series((X[col] - rolling_mean) / rolling_std, name = col_name).clip(-10, 10)
 
                 new_cols.append(new_col)   
 
@@ -96,8 +107,6 @@ class LagFeatures(BaseEstimator, TransformerMixin):
 class ReturnsFeatures(BaseEstimator, TransformerMixin):
     
     def __init__(self, window_sizes, lookback_windows):
-        print('ReturnsFeatures...')
-        print()
         self.window_sizes = window_sizes
         self.lookback_windows = lookback_windows
 
@@ -126,9 +135,17 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
             self.spot_data, 
             self.futures_data, 
             on = ['time_period_end', 'symbol_id'], 
-            how = 'left', 
+            how = 'outer', 
             suffixes = ('_spot', '_futures')
         )
+        self.ml_dataset.rename({
+            'time_period_end_spot': 'time_period_end',
+            'asset_id_base_spot': 'asset_id_base',
+            'asset_id_quote_spot': 'asset_id_quote',
+            'exchange_id_spot': 'exchange_id',
+            'symbol_id_spot': 'symbol_id'
+        }, inplace = True, axis = 1)
+        self.ml_dataset.drop(columns = ['asset_id_base_futures', 'asset_id_quote_futures', 'exchange_id_futures', 'symbol_id_futures', 'time_period_end_futures'], inplace = True, errors = 'ignore', axis = 1)
         tokens = sorted(self.ml_dataset['symbol_id'].unique().tolist())
 
         # Calculate cross-sectional 1d returns features
@@ -137,13 +154,12 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
         # N-day returns
         for window in self.window_sizes:
             self.ml_dataset[f'spot_returns_{window}'] = np.nan
-            self.ml_dataset[f'spot_log_returns_{window}'] = np.nan
             self.ml_dataset[f'futures_returns_{window}'] = np.nan
-            self.ml_dataset[f'futures_log_returns_{window}'] = np.nan
 
         for token in tokens:
             filter = self.ml_dataset['symbol_id'] == token
             for window in self.window_sizes:
+                print(f'Calculating returns for {token} with window size {window}...')
                 # Spot clipping of returns
                 if window == 1:
                     clip_upper_bound = 0.57
@@ -195,7 +211,13 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
             # Perform cross-sectional rank features for each time period
             spot_returns_pivot = self.ml_dataset.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'spot_returns_{window}', dropna = False)
             spot_returns_pivot_percentile = spot_returns_pivot.rank(axis = 1, pct = True)
-            spot_returns_pivot_percentile.columns = [col + f'cs_spot_returns_percentile_{window}' for col in spot_returns_pivot.columns]
+            spot_returns_pivot_percentile.columns = [col + f'returns_percentile_{window}_css' for col in spot_returns_pivot.columns]
+
+            # Cross-sectional z-scores for each symbol for each time period
+            spot_returns_cs_mean = spot_returns_pivot.mean(axis = 1)
+            spot_returns_cs_std = spot_returns_pivot.std(axis = 1)            
+            spot_returns_pivot_zscore = (spot_returns_pivot.sub(spot_returns_cs_mean, axis = 0)).div(spot_returns_cs_std, axis = 0)
+            spot_returns_pivot_zscore.columns = [col + f'returns_zscore_{window}_css' for col in spot_returns_pivot_zscore.columns]
 
             # 4 moments of cross-sectional returns for each symbol for each time period
             spot_returns_pivot[f'cs_spot_returns_mean_{window}'] = spot_returns_pivot.mean(axis = 1)
@@ -203,12 +225,15 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
             spot_returns_pivot[f'cs_spot_returns_skew_{window}'] = spot_returns_pivot.skew(axis = 1)
             spot_returns_pivot[f'cs_spot_returns_kurtosis_{window}'] = spot_returns_pivot.kurtosis(axis = 1)
             spot_returns_pivot[f'cs_spot_returns_median_{window}'] = spot_returns_pivot.median(axis = 1)
-            spot_returns_pivot[f'cs_spot_returns_10th_percentile_{window}'] = spot_returns_pivot.quantile(0.1, axis = 1)
-            spot_returns_pivot[f'cs_spot_returns_90th_percentile_{window}'] = spot_returns_pivot.quantile(0.9, axis = 1)
             
             futures_returns_pivot = self.ml_dataset.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'futures_returns_{window}', dropna = False)
             futures_returns_pivot_percentile = futures_returns_pivot.rank(axis = 1, pct = True)
-            futures_returns_pivot_percentile.columns = [col + f'cs_futures_returns_percentile_{window}' for col in futures_returns_pivot.columns]
+            futures_returns_pivot_percentile.columns = [col + f'returns_percentile_{window}_csf' for col in futures_returns_pivot.columns]
+
+            futures_returns_cs_mean = futures_returns_pivot.mean(axis = 1)
+            futures_returns_cs_std = futures_returns_pivot.std(axis = 1)
+            futures_returns_pivot_zscore = (futures_returns_pivot.sub(futures_returns_cs_mean, axis = 0)).div(futures_returns_cs_std, axis = 0)
+            futures_returns_pivot_zscore.columns = [col + f'returns_zscore_{window}_csf' for col in futures_returns_pivot_zscore.columns]
 
             # 4 moments of cross-sectional returns for each symbol for each time period
             futures_returns_pivot[f'cs_futures_returns_mean_{window}'] = futures_returns_pivot.mean(axis = 1)
@@ -216,19 +241,6 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
             futures_returns_pivot[f'cs_futures_returns_skew_{window}'] = futures_returns_pivot.skew(axis = 1)
             futures_returns_pivot[f'cs_futures_returns_kurtosis_{window}'] = futures_returns_pivot.kurtosis(axis = 1)
             futures_returns_pivot[f'cs_futures_returns_median_{window}'] = futures_returns_pivot.median(axis = 1)
-            futures_returns_pivot[f'cs_futures_returns_10th_percentile_{window}'] = futures_returns_pivot.quantile(0.1, axis = 1)
-            futures_returns_pivot[f'cs_futures_returns_90th_percentile_{window}'] = futures_returns_pivot.quantile(0.9, axis = 1)
-
-            # Cross-sectional z-scores for each symbol for each time period
-            spot_returns_cs_mean = spot_returns_pivot.mean(axis = 1)
-            spot_returns_cs_std = spot_returns_pivot.std(axis = 1)
-            spot_returns_pivot_zscore = (spot_returns_pivot - spot_returns_cs_mean) / spot_returns_cs_std
-            spot_returns_pivot_zscore.columns = [col + f'cs_spot_returns_zscore_{window}' for col in spot_returns_pivot_zscore.columns]
-
-            futures_returns_cs_mean = futures_returns_pivot.mean(axis = 1)
-            futures_returns_cs_std = futures_returns_pivot.std(axis = 1)
-            futures_returns_pivot_zscore = (futures_returns_pivot - futures_returns_cs_mean) / futures_returns_cs_std
-            futures_returns_pivot_zscore.columns = [col + f'cs_futures_returns_zscore_{window}' for col in futures_returns_pivot_zscore.columns]
 
             # Append the percentile and z-score features to the final features list
             final_features.append(spot_returns_pivot_percentile)
@@ -237,8 +249,8 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
             final_features.append(futures_returns_pivot_zscore)
 
             # Append the 4 moments of cross-sectional returns to the final features list
-            spot_cs_returns_moments_cols = [col for col in spot_returns_pivot.columns if any([x in col for x in ['mean', 'std', 'skew', 'kurtosis', 'median', '10th_percentile', '90th_percentile']])]
-            futures_cs_returns_moments_cols = [col for col in futures_returns_pivot.columns if any([x in col for x in ['mean', 'std', 'skew', 'kurtosis', 'median', '10th_percentile', '90th_percentile']])]
+            spot_cs_returns_moments_cols = [col for col in spot_returns_pivot.columns if any([x in col for x in ['mean', 'std', 'skew', 'kurtosis', 'median']])]
+            futures_cs_returns_moments_cols = [col for col in futures_returns_pivot.columns if any([x in col for x in ['mean', 'std', 'skew', 'kurtosis', 'median']])]
 
             final_features.append(spot_returns_pivot[spot_cs_returns_moments_cols])
             final_features.append(futures_returns_pivot[futures_cs_returns_moments_cols])
@@ -248,13 +260,13 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
             # Cross-sectional sharpe ratios for each symbol for each time period
             pivot_spot_sharpe = self.ml_dataset.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'spot_sharpe_ratio_1_{lookback}', dropna = False)
             pivot_spot_sharpe_decile = pivot_spot_sharpe.rank(axis = 1, pct = True)
-            pivot_spot_sharpe_decile.columns = [col + f'cs_spot_sharpe_percentile_{lookback}' for col in pivot_spot_sharpe_decile.columns]
+            pivot_spot_sharpe_decile.columns = [col + f'sharpe_percentile_{lookback}_css' for col in pivot_spot_sharpe_decile.columns]
 
             # Cross-sectional sharpe z-scores
             pivot_spot_sharpe_cs_mean = pivot_spot_sharpe.mean(axis = 1)
             pivot_spot_sharpe_cs_std = pivot_spot_sharpe.std(axis = 1)
-            pivot_spot_sharpe_zscore = (pivot_spot_sharpe - pivot_spot_sharpe_cs_mean) / pivot_spot_sharpe_cs_std
-            pivot_spot_sharpe_zscore.columns = [col + f'cs_spot_sharpe_zscore_{lookback}' for col in pivot_spot_sharpe_zscore.columns]
+            pivot_spot_sharpe_zscore = pivot_spot_sharpe.sub(pivot_spot_sharpe_cs_mean, axis = 0).div(pivot_spot_sharpe_cs_std, axis = 0)
+            pivot_spot_sharpe_zscore.columns = [col + f'sharpe_zscore_{lookback}_css' for col in pivot_spot_sharpe_zscore.columns]
 
             # 4 moments of cross-sectional sharpe ratios
             pivot_spot_sharpe[f'cs_spot_sharpe_mean_{lookback}'] = pivot_spot_sharpe.mean(axis = 1)
@@ -262,11 +274,9 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
             pivot_spot_sharpe[f'cs_spot_sharpe_skew_{lookback}'] = pivot_spot_sharpe.skew(axis = 1)
             pivot_spot_sharpe[f'cs_spot_sharpe_kurtosis_{lookback}'] = pivot_spot_sharpe.kurtosis(axis = 1)
             pivot_spot_sharpe[f'cs_spot_sharpe_median_{lookback}'] = pivot_spot_sharpe.median(axis = 1)
-            pivot_spot_sharpe[f'cs_spot_sharpe_10th_percentile_{lookback}'] = pivot_spot_sharpe.quantile(0.1, axis = 1)
-            pivot_spot_sharpe[f'cs_spot_sharpe_90th_percentile_{lookback}'] = pivot_spot_sharpe.quantile(0.9, axis = 1)
 
             # Append 4 moments of cross-sectional sharpe ratios to the final features list
-            spot_cs_sharpe_moments_cols = [col for col in pivot_spot_sharpe.columns if any(x in col for x in ['mean', 'std', 'skew', 'kurtosis', 'median', '10th_percentile', '90th_percentile'])]
+            spot_cs_sharpe_moments_cols = [col for col in pivot_spot_sharpe.columns if any(x in col for x in ['mean', 'std', 'skew', 'kurtosis', 'median'])]
             
             final_features.append(pivot_spot_sharpe[spot_cs_sharpe_moments_cols])
             final_features.append(pivot_spot_sharpe_decile)
@@ -275,13 +285,13 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
             # Cross-sectional sortino ratios for each symbol for each time period
             pivot_spot_sortino = self.ml_dataset.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'spot_sortino_ratio_1_{lookback}', dropna = False)
             pivot_spot_sortino_decile = pivot_spot_sortino.rank(axis = 1, pct = True)
-            pivot_spot_sortino_decile.columns = [col + f'cs_spot_sortino_percentile_{lookback}' for col in pivot_spot_sortino_decile.columns]
+            pivot_spot_sortino_decile.columns = [col + f'sortino_percentile_{lookback}_css' for col in pivot_spot_sortino_decile.columns]
 
             # Cross-sectional sortino z-scores
             pivot_spot_sortino_cs_mean = pivot_spot_sortino.mean(axis = 1)
             pivot_spot_sortino_cs_std = pivot_spot_sortino.std(axis = 1)
-            pivot_spot_sortino_zscore = (pivot_spot_sortino - pivot_spot_sortino_cs_mean) / pivot_spot_sortino_cs_std
-            pivot_spot_sortino_zscore.columns = [col + f'cs_spot_sortino_zscore_{lookback}' for col in pivot_spot_sortino_zscore.columns]
+            pivot_spot_sortino_zscore = pivot_spot_sortino.sub(pivot_spot_sortino_cs_mean, axis = 0).div(pivot_spot_sortino_cs_std, axis = 0)
+            pivot_spot_sortino_zscore.columns = [col + f'sortino_zscore_{lookback}_css' for col in pivot_spot_sortino_zscore.columns]
 
             # 4 moments of cross-sectional sortino ratios
             pivot_spot_sortino[f'cs_spot_sortino_mean_{lookback}'] = pivot_spot_sortino.mean(axis = 1)
@@ -289,11 +299,9 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
             pivot_spot_sortino[f'cs_spot_sortino_skew_{lookback}'] = pivot_spot_sortino.skew(axis = 1)
             pivot_spot_sortino[f'cs_spot_sortino_kurtosis_{lookback}'] = pivot_spot_sortino.kurtosis(axis = 1)
             pivot_spot_sortino[f'cs_spot_sortino_median_{lookback}'] = pivot_spot_sortino.median(axis = 1)
-            pivot_spot_sortino[f'cs_spot_sortino_10th_percentile_{lookback}'] = pivot_spot_sortino.quantile(0.1, axis = 1)
-            pivot_spot_sortino[f'cs_spot_sortino_90th_percentile_{lookback}'] = pivot_spot_sortino.quantile(0.9, axis = 1)
 
             # Append 4 moments of cross-sectional sortino ratios to the final features list
-            spot_cs_sortino_moments_cols = [col for col in pivot_spot_sortino.columns if any(x in col for x in ['mean', 'std', 'skew', 'kurtosis', 'median', '10th_percentile', '90th_percentile'])]
+            spot_cs_sortino_moments_cols = [col for col in pivot_spot_sortino.columns if any(x in col for x in ['mean', 'std', 'skew', 'kurtosis', 'median'])]
 
             final_features.append(pivot_spot_sortino[spot_cs_sortino_moments_cols])
             final_features.append(pivot_spot_sortino_decile)
@@ -303,13 +311,13 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
             # Cross-sectional sharpe ratios for each symbol for each time period
             pivot_futures_sharpe = self.ml_dataset.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'futures_sharpe_ratio_1_{lookback}', dropna = False)
             pivot_futures_sharpe_decile = pivot_futures_sharpe.rank(axis = 1, pct = True)
-            pivot_futures_sharpe_decile.columns = [col + f'cs_futures_sharpe_percentile_{lookback}' for col in pivot_futures_sharpe_decile.columns]
+            pivot_futures_sharpe_decile.columns = [col + f'sharpe_percentile_{lookback}_csf' for col in pivot_futures_sharpe_decile.columns]
 
             # Cross-sectional sharpe z-scores
             pivot_futures_sharpe_cs_mean = pivot_futures_sharpe.mean(axis = 1)
             pivot_futures_sharpe_cs_std = pivot_futures_sharpe.std(axis = 1)
-            pivot_futures_sharpe_zscore = (pivot_futures_sharpe - pivot_futures_sharpe_cs_mean) / pivot_futures_sharpe_cs_std
-            pivot_futures_sharpe_zscore.columns = [col + f'cs_futures_sharpe_zscore_{lookback}' for col in pivot_futures_sharpe_zscore.columns]
+            pivot_futures_sharpe_zscore = pivot_futures_sharpe.sub(pivot_futures_sharpe_cs_mean, axis = 0).div(pivot_futures_sharpe_cs_std, axis = 0)
+            pivot_futures_sharpe_zscore.columns = [col + f'sharpe_zscore_{lookback}_csf' for col in pivot_futures_sharpe_zscore.columns]
 
             # 4 moments of cross-sectional sharpe ratios
             pivot_futures_sharpe[f'cs_futures_sharpe_mean_{lookback}'] = pivot_futures_sharpe.mean(axis = 1)
@@ -317,11 +325,9 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
             pivot_futures_sharpe[f'cs_futures_sharpe_skew_{lookback}'] = pivot_futures_sharpe.skew(axis = 1)
             pivot_futures_sharpe[f'cs_futures_sharpe_kurtosis_{lookback}'] = pivot_futures_sharpe.kurtosis(axis = 1)
             pivot_futures_sharpe[f'cs_futures_sharpe_median_{lookback}'] = pivot_futures_sharpe.median(axis = 1)
-            pivot_futures_sharpe[f'cs_futures_sharpe_10th_percentile_{lookback}'] = pivot_futures_sharpe.quantile(0.1, axis = 1)
-            pivot_futures_sharpe[f'cs_futures_sharpe_90th_percentile_{lookback}'] = pivot_futures_sharpe.quantile(0.9, axis = 1)
 
             # Append 4 moments of cross-sectional sharpe ratios to the final features list
-            futures_cs_sharpe_moments_cols = [col for col in pivot_futures_sharpe.columns if any(x in col for x in ['mean', 'std', 'skew', 'kurtosis', 'median', '10th_percentile', '90th_percentile'])]
+            futures_cs_sharpe_moments_cols = [col for col in pivot_futures_sharpe.columns if any(x in col for x in ['mean', 'std', 'skew', 'kurtosis', 'median'])]
 
             final_features.append(pivot_futures_sharpe[futures_cs_sharpe_moments_cols])
             final_features.append(pivot_futures_sharpe_decile)
@@ -330,13 +336,13 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
             # Cross-sectional sortino ratios for each symbol for each time period
             pivot_futures_sortino = self.ml_dataset.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'futures_sortino_ratio_1_{lookback}', dropna = False)
             pivot_futures_sortino_decile = pivot_futures_sortino.rank(axis = 1, pct = True)
-            pivot_futures_sortino_decile.columns = [col + f'cs_futures_sortino_percentile_{lookback}' for col in pivot_futures_sortino_decile.columns]
+            pivot_futures_sortino_decile.columns = [col + f'sortino_percentile_{lookback}_csf' for col in pivot_futures_sortino_decile.columns]
 
             # Cross-sectional sortino z-scores
             pivot_futures_sortino_cs_mean = pivot_futures_sortino.mean(axis = 1)
             pivot_futures_sortino_cs_std = pivot_futures_sortino.std(axis = 1)
-            pivot_futures_sortino_zscore = (pivot_futures_sortino - pivot_futures_sortino_cs_mean) / pivot_futures_sortino_cs_std
-            pivot_futures_sortino_zscore.columns = [col + f'cs_futures_sortino_zscore_{lookback}' for col in pivot_futures_sortino_zscore.columns]
+            pivot_futures_sortino_zscore = pivot_futures_sortino.sub(pivot_futures_sortino_cs_mean, axis = 0).div(pivot_futures_sortino_cs_std, axis = 0)
+            pivot_futures_sortino_zscore.columns = [col + f'sortino_zscore_{lookback}_csf' for col in pivot_futures_sortino_zscore.columns]
 
             # 4 moments of cross-sectional sortino ratios
             pivot_futures_sortino[f'cs_futures_sortino_mean_{lookback}'] = pivot_futures_sortino.mean(axis = 1)
@@ -344,11 +350,9 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
             pivot_futures_sortino[f'cs_futures_sortino_skew_{lookback}'] = pivot_futures_sortino.skew(axis = 1)
             pivot_futures_sortino[f'cs_futures_sortino_kurtosis_{lookback}'] = pivot_futures_sortino.kurtosis(axis = 1)
             pivot_futures_sortino[f'cs_futures_sortino_median_{lookback}'] = pivot_futures_sortino.median(axis = 1)
-            pivot_futures_sortino[f'cs_futures_sortino_10th_percentile_{lookback}'] = pivot_futures_sortino.quantile(0.1, axis = 1)
-            pivot_futures_sortino[f'cs_futures_sortino_90th_percentile_{lookback}'] = pivot_futures_sortino.quantile(0.9, axis = 1)
 
             # Append 4 moments of cross-sectional sortino ratios to the final features list
-            futures_cs_sortino_moments_cols = [col for col in pivot_futures_sortino.columns if any(x in col for x in ['mean', 'std', 'skew', 'kurtosis', 'median', '10th_percentile', '90th_percentile'])]
+            futures_cs_sortino_moments_cols = [col for col in pivot_futures_sortino.columns if any(x in col for x in ['mean', 'std', 'skew', 'kurtosis', 'median'])]
 
             final_features.append(pivot_futures_sortino[futures_cs_sortino_moments_cols])
             final_features.append(pivot_futures_sortino_decile)
@@ -364,48 +368,20 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
         X['dollar_volume_spot'] = X['close_spot'] * X['volume_spot']
         X['dollar_volume_futures'] = X['close_futures'] * X['volume_futures']
         for window_size in self.window_sizes:
-            # Clipping of returns (spot)
-            if window_size == 1:
-                clip_upper_bound = 0.57
-            elif window_size == 7:
-                clip_upper_bound = 3.55
-            elif window_size == 30:
-                clip_upper_bound = 9.44
-            elif window_size == 180:
-                clip_upper_bound = 59
-
             # Spot
-            X[f'spot_returns_{window_size}'] = X['close_spot'].pct_change(window_size).clip(-1, clip_upper_bound)
-            X[f'spot_returns_dollar_volume_{window_size}'] = X['dollar_volume_spot'].pct_change(window_size)
-            X[f'spot_returns_per_dollar_volume_{window_size}'] = X[f'spot_returns_{window_size}'] / X['dollar_volume_spot']
-            X[f'spot_abs_returns_per_dollar_volume_{window_size}'] = X[f'spot_returns_{window_size}'].abs() / X['dollar_volume_spot']
-
-            # Clipping of returns (futures)
-            if window_size == 1:
-                clip_upper_bound = 0.47
-            elif window_size == 7:
-                clip_upper_bound = 2.05
-            elif window_size == 30:
-                clip_upper_bound = 7.09
-            elif window_size == 180:
-                clip_upper_bound = 22.7
-            
+            X[f'spot_returns_{window_size}'] = X['close_spot'].pct_change(window_size).clip(-1, clip_upper_bound)            
             # Futures 
             X[f'futures_returns_{window_size}'] = X['close_futures'].pct_change(window_size).clip(-1, clip_upper_bound)
-            X[f'futures_returns_dollar_volume_{window_size}'] = X['dollar_volume_futures'].pct_change(window_size)
-            X[f'futures_returns_per_dollar_volume_{window_size}'] = X[f'futures_returns_{window_size}'] / X['dollar_volume_futures']
-            X[f'futures_abs_returns_per_dollar_volume_{window_size}'] = X[f'futures_returns_{window_size}'].abs() / X['dollar_volume_futures']
             
             # Forward returns for future prediction evaluation
             X[f'forward_returns_{window_size}'] = X[f'spot_returns_{window_size}'].shift(-window_size)
+            X[f'futures_forward_returns_{window_size}'] = X[f'futures_returns_{window_size}'].shift(-window_size) 
 
             for lookback_window in self.lookback_windows:
                 # Spot
                 # Calculate returns distributional features
                 X[f'avg_spot_returns_{window_size}_{lookback_window}'] = X[f'spot_returns_{window_size}'].rolling(window = lookback_window, min_periods = 7).mean()
-                X[f'10th_percentile_spot_returns_{window_size}_{lookback_window}'] = X[f'spot_returns_{window_size}'].rolling(window = lookback_window, min_periods = 7).quantile(0.1)
                 X[f'median_spot_returns_{window_size}_{lookback_window}'] = X[f'spot_returns_{window_size}'].rolling(window = lookback_window, min_periods = 7).median()
-                X[f'90th_percentile_spot_returns_{window_size}_{lookback_window}'] = X[f'spot_returns_{window_size}'].rolling(window = lookback_window, min_periods = 7).quantile(0.9)
                 X[f'std_spot_returns_{window_size}_{lookback_window}'] = X[f'spot_returns_{window_size}'].rolling(window = lookback_window, min_periods = 7).std()
                 X[f'skewness_spot_returns_{window_size}_{lookback_window}'] = X[f'spot_returns_{window_size}'].rolling(window = lookback_window, min_periods = 7).skew()
                 X[f'kurtosis_spot_returns_{window_size}_{lookback_window}'] = X[f'spot_returns_{window_size}'].rolling(window = lookback_window, min_periods = 7).kurt()
@@ -419,9 +395,7 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
                 # Futures
                 # Calculate returns distributional features
                 X[f'avg_futures_returns_{window_size}_{lookback_window}'] = X[f'futures_returns_{window_size}'].rolling(window = lookback_window, min_periods = 7).mean()
-                X[f'10th_percentile_futures_returns_{window_size}_{lookback_window}'] = X[f'futures_returns_{window_size}'].rolling(window = lookback_window, min_periods = 7).quantile(0.1)
                 X[f'median_futures_returns_{window_size}_{lookback_window}'] = X[f'futures_returns_{window_size}'].rolling(window = lookback_window, min_periods = 7).median()
-                X[f'90th_percentile_futures_returns_{window_size}_{lookback_window}'] = X[f'futures_returns_{window_size}'].rolling(window = lookback_window, min_periods = 7).quantile(0.9)
                 X[f'std_futures_returns_{window_size}_{lookback_window}'] = X[f'futures_returns_{window_size}'].rolling(window = lookback_window, min_periods = 7).std()
                 X[f'skewness_futures_returns_{window_size}_{lookback_window}'] = X[f'futures_returns_{window_size}'].rolling(window = lookback_window, min_periods = 7).skew()
                 X[f'kurtosis_futures_returns_{window_size}_{lookback_window}'] = X[f'futures_returns_{window_size}'].rolling(window = lookback_window, min_periods = 7).kurt()
@@ -435,159 +409,33 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
         # Cross-sectional rank features for current token and time period
         symbol_id = X.iloc[0]['symbol_id']
 
-        # Cross_sectional percentile columns for the current token
-        cross_sectional_percentile_cols = [col for col in self.final_features.columns if col.startswith(symbol_id) and 'percentile' in col]
-        # Cross-sectional z-score columns for the current token
-        all_zscore_cols = [col for col in self.final_features.columns if col.startswith(symbol_id) and 'zscore' in col]
+        # Cross_sectional percentile and z-score columns for the current token
+        cross_sectional_ranking_cols = self.final_features.filter(like = symbol_id).columns.to_list()
+
         # Cross-sectional 4 moments features for the current token
-        cross_sectional_moments_cols = [col for col in self.final_features.columns if 'cs_spot' in col or 'cs_futures' in col]
+        cross_sectional_moments_cols_spot = self.final_features.filter(like = 'cs_spot').columns.to_list()
+        cross_sectional_moments_cols_futures = self.final_features.filter(like = 'cs_futures').columns.to_list()
 
         # Merge data to final features
-        valid_cols = cross_sectional_percentile_cols + all_zscore_cols + cross_sectional_moments_cols
-        X = pd.merge(X, self.final_features[['time_period_end'] + valid_cols], on = 'time_period_end', how = 'left', suffixes = ('', '__remove'))
+        valid_cols = cross_sectional_ranking_cols + cross_sectional_moments_cols_spot + cross_sectional_moments_cols_futures
+        X = pd.merge(
+            X, 
+            self.final_features[['time_period_end'] + valid_cols], 
+            on = 'time_period_end', 
+            how = 'left', 
+            suffixes = ('', '__remove')
+        )
 
         # Drop the columns with '__remove' suffix
         X = X.drop(columns = [col for col in X.columns if '__remove' in col], axis = 1)
 
         # Rename the cross-sectional percentile columns to remove the symbol_id from it
-        for col in cross_sectional_decile_cols:
+        for col in cross_sectional_ranking_cols:
             new_col = col.replace(symbol_id, '')
-            X = X.rename(columns = {col: new_col})
-
-        # Rename the cross-sectional z-score columns to remove the symbol_id from it
-        for col in all_zscore_cols:
-            new_col = col.replace(symbol_id, '')
-            X = X.rename(columns = {col: new_col})
+            X.rename({col: new_col}, inplace = True, axis = 1)
 
         return X
     
-class TripleBarrierLabelFeatures(BaseEstimator, TransformerMixin):
-        
-        def __init__(self, max_holding_times, std_lookback_windows):
-            self.max_holding_times = max_holding_times
-            self.std_lookback_windows = std_lookback_windows
-        
-        def fit(self, X, y=None):
-            return self
-    
-        def transform(self, X): 
-            X = X.copy()
-            for max_holding_time in self.max_holding_times:
-                for std_lookback_window in self.std_lookback_windows:
-                    labels, trade_returns, start_date_indices, end_date_indices = calculate_triple_barrier_labels(X, max_holding_time = max_holding_time, std_lookback_window = std_lookback_window)
-                    
-                    X[f'triple_barrier_label_h{max_holding_time}'] = labels
-                    X[f'trade_returns_h{max_holding_time}'] = trade_returns
-                    X[f'start_date_triple_barrier_label_h{max_holding_time}'] = pd.NaT
-                    X[f'end_date_triple_barrier_label_h{max_holding_time}'] = pd.NaT
-
-                    for i in range(len(start_date_indices)):
-                        start_date_index = start_date_indices[i]
-                        end_date_index = end_date_indices[i]         
-
-                        if pd.isna(start_date_index):
-                            X.loc[i, f'start_date_triple_barrier_label_h{max_holding_time}'] = pd.NaT
-                        else:               
-                            X.loc[i, f'start_date_triple_barrier_label_h{max_holding_time}'] = X.loc[start_date_index, 'time_period_end']
-
-                        if pd.isna(end_date_index):
-                            X.loc[i, f'end_date_triple_barrier_label_h{max_holding_time}'] = pd.NaT
-                        else:
-                            X.loc[i, f'end_date_triple_barrier_label_h{max_holding_time}'] = X.loc[end_date_index, 'time_period_end']
-                
-            return X
-        
-class OrderBookFeatures(BaseEstimator, TransformerMixin):
-    
-    def __init__(self):
-        pass
-
-    def fit(self, X, y=None):
-        return self
-
-    def transform(self, X):
-        # Join the order book data with the features
-        asset_id_base = X['asset_id_base'].iloc[0]
-        asset_id_quote = X['asset_id_quote'].iloc[0]
-        exchange_id = X['exchange_id'].iloc[0]
-
-        query = f"""
-            SELECT *
-            FROM market_data.order_book_snapshot_1m
-            WHERE
-                asset_id_base = '{asset_id_base}' AND
-                asset_id_quote = '{asset_id_quote}' AND
-                exchange_id = '{exchange_id}'
-            ORDER BY received_time
-        """
-        ob = QUERY(query)
-        
-        # Remove microseconds from the timestamp and change name of the column to match the original data
-        ob['received_time'] = pd.to_datetime(ob['received_time']).dt.floor('s')
-        ob = ob.rename(columns = {'received_time': 'time_period_end'})
-        # Remove duplicates
-        ob = ob.drop_duplicates(subset = ['time_period_end'], keep = 'first')
-        # Set the timestamp as the index
-        ob = ob.set_index('time_period_end')
-        # Fill missing values
-        ob = ob.asfreq('1min').ffill()
-        ob = ob.drop(columns = ['sequence_number'], axis = 1)
-
-        # Downsample the order book data to 1d
-        bid_cols = [f'bid_{i}_price' for i in range(20)]
-        ask_cols = [f'ask_{i}_price' for i in range(20)]
-        bid_size_cols = [f'bid_{i}_size' for i in range(20)]
-        ask_size_cols = [f'ask_{i}_size' for i in range(20)]
-        combined_cols = bid_cols + ask_cols + bid_size_cols + ask_size_cols
-
-        agg_dict = {col: 'last' for col in combined_cols}
-        ob_1d = ob.resample('1d', label='right', closed='left').agg({
-            'asset_id_base': 'last',
-            'asset_id_quote': 'last',
-            'exchange_id': 'last',
-            **agg_dict
-        }).reset_index()
-
-        # Calculate total volumes and imbalances
-        total_bid_dollar_volume = pd.Series(index = ob_1d.index, data = 0)
-        total_bid_volume = pd.Series(index = ob_1d.index, data = 0)
-
-        total_ask_dollar_volume = pd.Series(index = ob_1d.index, data = 0)
-        total_ask_volume = pd.Series(index = ob_1d.index, data = 0)
-
-        for i in range(20):
-            total_bid_dollar_volume += ob_1d[bid_cols[i]] * ob_1d[bid_size_cols[i]]
-            total_ask_dollar_volume += ob_1d[ask_cols[i]] * ob_1d[ask_size_cols[i]]
-
-            total_bid_volume += ob_1d[bid_size_cols[i]]
-            total_ask_volume += ob_1d[ask_size_cols[i]]
-
-        total_dollar_imbalance = (total_bid_dollar_volume - total_ask_dollar_volume) / (total_bid_dollar_volume + total_ask_dollar_volume)
-        total_volume_imbalance = (total_bid_volume - total_ask_volume) / (total_bid_volume + total_ask_volume)
-        
-        ob_1d['total_bid_dollar_volume'] = total_bid_dollar_volume
-        ob_1d['total_ask_dollar_volume'] = total_ask_dollar_volume
-        ob_1d['total_ob_dollar_volume'] = total_bid_dollar_volume + total_ask_dollar_volume
-
-        ob_1d['total_bid_volume'] = total_bid_volume
-        ob_1d['total_ask_volume'] = total_ask_volume
-        ob_1d['total_ob_volume'] = total_bid_volume + total_ask_volume
-
-        ob_1d['total_dollar_imbalance'] = total_dollar_imbalance
-        ob_1d['total_volume_imbalance'] = total_volume_imbalance
-
-        # Normalize the spread by the mid-price
-        ob_1d['normalize_quoted_spread'] = (ob_1d[ask_cols[0]] - ob_1d[bid_cols[0]]) / ((ob_1d[ask_cols[0]] + ob_1d[bid_cols[0]]) / 2)
-
-        # Drop unnecessary columns
-        ob_1d = ob_1d.drop(columns = bid_cols + ask_cols + bid_size_cols + ask_size_cols, axis = 1)
-
-        # Merge the order book features with the original data
-        X = pd.merge(X, ob_1d, on = 'time_period_end', suffixes = ('', '__remove'), how = 'left')
-        X = X.drop(columns = [col for col in X.columns if '__remove' in col], axis = 1)
-        
-        return X
-
 class FillNaTransformer(BaseEstimator, TransformerMixin):
     
     def __init__(self):
@@ -598,12 +446,18 @@ class FillNaTransformer(BaseEstimator, TransformerMixin):
 
     def transform(self, X):
         for col in X.columns:
-            if col == 'time_period_end':
+            # If column has all NaN values, skip it
+            if X[col].isnull().sum() == len(X):
+                continue
+            elif col == 'time_period_end':
                 continue
             elif X[col].dtype in ('O', 'object', 'category'):
-                if X[col].isnull().sum() > 0:
-                    mode = X[col].mode().loc[0]
-                    X[col] = X[col].fillna(mode)
+                try:
+                    if X[col].isnull().sum() > 0:
+                        mode = X[col].mode().loc[0]
+                        X[col] = X[col].fillna(mode)
+                except Exception as e:
+                    continue
             else:
                 if X[col].isnull().sum() > 0:
                     # Fill missing values with the rolling mean
@@ -614,7 +468,6 @@ class FillNaTransformer(BaseEstimator, TransformerMixin):
 class TradeFeatures(BaseEstimator, TransformerMixin):
 
     def __init__(self, windows, lookback_windows = (30, 90, 180)):
-        print('Trade features...')
         self.windows = windows
         self.lookback_windows = lookback_windows
 
@@ -625,8 +478,8 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             ORDER BY asset_id_base, asset_id_quote, exchange_id, time_period_end
             """
         )
-        trade_features['symbol_id'] = trade_features['asset_id_base'] + '_' + trade_features['asset_id_quote'] + '_' + trade_features['exchange_id']
-        trade_features['time_period_end'] = pd.to_datetime(trade_features['time_period_end'])
+        spot_trade_features['symbol_id'] = spot_trade_features['asset_id_base'] + '_' + spot_trade_features['asset_id_quote'] + '_' + spot_trade_features['exchange_id']
+        spot_trade_features['time_period_end'] = pd.to_datetime(spot_trade_features['time_period_end'])
 
         futures_trade_features = QUERY(
             """
@@ -642,9 +495,16 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             spot_trade_features,
             futures_trade_features,
             on = ['time_period_end', 'symbol_id'],
-            how = 'left',
+            how = 'outer',
             suffixes = ('_spot', '_futures')
         )
+        trade_features.rename({
+            'asset_id_base_spot': 'asset_id_base',
+            'asset_id_quote_spot': 'asset_id_quote',
+            'exchange_id_spot': 'exchange_id',
+            'time_period_end_spot': 'time_period_end'
+        }, inplace = True, axis = 1)
+        trade_features.drop(columns = ['asset_id_base_futures', 'asset_id_quote_futures', 'exchange_id_futures', 'time_period_end_futures'], inplace = True, axis = 1, errors = 'ignore')        
 
         final_features = []
 
@@ -652,13 +512,13 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             # Spot
             # Cross-sectional total buy dollar volume percentile for each symbol/day
             spot_total_buy_dollar_volume_pivot = trade_features.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'total_buy_dollar_volume_{window}d_spot', dropna=False).sort_index()
-            spot_total_buy_dollar_volume_percentile = total_buy_dollar_volume_pivot.rank(axis=1, pct=True)
-            spot_total_buy_dollar_volume_percentile.columns = [f'{col}cs_spot_total_buy_dollar_volume_percentile_{window}d' for col in total_buy_dollar_volume_percentile.columns]
+            spot_total_buy_dollar_volume_percentile = spot_total_buy_dollar_volume_pivot.rank(axis=1, pct=True)
+            spot_total_buy_dollar_volume_percentile.columns = [f'{col}cs_spot_total_buy_dollar_volume_percentile_{window}d' for col in spot_total_buy_dollar_volume_percentile.columns]
 
             # Cross-sectional z-score of total buy dollar volume for each symbol/day
             spot_total_buy_dollar_volume_pivot_mean = spot_total_buy_dollar_volume_pivot.mean(axis=1)
             spot_total_buy_dollar_volume_pivot_std = spot_total_buy_dollar_volume_pivot.std(axis=1)
-            spot_total_buy_dollar_volume_zscore = (spot_total_buy_dollar_volume_pivot - spot_total_buy_dollar_volume_pivot_mean) / spot_total_buy_dollar_volume_pivot_std
+            spot_total_buy_dollar_volume_zscore = spot_total_buy_dollar_volume_pivot.sub(spot_total_buy_dollar_volume_pivot_mean, axis=0).div(spot_total_buy_dollar_volume_pivot_std, axis=0)
             spot_total_buy_dollar_volume_zscore.columns = [f'{col}cs_spot_total_buy_dollar_volume_zscore_{window}d' for col in spot_total_buy_dollar_volume_zscore.columns]
 
             # 4 moments of cross-sectional total buy dollar volume
@@ -667,18 +527,16 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             spot_total_buy_dollar_volume_pivot[f'cs_spot_total_buy_dollar_volume_skew_{window}d'] = spot_total_buy_dollar_volume_pivot.skew(axis=1)
             spot_total_buy_dollar_volume_pivot[f'cs_spot_total_buy_dollar_volume_kurtosis_{window}d'] = spot_total_buy_dollar_volume_pivot.kurtosis(axis=1)
             spot_total_buy_dollar_volume_pivot[f'cs_spot_total_buy_dollar_volume_median_{window}d'] = spot_total_buy_dollar_volume_pivot.median(axis=1)
-            spot_total_buy_dollar_volume_pivot[f'cs_spot_total_buy_dollar_volume_10th_percentile_{window}d'] = spot_total_buy_dollar_volume_pivot.quantile(0.1, axis=1)
-            spot_total_buy_dollar_volume_pivot[f'cs_spot_total_buy_dollar_volume_90th_percentile_{window}d'] = spot_total_buy_dollar_volume_pivot.quantile(0.9, axis=1)
 
             # Cross-sectional total sell dollar volume percentile for each symbol/day
             spot_total_sell_dollar_volume_pivot = trade_features.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'total_sell_dollar_volume_{window}d_spot', dropna=False).sort_index()
-            spot_total_sell_dollar_volume_percentile = total_sell_dollar_volume_pivot.rank(axis=1, pct=True)
-            spot_total_sell_dollar_volume_percentile.columns = [f'{col}cs_spot_total_sell_dollar_volume_percentile_{window}d' for col in total_sell_dollar_volume_percentile.columns]
+            spot_total_sell_dollar_volume_percentile = spot_total_sell_dollar_volume_pivot.rank(axis=1, pct=True)
+            spot_total_sell_dollar_volume_percentile.columns = [f'{col}cs_spot_total_sell_dollar_volume_percentile_{window}d' for col in spot_total_sell_dollar_volume_percentile.columns]
 
             # Cross-sectional z-score of total sell dollar volume for each symbol/day
             spot_total_sell_dollar_volume_pivot_mean = spot_total_sell_dollar_volume_pivot.mean(axis=1)
             spot_total_sell_dollar_volume_pivot_std = spot_total_sell_dollar_volume_pivot.std(axis=1)
-            spot_total_sell_dollar_volume_zscore = (spot_total_sell_dollar_volume_pivot - spot_total_sell_dollar_volume_pivot_mean) / spot_total_sell_dollar_volume_pivot_std
+            spot_total_sell_dollar_volume_zscore = spot_total_sell_dollar_volume_pivot.sub(spot_total_sell_dollar_volume_pivot_mean, axis=0).div(spot_total_sell_dollar_volume_pivot_std, axis=0)
             spot_total_sell_dollar_volume_zscore.columns = [f'{col}cs_spot_total_sell_dollar_volume_zscore_{window}d' for col in spot_total_sell_dollar_volume_zscore.columns]
 
             # 4 moments of cross-sectional total sell dollar volume
@@ -687,8 +545,6 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             spot_total_sell_dollar_volume_pivot[f'cs_spot_total_sell_dollar_volume_skew_{window}d'] = spot_total_sell_dollar_volume_pivot.skew(axis=1)
             spot_total_sell_dollar_volume_pivot[f'cs_spot_total_sell_dollar_volume_kurtosis_{window}d'] = spot_total_sell_dollar_volume_pivot.kurtosis(axis=1)
             spot_total_sell_dollar_volume_pivot[f'cs_spot_total_sell_dollar_volume_median_{window}d'] = spot_total_sell_dollar_volume_pivot.median(axis=1)
-            spot_total_sell_dollar_volume_pivot[f'cs_spot_total_sell_dollar_volume_10th_percentile_{window}d'] = spot_total_sell_dollar_volume_pivot.quantile(0.1, axis=1)
-            spot_total_sell_dollar_volume_pivot[f'cs_spot_total_sell_dollar_volume_90th_percentile_{window}d'] = spot_total_sell_dollar_volume_pivot.quantile(0.9, axis=1)
 
             # Cross-sectional total dollar volume percentile for each symbol/day          
             spot_total_dollar_volume_pivot = trade_features.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'total_dollar_volume_{window}d_spot', dropna=False).sort_index()
@@ -698,7 +554,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             # Cross-sectional z-score of total dollar volume for each symbol/day
             spot_total_dollar_volume_pivot_mean = spot_total_dollar_volume_pivot.mean(axis=1)
             spot_total_dollar_volume_pivot_std = spot_total_dollar_volume_pivot.std(axis=1)
-            spot_total_dollar_volume_zscore = (spot_total_dollar_volume_pivot - spot_total_dollar_volume_pivot_mean) / spot_total_dollar_volume_pivot_std
+            spot_total_dollar_volume_zscore = spot_total_dollar_volume_pivot.sub(spot_total_dollar_volume_pivot_mean, axis=0).div(spot_total_dollar_volume_pivot_std, axis=0)
             spot_total_dollar_volume_zscore.columns = [f'{col}cs_spot_total_dollar_volume_zscore_{window}d' for col in spot_total_dollar_volume_zscore.columns]
 
             # 4 moments of cross-sectional total dollar volume
@@ -707,8 +563,6 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             spot_total_dollar_volume_pivot[f'cs_spot_total_dollar_volume_skew_{window}d'] = spot_total_dollar_volume_pivot.skew(axis=1)
             spot_total_dollar_volume_pivot[f'cs_spot_total_dollar_volume_kurtosis_{window}d'] = spot_total_dollar_volume_pivot.kurtosis(axis=1)
             spot_total_dollar_volume_pivot[f'cs_spot_total_dollar_volume_median_{window}d'] = spot_total_dollar_volume_pivot.median(axis=1)
-            spot_total_dollar_volume_pivot[f'cs_spot_total_dollar_volume_10th_percentile_{window}d'] = spot_total_dollar_volume_pivot.quantile(0.1, axis=1)
-            spot_total_dollar_volume_pivot[f'cs_spot_total_dollar_volume_90th_percentile_{window}d'] = spot_total_dollar_volume_pivot.quantile(0.9, axis=1)
 
             # Cross-sectional number of buys percentile for each symbol/day
             spot_num_buys_pivot = trade_features.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'num_buys_{window}d_spot', dropna=False).sort_index()
@@ -718,7 +572,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             # Cross-sectional z-score of number of buys for each symbol/day
             spot_num_buys_pivot_mean = spot_num_buys_pivot.mean(axis=1)
             spot_num_buys_pivot_std = spot_num_buys_pivot.std(axis=1)
-            spot_num_buys_zscore = (spot_num_buys_pivot - spot_num_buys_pivot_mean) / spot_num_buys_pivot_std
+            spot_num_buys_zscore = spot_num_buys_pivot.sub(spot_num_buys_pivot_mean, axis=0).div(spot_num_buys_pivot_std, axis=0)
             spot_num_buys_zscore.columns = [f'{col}cs_spot_num_buys_zscore_{window}d' for col in spot_num_buys_zscore.columns]
 
             # 4 moments of cross-sectional number of buys
@@ -727,8 +581,6 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             spot_num_buys_pivot[f'cs_spot_num_buys_skew_{window}d'] = spot_num_buys_pivot.skew(axis=1)
             spot_num_buys_pivot[f'cs_spot_num_buys_kurtosis_{window}d'] = spot_num_buys_pivot.kurtosis(axis=1)
             spot_num_buys_pivot[f'cs_spot_num_buys_median_{window}d'] = spot_num_buys_pivot.median(axis=1)
-            spot_num_buys_pivot[f'cs_spot_num_buys_10th_percentile_{window}d'] = spot_num_buys_pivot.quantile(0.1, axis=1)
-            spot_num_buys_pivot[f'cs_spot_num_buys_90th_percentile_{window}d'] = spot_num_buys_pivot.quantile(0.9, axis=1)
 
             # Cross-sectional number of sells percentile for each symbol/day
             spot_num_sells_pivot = trade_features.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'num_sells_{window}d_spot', dropna=False).sort_index()
@@ -738,7 +590,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             # Cross-sectional z-score of number of sells for each symbol/day
             spot_num_sells_pivot_mean = spot_num_sells_pivot.mean(axis=1)
             spot_num_sells_pivot_std = spot_num_sells_pivot.std(axis=1)
-            spot_num_sells_zscore = (spot_num_sells_pivot - spot_num_sells_pivot_mean) / spot_num_sells_pivot_std
+            spot_num_sells_zscore = spot_num_sells_pivot.sub(spot_num_sells_pivot_mean, axis=0).div(spot_num_sells_pivot_std, axis=0)
             spot_num_sells_zscore.columns = [f'{col}cs_spot_num_sells_zscore_{window}d' for col in spot_num_sells_zscore.columns]
 
             # 4 moments of cross-sectional number of sells
@@ -747,8 +599,6 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             spot_num_sells_pivot[f'cs_spot_num_sells_skew_{window}d'] = spot_num_sells_pivot.skew(axis=1)
             spot_num_sells_pivot[f'cs_spot_num_sells_kurtosis_{window}d'] = spot_num_sells_pivot.kurtosis(axis=1)
             spot_num_sells_pivot[f'cs_spot_num_sells_median_{window}d'] = spot_num_sells_pivot.median(axis=1)
-            spot_num_sells_pivot[f'cs_spot_num_sells_10th_percentile_{window}d'] = spot_num_sells_pivot.quantile(0.1, axis=1)
-            spot_num_sells_pivot[f'cs_spot_num_sells_90th_percentile_{window}d'] = spot_num_sells_pivot.quantile(0.9, axis=1)
 
             # Cross-sectional percentage buys percentile for each symbol/day
             spot_pct_buys_pivot = trade_features.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'pct_buys_{window}d_spot', dropna=False).sort_index()
@@ -758,7 +608,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             # Cross-sectional z-score of percentage buys for each symbol/day
             spot_pct_buys_pivot_mean = spot_pct_buys_pivot.mean(axis=1)
             spot_pct_buys_pivot_std = spot_pct_buys_pivot.std(axis=1)
-            spot_pct_buys_zscore = (spot_pct_buys_pivot - spot_pct_buys_pivot_mean) / spot_pct_buys_pivot_std
+            spot_pct_buys_zscore = spot_pct_buys_pivot.sub(spot_pct_buys_pivot_mean, axis=0).div(spot_pct_buys_pivot_std, axis=0)
             spot_pct_buys_zscore.columns = [f'{col}cs_spot_pct_buys_zscore_{window}d' for col in spot_pct_buys_zscore.columns]
 
             # 4 moments of cross-sectional percentage buys
@@ -767,8 +617,6 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             spot_pct_buys_pivot[f'cs_spot_pct_buys_skew_{window}d'] = spot_pct_buys_pivot.skew(axis=1)
             spot_pct_buys_pivot[f'cs_spot_pct_buys_kurtosis_{window}d'] = spot_pct_buys_pivot.kurtosis(axis=1)
             spot_pct_buys_pivot[f'cs_spot_pct_buys_median_{window}d'] = spot_pct_buys_pivot.median(axis=1)
-            spot_pct_buys_pivot[f'cs_spot_pct_buys_10th_percentile_{window}d'] = spot_pct_buys_pivot.quantile(0.1, axis=1)
-            spot_pct_buys_pivot[f'cs_spot_pct_buys_90th_percentile_{window}d'] = spot_pct_buys_pivot.quantile(0.9, axis=1)
 
             # Cross-sectional percentage sells percentile for each symbol/day
             spot_pct_sells_pivot = trade_features.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'pct_sells_{window}d_spot', dropna=False).sort_index()
@@ -778,7 +626,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             # Cross-sectional z-score of percentage sells for each symbol/day
             spot_pct_sells_pivot_mean = spot_pct_sells_pivot.mean(axis=1)
             spot_pct_sells_pivot_std = spot_pct_sells_pivot.std(axis=1)
-            spot_pct_sells_zscore = (spot_pct_sells_pivot - spot_pct_sells_pivot_mean) / spot_pct_sells_pivot_std
+            spot_pct_sells_zscore = spot_pct_sells_pivot.sub(spot_pct_sells_pivot_mean, axis=0).div(spot_pct_sells_pivot_std, axis=0)
             spot_pct_sells_zscore.columns = [f'{col}cs_spot_pct_sells_zscore_{window}d' for col in spot_pct_sells_zscore.columns]
 
             # 4 moments of cross-sectional percentage sells
@@ -787,8 +635,6 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             spot_pct_sells_pivot[f'cs_spot_pct_sells_skew_{window}d'] = spot_pct_sells_pivot.skew(axis=1)
             spot_pct_sells_pivot[f'cs_spot_pct_sells_kurtosis_{window}d'] = spot_pct_sells_pivot.kurtosis(axis=1)
             spot_pct_sells_pivot[f'cs_spot_pct_sells_median_{window}d'] = spot_pct_sells_pivot.median(axis=1)
-            spot_pct_sells_pivot[f'cs_spot_pct_sells_10th_percentile_{window}d'] = spot_pct_sells_pivot.quantile(0.1, axis=1)
-            spot_pct_sells_pivot[f'cs_spot_pct_sells_90th_percentile_{window}d'] = spot_pct_sells_pivot.quantile(0.9, axis=1)
 
             # Cross-sectional trade imbalance percentile for each symbol/day
             spot_trade_dollar_volume_imbalance_pivot = trade_features.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'trade_imbalance_{window}d_spot', dropna=False).sort_index()
@@ -798,7 +644,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             # Cross-sectional z-score of trade imbalance for each symbol/day
             spot_trade_dollar_volume_imbalance_pivot_mean = spot_trade_dollar_volume_imbalance_pivot.mean(axis=1)
             spot_trade_dollar_volume_imbalance_pivot_std = spot_trade_dollar_volume_imbalance_pivot.std(axis=1)
-            spot_trade_dollar_volume_imbalance_zscore = (spot_trade_dollar_volume_imbalance_pivot - spot_trade_dollar_volume_imbalance_pivot_mean) / spot_trade_dollar_volume_imbalance_pivot_std
+            spot_trade_dollar_volume_imbalance_zscore = spot_trade_dollar_volume_imbalance_pivot.sub(spot_trade_dollar_volume_imbalance_pivot_mean, axis=0).div(spot_trade_dollar_volume_imbalance_pivot_std, axis=0)
             spot_trade_dollar_volume_imbalance_zscore.columns = [f'{col}cs_spot_trade_dollar_volume_imbalance_zscore_{window}d' for col in spot_trade_dollar_volume_imbalance_zscore.columns]
 
             # 4 moments of cross-sectional trade imbalance
@@ -807,8 +653,6 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             spot_trade_dollar_volume_imbalance_pivot[f'cs_spot_trade_dollar_volume_imbalance_skew_{window}d'] = spot_trade_dollar_volume_imbalance_pivot.skew(axis=1)
             spot_trade_dollar_volume_imbalance_pivot[f'cs_spot_trade_dollar_volume_imbalance_kurtosis_{window}d'] = spot_trade_dollar_volume_imbalance_pivot.kurtosis(axis=1)
             spot_trade_dollar_volume_imbalance_pivot[f'cs_spot_trade_dollar_volume_imbalance_median_{window}d'] = spot_trade_dollar_volume_imbalance_pivot.median(axis=1)
-            spot_trade_dollar_volume_imbalance_pivot[f'cs_spot_trade_dollar_volume_imbalance_10th_percentile_{window}d'] = spot_trade_dollar_volume_imbalance_pivot.quantile(0.1, axis=1)
-            spot_trade_dollar_volume_imbalance_pivot[f'cs_spot_trade_dollar_volume_imbalance_90th_percentile_{window}d'] = spot_trade_dollar_volume_imbalance_pivot.quantile(0.9, axis=1)
 
             # Cross-sectional percentage buy dollar volume percentile for each symbol/day
             spot_pct_buy_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id',values=f'pct_buy_dollar_volume_{window}d_spot', dropna=False).sort_index()
@@ -818,7 +662,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             # Cross-sectional z-score of percentage buy dollar volume for each symbol/day
             spot_pct_buy_dollar_volume_pivot_mean = spot_pct_buy_dollar_volume_pivot.mean(axis=1)
             spot_pct_buy_dollar_volume_pivot_std = spot_pct_buy_dollar_volume_pivot.std(axis=1)
-            spot_pct_buy_dollar_volume_zscore = (spot_pct_buy_dollar_volume_pivot - spot_pct_buy_dollar_volume_pivot_mean) / spot_pct_buy_dollar_volume_pivot_std
+            spot_pct_buy_dollar_volume_zscore = spot_pct_buy_dollar_volume_pivot.sub(spot_pct_buy_dollar_volume_pivot_mean, axis=0).div(spot_pct_buy_dollar_volume_pivot_std, axis=0)
             spot_pct_buy_dollar_volume_zscore.columns = [f'{col}cs_spot_pct_buy_dollar_volume_zscore_{window}d' for col in spot_pct_buy_dollar_volume_zscore.columns]
 
             # 4 moments of cross-sectional percentage buy dollar volume
@@ -827,8 +671,6 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             spot_pct_buy_dollar_volume_pivot[f'cs_spot_pct_buy_dollar_volume_skew_{window}d'] = spot_pct_buy_dollar_volume_pivot.skew(axis=1)
             spot_pct_buy_dollar_volume_pivot[f'cs_spot_pct_buy_dollar_volume_kurtosis_{window}d'] = spot_pct_buy_dollar_volume_pivot.kurtosis(axis=1)
             spot_pct_buy_dollar_volume_pivot[f'cs_spot_pct_buy_dollar_volume_median_{window}d'] = spot_pct_buy_dollar_volume_pivot.median(axis=1)
-            spot_pct_buy_dollar_volume_pivot[f'cs_spot_pct_buy_dollar_volume_10th_percentile_{window}d'] = spot_pct_buy_dollar_volume_pivot.quantile(0.1, axis=1)
-            spot_pct_buy_dollar_volume_pivot[f'cs_spot_pct_buy_dollar_volume_90th_percentile_{window}d'] = spot_pct_buy_dollar_volume_pivot.quantile(0.9, axis=1)
 
             # Cross-sectional percentage sell dollar volume percentile for each symbol/day
             spot_pct_sell_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id',values=f'pct_sell_dollar_volume_{window}d_spot', dropna=False).sort_index()
@@ -838,7 +680,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             # Cross-sectional z-score of percentage sell dollar volume for each symbol/day
             spot_pct_sell_dollar_volume_pivot_mean = spot_pct_sell_dollar_volume_pivot.mean(axis=1)
             spot_pct_sell_dollar_volume_pivot_std = spot_pct_sell_dollar_volume_pivot.std(axis=1)
-            spot_pct_sell_dollar_volume_zscore = (spot_pct_sell_dollar_volume_pivot - spot_pct_sell_dollar_volume_pivot_mean) / spot_pct_sell_dollar_volume_pivot_std
+            spot_pct_sell_dollar_volume_zscore = spot_pct_sell_dollar_volume_pivot.sub(spot_pct_sell_dollar_volume_pivot_mean, axis=0).div(spot_pct_sell_dollar_volume_pivot_std, axis=0)
             spot_pct_sell_dollar_volume_zscore.columns = [f'{col}cs_spot_pct_sell_dollar_volume_zscore_{window}d' for col in spot_pct_sell_dollar_volume_zscore.columns]
 
             # 4 moments of cross-sectional percentage sell dollar volume
@@ -847,8 +689,6 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             spot_pct_sell_dollar_volume_pivot[f'cs_spot_pct_sell_dollar_volume_skew_{window}d'] = spot_pct_sell_dollar_volume_pivot.skew(axis=1)
             spot_pct_sell_dollar_volume_pivot[f'cs_spot_pct_sell_dollar_volume_kurtosis_{window}d'] = spot_pct_sell_dollar_volume_pivot.kurtosis(axis=1)
             spot_pct_sell_dollar_volume_pivot[f'cs_spot_pct_sell_dollar_volume_median_{window}d'] = spot_pct_sell_dollar_volume_pivot.median(axis=1)
-            spot_pct_sell_dollar_volume_pivot[f'cs_spot_pct_sell_dollar_volume_10th_percentile_{window}d'] = spot_pct_sell_dollar_volume_pivot.quantile(0.1, axis=1)
-            spot_pct_sell_dollar_volume_pivot[f'cs_spot_pct_sell_dollar_volume_90th_percentile_{window}d'] = spot_pct_sell_dollar_volume_pivot.quantile(0.9, axis=1)
 
             # Cross-sectional avg dollar volume percentile for each symbol/day
             spot_avg_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'avg_dollar_volume_{window}d_spot', dropna=False).sort_index()
@@ -858,7 +698,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             # Cross-sectional z-score of avg dollar volume for each symbol/day
             spot_avg_dollar_volume_pivot_mean = spot_avg_dollar_volume_pivot.mean(axis=1)
             spot_avg_dollar_volume_pivot_std = spot_avg_dollar_volume_pivot.std(axis=1)
-            spot_avg_dollar_volume_zscore = (spot_avg_dollar_volume_pivot - spot_avg_dollar_volume_pivot_mean) / spot_avg_dollar_volume_pivot_std
+            spot_avg_dollar_volume_zscore = spot_avg_dollar_volume_pivot.sub(spot_avg_dollar_volume_pivot_mean, axis=0).div(spot_avg_dollar_volume_pivot_std, axis=0)
             spot_avg_dollar_volume_zscore.columns = [f'{col}cs_spot_avg_dollar_volume_zscore_{window}d' for col in spot_avg_dollar_volume_zscore.columns]
 
             # 4 moments of cross-sectional avg dollar volume
@@ -867,8 +707,6 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             spot_avg_dollar_volume_pivot[f'cs_spot_avg_dollar_volume_skew_{window}d'] = spot_avg_dollar_volume_pivot.skew(axis=1)
             spot_avg_dollar_volume_pivot[f'cs_spot_avg_dollar_volume_kurtosis_{window}d'] = spot_avg_dollar_volume_pivot.kurtosis(axis=1)
             spot_avg_dollar_volume_pivot[f'cs_spot_avg_dollar_volume_median_{window}d'] = spot_avg_dollar_volume_pivot.median(axis=1)
-            spot_avg_dollar_volume_pivot[f'cs_spot_avg_dollar_volume_10th_percentile_{window}d'] = spot_avg_dollar_volume_pivot.quantile(0.1, axis=1)
-            spot_avg_dollar_volume_pivot[f'cs_spot_avg_dollar_volume_90th_percentile_{window}d'] = spot_avg_dollar_volume_pivot.quantile(0.9, axis=1)
 
             # Cross-sectional avg buy dollar volume percentile for each symbol/day
             spot_avg_buy_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'avg_buy_dollar_volume_{window}d_spot', dropna=False).sort_index()
@@ -878,7 +716,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             # Cross-sectional z-score of avg buy dollar volume for each symbol/day
             spot_avg_buy_dollar_volume_pivot_mean = spot_avg_buy_dollar_volume_pivot.mean(axis=1)
             spot_avg_buy_dollar_volume_pivot_std = spot_avg_buy_dollar_volume_pivot.std(axis=1)
-            spot_avg_buy_dollar_volume_zscore = (spot_avg_buy_dollar_volume_pivot - spot_avg_buy_dollar_volume_pivot_mean) / spot_avg_buy_dollar_volume_pivot_std
+            spot_avg_buy_dollar_volume_zscore = spot_avg_buy_dollar_volume_pivot.sub(spot_avg_buy_dollar_volume_pivot_mean, axis=0).div(spot_avg_buy_dollar_volume_pivot_std, axis=0)
             spot_avg_buy_dollar_volume_zscore.columns = [f'{col}cs_spot_avg_buy_dollar_volume_zscore_{window}d' for col in spot_avg_buy_dollar_volume_zscore.columns]
 
             # 4 moments of cross-sectional avg buy dollar volume
@@ -887,8 +725,6 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             spot_avg_buy_dollar_volume_pivot[f'cs_spot_avg_buy_dollar_volume_skew_{window}d'] = spot_avg_buy_dollar_volume_pivot.skew(axis=1)
             spot_avg_buy_dollar_volume_pivot[f'cs_spot_avg_buy_dollar_volume_kurtosis_{window}d'] = spot_avg_buy_dollar_volume_pivot.kurtosis(axis=1)
             spot_avg_buy_dollar_volume_pivot[f'cs_spot_avg_buy_dollar_volume_median_{window}d'] = spot_avg_buy_dollar_volume_pivot.median(axis=1)
-            spot_avg_buy_dollar_volume_pivot[f'cs_spot_avg_buy_dollar_volume_10th_percentile_{window}d'] = spot_avg_buy_dollar_volume_pivot.quantile(0.1, axis=1)
-            spot_avg_buy_dollar_volume_pivot[f'cs_spot_avg_buy_dollar_volume_90th_percentile_{window}d'] = spot_avg_buy_dollar_volume_pivot.quantile(0.9, axis=1)
 
             # Cross-sectional avg sell dollar volume percentile for each symbol/day
             spot_avg_sell_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'avg_sell_dollar_volume_{window}d_spot', dropna=False).sort_index()
@@ -898,7 +734,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             # Cross-sectional z-score of avg sell dollar volume for each symbol/day
             spot_avg_sell_dollar_volume_pivot_mean = spot_avg_sell_dollar_volume_pivot.mean(axis=1)
             spot_avg_sell_dollar_volume_pivot_std = spot_avg_sell_dollar_volume_pivot.std(axis=1)
-            spot_avg_sell_dollar_volume_zscore = (spot_avg_sell_dollar_volume_pivot - spot_avg_sell_dollar_volume_pivot_mean) / spot_avg_sell_dollar_volume_pivot_std
+            spot_avg_sell_dollar_volume_zscore = spot_avg_sell_dollar_volume_pivot.sub(spot_avg_sell_dollar_volume_pivot_mean, axis=0).div(spot_avg_sell_dollar_volume_pivot_std, axis=0)
             spot_avg_sell_dollar_volume_zscore.columns = [f'{col}cs_spot_avg_sell_dollar_volume_zscore_{window}d' for col in spot_avg_sell_dollar_volume_zscore.columns]
 
             # 4 moments of cross-sectional avg sell dollar volume
@@ -907,8 +743,6 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             spot_avg_sell_dollar_volume_pivot[f'cs_spot_avg_sell_dollar_volume_skew_{window}d'] = spot_avg_sell_dollar_volume_pivot.skew(axis=1)
             spot_avg_sell_dollar_volume_pivot[f'cs_spot_avg_sell_dollar_volume_kurtosis_{window}d'] = spot_avg_sell_dollar_volume_pivot.kurtosis(axis=1)
             spot_avg_sell_dollar_volume_pivot[f'cs_spot_avg_sell_dollar_volume_median_{window}d'] = spot_avg_sell_dollar_volume_pivot.median(axis=1)
-            spot_avg_sell_dollar_volume_pivot[f'cs_spot_avg_sell_dollar_volume_10th_percentile_{window}d'] = spot_avg_sell_dollar_volume_pivot.quantile(0.1, axis=1)
-            spot_avg_sell_dollar_volume_pivot[f'cs_spot_avg_sell_dollar_volume_90th_percentile_{window}d'] = spot_avg_sell_dollar_volume_pivot.quantile(0.9, axis=1)
 
             if window == 1:
                 # Cross-sectional std dollar volume percentile for each symbol/day
@@ -919,7 +753,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 # Cross-sectional z-score of std dollar volume for each symbol/day
                 spot_std_dollar_volume_pivot_mean = spot_std_dollar_volume_pivot.mean(axis=1)
                 spot_std_dollar_volume_pivot_std = spot_std_dollar_volume_pivot.std(axis=1)
-                spot_std_dollar_volume_zscore = (spot_std_dollar_volume_pivot - spot_std_dollar_volume_pivot_mean) / spot_std_dollar_volume_pivot_std
+                spot_std_dollar_volume_zscore = spot_std_dollar_volume_pivot.sub(spot_std_dollar_volume_pivot_mean, axis=0).div(spot_std_dollar_volume_pivot_std, axis=0)
                 spot_std_dollar_volume_zscore.columns = [f'{col}cs_spot_std_dollar_volume_zscore_{window}d' for col in spot_std_dollar_volume_zscore.columns]
 
                 # 4 moments of cross-sectional std dollar volume
@@ -928,8 +762,6 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 spot_std_dollar_volume_pivot[f'cs_spot_std_dollar_volume_skew_{window}d'] = spot_std_dollar_volume_pivot.skew(axis=1)
                 spot_std_dollar_volume_pivot[f'cs_spot_std_dollar_volume_kurtosis_{window}d'] = spot_std_dollar_volume_pivot.kurtosis(axis=1)
                 spot_std_dollar_volume_pivot[f'cs_spot_std_dollar_volume_median_{window}d'] = spot_std_dollar_volume_pivot.median(axis=1)
-                spot_std_dollar_volume_pivot[f'cs_spot_std_dollar_volume_10th_percentile_{window}d'] = spot_std_dollar_volume_pivot.quantile(0.1, axis=1)
-                spot_std_dollar_volume_pivot[f'cs_spot_std_dollar_volume_90th_percentile_{window}d'] = spot_std_dollar_volume_pivot.quantile(0.9, axis=1)
 
                 # Cross-sectional std buy dollar volume percentile for each symbol/day
                 spot_std_buy_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'std_buy_dollar_volume_{window}d_spot', dropna=False).sort_index()
@@ -939,7 +771,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 # Cross-sectional z-score of std buy dollar volume for each symbol/day
                 spot_std_buy_dollar_volume_pivot_mean = spot_std_buy_dollar_volume_pivot.mean(axis=1)
                 spot_std_buy_dollar_volume_pivot_std = spot_std_buy_dollar_volume_pivot.std(axis=1)
-                spot_std_buy_dollar_volume_zscore = (spot_std_buy_dollar_volume_pivot - spot_std_buy_dollar_volume_pivot_mean) / spot_std_buy_dollar_volume_pivot_std
+                spot_std_buy_dollar_volume_zscore = spot_std_buy_dollar_volume_pivot.sub(spot_std_buy_dollar_volume_pivot_mean, axis=0).div(spot_std_buy_dollar_volume_pivot_std, axis=0)
                 spot_std_buy_dollar_volume_zscore.columns = [f'{col}cs_spot_std_buy_dollar_volume_zscore_{window}d' for col in spot_std_buy_dollar_volume_zscore.columns]
 
                 # 4 moments of cross-sectional std buy dollar volume
@@ -948,8 +780,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 spot_std_buy_dollar_volume_pivot[f'cs_spot_std_buy_dollar_volume_skew_{window}d'] = spot_std_buy_dollar_volume_pivot.skew(axis=1)
                 spot_std_buy_dollar_volume_pivot[f'cs_spot_std_buy_dollar_volume_kurtosis_{window}d'] = spot_std_buy_dollar_volume_pivot.kurtosis(axis=1)
                 spot_std_buy_dollar_volume_pivot[f'cs_spot_std_buy_dollar_volume_median_{window}d'] = spot_std_buy_dollar_volume_pivot.median(axis=1)
-                spot_std_buy_dollar_volume_pivot[f'cs_spot_std_buy_dollar_volume_10th_percentile_{window}d'] = spot_std_buy_dollar_volume_pivot.quantile(0.1, axis=1)
-                spot_std_buy_dollar_volume_pivot[f'cs_spot_std_buy_dollar_volume_90th_percentile_{window}d'] = spot_std_buy_dollar_volume_pivot.quantile(0.9, axis=1)
+
 
                 # Cross-sectional std sell dollar volume percentile for each symbol/day
                 spot_std_sell_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'std_sell_dollar_volume_{window}d_spot', dropna=False).sort_index()
@@ -959,7 +790,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 # Cross-sectional z-score of std sell dollar volume for each symbol/day
                 spot_std_sell_dollar_volume_pivot_mean = spot_std_sell_dollar_volume_pivot.mean(axis=1)
                 spot_std_sell_dollar_volume_pivot_std = spot_std_sell_dollar_volume_pivot.std(axis=1)
-                spot_std_sell_dollar_volume_zscore = (spot_std_sell_dollar_volume_pivot - spot_std_sell_dollar_volume_pivot_mean) / spot_std_sell_dollar_volume_pivot_std
+                spot_std_sell_dollar_volume_zscore = spot_std_sell_dollar_volume_pivot.sub(spot_std_sell_dollar_volume_pivot_mean, axis=0).div(spot_std_sell_dollar_volume_pivot_std, axis=0)
                 spot_std_sell_dollar_volume_zscore.columns = [f'{col}cs_spot_std_sell_dollar_volume_zscore_{window}d' for col in spot_std_sell_dollar_volume_zscore.columns]
 
                 # 4 moments of cross-sectional std sell dollar volume
@@ -968,8 +799,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 spot_std_sell_dollar_volume_pivot[f'cs_spot_std_sell_dollar_volume_skew_{window}d'] = spot_std_sell_dollar_volume_pivot.skew(axis=1)
                 spot_std_sell_dollar_volume_pivot[f'cs_spot_std_sell_dollar_volume_kurtosis_{window}d'] = spot_std_sell_dollar_volume_pivot.kurtosis(axis=1)
                 spot_std_sell_dollar_volume_pivot[f'cs_spot_std_sell_dollar_volume_median_{window}d'] = spot_std_sell_dollar_volume_pivot.median(axis=1)
-                spot_std_sell_dollar_volume_pivot[f'cs_spot_std_sell_dollar_volume_10th_percentile_{window}d'] = spot_std_sell_dollar_volume_pivot.quantile(0.1, axis=1)
-                spot_std_sell_dollar_volume_pivot[f'cs_spot_std_sell_dollar_volume_90th_percentile_{window}d'] = spot_std_sell_dollar_volume_pivot.quantile(0.9, axis=1)
+
 
                 # Cross-sectional skewness dollar volume percentile for each symbol/day
                 spot_skewness_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'skew_dollar_volume_{window}d_spot', dropna=False).sort_index()
@@ -979,7 +809,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 # Cross-sectional z-score of skewness dollar volume for each symbol/day
                 spot_skewness_dollar_volume_pivot_mean = spot_skewness_dollar_volume_pivot.mean(axis=1)
                 spot_skewness_dollar_volume_pivot_std = spot_skewness_dollar_volume_pivot.std(axis=1)
-                spot_skewness_dollar_volume_zscore = (spot_skewness_dollar_volume_pivot - spot_skewness_dollar_volume_pivot_mean) / spot_skewness_dollar_volume_pivot_std
+                spot_skewness_dollar_volume_zscore = spot_skewness_dollar_volume_pivot.sub(spot_skewness_dollar_volume_pivot_mean, axis=0).div(spot_skewness_dollar_volume_pivot_std, axis=0)
                 spot_skewness_dollar_volume_zscore.columns = [f'{col}cs_spot_skewness_dollar_volume_zscore_{window}d' for col in spot_skewness_dollar_volume_zscore.columns]
 
                 # 4 moments of cross-sectional skewness dollar volume
@@ -988,8 +818,6 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 spot_skewness_dollar_volume_pivot[f'cs_spot_skewness_dollar_volume_skew_{window}d'] = spot_skewness_dollar_volume_pivot.skew(axis=1)
                 spot_skewness_dollar_volume_pivot[f'cs_spot_skewness_dollar_volume_kurtosis_{window}d'] = spot_skewness_dollar_volume_pivot.kurtosis(axis=1)
                 spot_skewness_dollar_volume_pivot[f'cs_spot_skewness_dollar_volume_median_{window}d'] = spot_skewness_dollar_volume_pivot.median(axis=1)
-                spot_skewness_dollar_volume_pivot[f'cs_spot_skewness_dollar_volume_10th_percentile_{window}d'] = spot_skewness_dollar_volume_pivot.quantile(0.1, axis=1)
-                spot_skewness_dollar_volume_pivot[f'cs_spot_skewness_dollar_volume_90th_percentile_{window}d'] = spot_skewness_dollar_volume_pivot.quantile(0.9, axis=1)
 
                 # Cross-sectional skewness buy dollar volume percentile for each symbol/day
                 spot_skewness_buy_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'skew_buy_dollar_volume_{window}d_spot', dropna=False).sort_index()
@@ -999,7 +827,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 # Cross-sectional z-score of skewness buy dollar volume for each symbol/day
                 spot_skewness_buy_dollar_volume_pivot_mean = spot_skewness_buy_dollar_volume_pivot.mean(axis=1)
                 spot_skewness_buy_dollar_volume_pivot_std = spot_skewness_buy_dollar_volume_pivot.std(axis=1)
-                spot_skewness_buy_dollar_volume_zscore = (spot_skewness_buy_dollar_volume_pivot - spot_skewness_buy_dollar_volume_pivot_mean) / spot_skewness_buy_dollar_volume_pivot_std
+                spot_skewness_buy_dollar_volume_zscore = spot_skewness_buy_dollar_volume_pivot.sub(spot_skewness_buy_dollar_volume_pivot_mean, axis=0).div(spot_skewness_buy_dollar_volume_pivot_std, axis=0)
                 spot_skewness_buy_dollar_volume_zscore.columns = [f'{col}cs_spot_skewness_buy_dollar_volume_zscore_{window}d' for col in spot_skewness_buy_dollar_volume_zscore.columns]
 
                 # 4 moments of cross-sectional skewness buy dollar volume
@@ -1008,8 +836,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 spot_skewness_buy_dollar_volume_pivot[f'cs_spot_skewness_buy_dollar_volume_skew_{window}d'] = spot_skewness_buy_dollar_volume_pivot.skew(axis=1)
                 spot_skewness_buy_dollar_volume_pivot[f'cs_spot_skewness_buy_dollar_volume_kurtosis_{window}d'] = spot_skewness_buy_dollar_volume_pivot.kurtosis(axis=1)
                 spot_skewness_buy_dollar_volume_pivot[f'cs_spot_skewness_buy_dollar_volume_median_{window}d'] = spot_skewness_buy_dollar_volume_pivot.median(axis=1)
-                spot_skewness_buy_dollar_volume_pivot[f'cs_spot_skewness_buy_dollar_volume_10th_percentile_{window}d'] = spot_skewness_buy_dollar_volume_pivot.quantile(0.1, axis=1)
-                spot_skewness_buy_dollar_volume_pivot[f'cs_spot_skewness_buy_dollar_volume_90th_percentile_{window}d'] = spot_skewness_buy_dollar_volume_pivot.quantile(0.9, axis=1)
+
 
                 # Cross-sectional skewness sell dollar volume percentile for each symbol/day
                 spot_skewness_sell_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'skew_sell_dollar_volume_{window}d_spot', dropna=False).sort_index()
@@ -1019,7 +846,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 # Cross-sectional z-score of skewness sell dollar volume for each symbol/day
                 spot_skewness_sell_dollar_volume_pivot_mean = spot_skewness_sell_dollar_volume_pivot.mean(axis=1)
                 spot_skewness_sell_dollar_volume_pivot_std = spot_skewness_sell_dollar_volume_pivot.std(axis=1)
-                spot_skewness_sell_dollar_volume_zscore = (spot_skewness_sell_dollar_volume_pivot - spot_skewness_sell_dollar_volume_pivot_mean) / spot_skewness_sell_dollar_volume_pivot_std
+                spot_skewness_sell_dollar_volume_zscore = spot_skewness_sell_dollar_volume_pivot.sub(spot_skewness_sell_dollar_volume_pivot_mean, axis=0).div(spot_skewness_sell_dollar_volume_pivot_std, axis=0)
                 spot_skewness_sell_dollar_volume_zscore.columns = [f'{col}cs_spot_skewness_sell_dollar_volume_zscore_{window}d' for col in spot_skewness_sell_dollar_volume_zscore.columns]
 
                 # 4 moments of cross-sectional skewness sell dollar volume
@@ -1028,8 +855,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 spot_skewness_sell_dollar_volume_pivot[f'cs_spot_skewness_sell_dollar_volume_skew_{window}d'] = spot_skewness_sell_dollar_volume_pivot.skew(axis=1)
                 spot_skewness_sell_dollar_volume_pivot[f'cs_spot_skewness_sell_dollar_volume_kurtosis_{window}d'] = spot_skewness_sell_dollar_volume_pivot.kurtosis(axis=1)
                 spot_skewness_sell_dollar_volume_pivot[f'cs_spot_skewness_sell_dollar_volume_median_{window}d'] = spot_skewness_sell_dollar_volume_pivot.median(axis=1)
-                spot_skewness_sell_dollar_volume_pivot[f'cs_spot_skewness_sell_dollar_volume_10th_percentile_{window}d'] = spot_skewness_sell_dollar_volume_pivot.quantile(0.1, axis=1)
-                spot_skewness_sell_dollar_volume_pivot[f'cs_spot_skewness_sell_dollar_volume_90th_percentile_{window}d'] = spot_skewness_sell_dollar_volume_pivot.quantile(0.9, axis=1)
+
 
                 # Cross-sectional kurtosis dollar volume percentile for each symbol/day
                 spot_kurtosis_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'kurtosis_dollar_volume_{window}d_spot', dropna=False).sort_index()
@@ -1039,7 +865,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 # Cross-sectional z-score of kurtosis dollar volume for each symbol/day
                 spot_kurtosis_dollar_volume_pivot_mean = spot_kurtosis_dollar_volume_pivot.mean(axis=1)
                 spot_kurtosis_dollar_volume_pivot_std = spot_kurtosis_dollar_volume_pivot.std(axis=1)
-                spot_kurtosis_dollar_volume_zscore = (spot_kurtosis_dollar_volume_pivot - spot_kurtosis_dollar_volume_pivot_mean) / spot_kurtosis_dollar_volume_pivot_std
+                spot_kurtosis_dollar_volume_zscore = spot_kurtosis_dollar_volume_pivot.sub(spot_kurtosis_dollar_volume_pivot_mean, axis=0).div(spot_kurtosis_dollar_volume_pivot_std, axis=0)
                 spot_kurtosis_dollar_volume_zscore.columns = [f'{col}cs_spot_kurtosis_dollar_volume_zscore_{window}d' for col in spot_kurtosis_dollar_volume_zscore.columns]
 
                 # 4 moments of cross-sectional kurtosis dollar volume
@@ -1048,8 +874,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 spot_kurtosis_dollar_volume_pivot[f'cs_spot_kurtosis_dollar_volume_skew_{window}d'] = spot_kurtosis_dollar_volume_pivot.skew(axis=1)
                 spot_kurtosis_dollar_volume_pivot[f'cs_spot_kurtosis_dollar_volume_kurtosis_{window}d'] = spot_kurtosis_dollar_volume_pivot.kurtosis(axis=1)
                 spot_kurtosis_dollar_volume_pivot[f'cs_spot_kurtosis_dollar_volume_median_{window}d'] = spot_kurtosis_dollar_volume_pivot.median(axis=1)
-                spot_kurtosis_dollar_volume_pivot[f'cs_spot_kurtosis_dollar_volume_10th_percentile_{window}d'] = spot_kurtosis_dollar_volume_pivot.quantile(0.1, axis=1)
-                spot_kurtosis_dollar_volume_pivot[f'cs_spot_kurtosis_dollar_volume_90th_percentile_{window}d'] = spot_kurtosis_dollar_volume_pivot.quantile(0.9, axis=1)
+
 
                 # Cross-sectional kurtosis buy dollar volume percentile for each symbol/day
                 spot_kurtosis_buy_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'kurtosis_buy_dollar_volume_{window}d_spot', dropna=False).sort_index()
@@ -1059,7 +884,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 # Cross-sectional z-score of kurtosis buy dollar volume for each symbol/day
                 spot_kurtosis_buy_dollar_volume_pivot_mean = spot_kurtosis_buy_dollar_volume_pivot.mean(axis=1)
                 spot_kurtosis_buy_dollar_volume_pivot_std = spot_kurtosis_buy_dollar_volume_pivot.std(axis=1)
-                spot_kurtosis_buy_dollar_volume_zscore = (spot_kurtosis_buy_dollar_volume_pivot - spot_kurtosis_buy_dollar_volume_pivot_mean) / spot_kurtosis_buy_dollar_volume_pivot_std
+                spot_kurtosis_buy_dollar_volume_zscore = spot_kurtosis_buy_dollar_volume_pivot.sub(spot_kurtosis_buy_dollar_volume_pivot_mean, axis=0).div(spot_kurtosis_buy_dollar_volume_pivot_std, axis=0)
                 spot_kurtosis_buy_dollar_volume_zscore.columns = [f'{col}cs_spot_kurtosis_buy_dollar_volume_zscore_{window}d' for col in spot_kurtosis_buy_dollar_volume_zscore.columns]
 
                 # 4 moments of cross-sectional kurtosis buy dollar volume
@@ -1068,8 +893,6 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 spot_kurtosis_buy_dollar_volume_pivot[f'cs_spot_kurtosis_buy_dollar_volume_skew_{window}d'] = spot_kurtosis_buy_dollar_volume_pivot.skew(axis=1)
                 spot_kurtosis_buy_dollar_volume_pivot[f'cs_spot_kurtosis_buy_dollar_volume_kurtosis_{window}d'] = spot_kurtosis_buy_dollar_volume_pivot.kurtosis(axis=1)
                 spot_kurtosis_buy_dollar_volume_pivot[f'cs_spot_kurtosis_buy_dollar_volume_median_{window}d'] = spot_kurtosis_buy_dollar_volume_pivot.median(axis=1)
-                spot_kurtosis_buy_dollar_volume_pivot[f'cs_spot_kurtosis_buy_dollar_volume_10th_percentile_{window}d'] = spot_kurtosis_buy_dollar_volume_pivot.quantile(0.1, axis=1)
-                spot_kurtosis_buy_dollar_volume_pivot[f'cs_spot_kurtosis_buy_dollar_volume_90th_percentile_{window}d'] = spot_kurtosis_buy_dollar_volume_pivot.quantile(0.9, axis=1)
 
                 # Cross-sectional kurtosis sell dollar volume percentile for each symbol/day
                 spot_kurtosis_sell_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'kurtosis_sell_dollar_volume_{window}d_spot', dropna=False).sort_index()
@@ -1079,7 +902,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 # Cross-sectional z-score of kurtosis sell dollar volume for each symbol/day
                 spot_kurtosis_sell_dollar_volume_pivot_mean = spot_kurtosis_sell_dollar_volume_pivot.mean(axis=1)
                 spot_kurtosis_sell_dollar_volume_pivot_std = spot_kurtosis_sell_dollar_volume_pivot.std(axis=1)
-                spot_kurtosis_sell_dollar_volume_zscore = (spot_kurtosis_sell_dollar_volume_pivot - spot_kurtosis_sell_dollar_volume_pivot_mean) / spot_kurtosis_sell_dollar_volume_pivot_std
+                spot_kurtosis_sell_dollar_volume_zscore = spot_kurtosis_sell_dollar_volume_pivot.sub(spot_kurtosis_sell_dollar_volume_pivot_mean, axis=0).div(spot_kurtosis_sell_dollar_volume_pivot_std, axis=0)
                 spot_kurtosis_sell_dollar_volume_zscore.columns = [f'{col}cs_spot_kurtosis_sell_dollar_volume_zscore_{window}d' for col in spot_kurtosis_sell_dollar_volume_zscore.columns]
 
                 # 4 moments of cross-sectional kurtosis sell dollar volume
@@ -1088,68 +911,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 spot_kurtosis_sell_dollar_volume_pivot[f'cs_spot_kurtosis_sell_dollar_volume_skew_{window}d'] = spot_kurtosis_sell_dollar_volume_pivot.skew(axis=1)
                 spot_kurtosis_sell_dollar_volume_pivot[f'cs_spot_kurtosis_sell_dollar_volume_kurtosis_{window}d'] = spot_kurtosis_sell_dollar_volume_pivot.kurtosis(axis=1)
                 spot_kurtosis_sell_dollar_volume_pivot[f'cs_spot_kurtosis_sell_dollar_volume_median_{window}d'] = spot_kurtosis_sell_dollar_volume_pivot.median(axis=1)
-                spot_kurtosis_sell_dollar_volume_pivot[f'cs_spot_kurtosis_sell_dollar_volume_10th_percentile_{window}d'] = spot_kurtosis_sell_dollar_volume_pivot.quantile(0.1, axis=1)
-                spot_kurtosis_sell_dollar_volume_pivot[f'cs_spot_kurtosis_sell_dollar_volume_90th_percentile_{window}d'] = spot_kurtosis_sell_dollar_volume_pivot.quantile(0.9, axis=1)
 
-                # Cross-sectional 10th-percentile dollar volume percentile for each symbol/day
-                spot_10th_percentile_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'10th_percentile_dollar_volume_{window}d_spot', dropna=False).sort_index()
-                spot_10th_percentile_dollar_volume_percentile = spot_10th_percentile_dollar_volume_pivot.rank(axis=1, pct=True)
-                spot_10th_percentile_dollar_volume_percentile.columns = [f'{col}cs_spot_10th_percentile_dollar_volume_percentile_{window}d' for col in spot_10th_percentile_dollar_volume_percentile.columns]
-
-                # Cross-sectional z-score of 10th-percentile dollar volume for each symbol/day
-                spot_10th_percentile_dollar_volume_pivot_mean = spot_10th_percentile_dollar_volume_pivot.mean(axis=1)
-                spot_10th_percentile_dollar_volume_pivot_std = spot_10th_percentile_dollar_volume_pivot.std(axis=1)
-                spot_10th_percentile_dollar_volume_zscore = (spot_10th_percentile_dollar_volume_pivot - spot_10th_percentile_dollar_volume_pivot_mean) / spot_10th_percentile_dollar_volume_pivot_std
-                spot_10th_percentile_dollar_volume_zscore.columns = [f'{col}cs_spot_10th_percentile_dollar_volume_zscore_{window}d' for col in spot_10th_percentile_dollar_volume_zscore.columns]
-
-                # 4 moments of cross-sectional 10th-percentile dollar volume
-                spot_10th_percentile_dollar_volume_pivot[f'cs_spot_10th_percentile_dollar_volume_mean_{window}d'] = spot_10th_percentile_dollar_volume_pivot.mean(axis=1)
-                spot_10th_percentile_dollar_volume_pivot[f'cs_spot_10th_percentile_dollar_volume_std_{window}d'] = spot_10th_percentile_dollar_volume_pivot.std(axis=1)
-                spot_10th_percentile_dollar_volume_pivot[f'cs_spot_10th_percentile_dollar_volume_skew_{window}d'] = spot_10th_percentile_dollar_volume_pivot.skew(axis=1)
-                spot_10th_percentile_dollar_volume_pivot[f'cs_spot_10th_percentile_dollar_volume_kurtosis_{window}d'] = spot_10th_percentile_dollar_volume_pivot.kurtosis(axis=1)
-                spot_10th_percentile_dollar_volume_pivot[f'cs_spot_10th_percentile_dollar_volume_median_{window}d'] = spot_10th_percentile_dollar_volume_pivot.median(axis=1)
-                spot_10th_percentile_dollar_volume_pivot[f'cs_spot_10th_percentile_dollar_volume_10th_percentile_{window}d'] = spot_10th_percentile_dollar_volume_pivot.quantile(0.1, axis=1)
-                spot_10th_percentile_dollar_volume_pivot[f'cs_spot_10th_percentile_dollar_volume_90th_percentile_{window}d'] = spot_10th_percentile_dollar_volume_pivot.quantile(0.9, axis=1)
-
-                # Cross-sectional 10th-percentile buy dollar volume percentile for each symbol/day
-                spot_10th_percentile_buy_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'10th_percentile_buy_dollar_volume_{window}d_spot', dropna=False).sort_index()
-                spot_10th_percentile_buy_dollar_volume_percentile = spot_10th_percentile_buy_dollar_volume_pivot.rank(axis=1, pct=True)
-                spot_10th_percentile_buy_dollar_volume_percentile.columns = [f'{col}cs_spot_10th_percentile_buy_dollar_volume_percentile_{window}d' for col in spot_10th_percentile_buy_dollar_volume_percentile.columns]
-
-                # Cross-sectional z-score of 10th-percentile buy dollar volume for each symbol/day
-                spot_10th_percentile_buy_dollar_volume_pivot_mean = spot_10th_percentile_buy_dollar_volume_pivot.mean(axis=1)
-                spot_10th_percentile_buy_dollar_volume_pivot_std = spot_10th_percentile_buy_dollar_volume_pivot.std(axis=1)
-                spot_10th_percentile_buy_dollar_volume_zscore = (spot_10th_percentile_buy_dollar_volume_pivot - spot_10th_percentile_buy_dollar_volume_pivot_mean) / spot_10th_percentile_buy_dollar_volume_pivot_std
-                spot_10th_percentile_buy_dollar_volume_zscore.columns = [f'{col}cs_spot_10th_percentile_buy_dollar_volume_zscore_{window}d' for col in spot_10th_percentile_buy_dollar_volume_zscore.columns]
-
-                # 4 moments of cross-sectional 10th-percentile buy dollar volume
-                spot_10th_percentile_buy_dollar_volume_pivot[f'cs_spot_10th_percentile_buy_dollar_volume_mean_{window}d'] = spot_10th_percentile_buy_dollar_volume_pivot.mean(axis=1)
-                spot_10th_percentile_buy_dollar_volume_pivot[f'cs_spot_10th_percentile_buy_dollar_volume_std_{window}d'] = spot_10th_percentile_buy_dollar_volume_pivot.std(axis=1)
-                spot_10th_percentile_buy_dollar_volume_pivot[f'cs_spot_10th_percentile_buy_dollar_volume_skew_{window}d'] = spot_10th_percentile_buy_dollar_volume_pivot.skew(axis=1)
-                spot_10th_percentile_buy_dollar_volume_pivot[f'cs_spot_10th_percentile_buy_dollar_volume_kurtosis_{window}d'] = spot_10th_percentile_buy_dollar_volume_pivot.kurtosis(axis=1)
-                spot_10th_percentile_buy_dollar_volume_pivot[f'cs_spot_10th_percentile_buy_dollar_volume_median_{window}d'] = spot_10th_percentile_buy_dollar_volume_pivot.median(axis=1)
-                spot_10th_percentile_buy_dollar_volume_pivot[f'cs_spot_10th_percentile_buy_dollar_volume_10th_percentile_{window}d'] = spot_10th_percentile_buy_dollar_volume_pivot.quantile(0.1, axis=1)
-                spot_10th_percentile_buy_dollar_volume_pivot[f'cs_spot_10th_percentile_buy_dollar_volume_90th_percentile_{window}d'] = spot_10th_percentile_buy_dollar_volume_pivot.quantile(0.9, axis=1)
-
-                # Cross-sectional 10th-percentile sell dollar volume percentile for each symbol/day
-                spot_10th_percentile_sell_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'10th_percentile_sell_dollar_volume_{window}d_spot', dropna=False).sort_index()
-                spot_10th_percentile_sell_dollar_volume_percentile = spot_10th_percentile_sell_dollar_volume_pivot.rank(axis=1, pct=True)
-                spot_10th_percentile_sell_dollar_volume_percentile.columns = [f'{col}cs_spot_10th_percentile_sell_dollar_volume_percentile_{window}d' for col in spot_10th_percentile_sell_dollar_volume_percentile.columns]
-
-                # Cross-sectional z-score of 10th-percentile sell dollar volume for each symbol/day
-                spot_10th_percentile_sell_dollar_volume_pivot_mean = spot_10th_percentile_sell_dollar_volume_pivot.mean(axis=1)
-                spot_10th_percentile_sell_dollar_volume_pivot_std = spot_10th_percentile_sell_dollar_volume_pivot.std(axis=1)
-                spot_10th_percentile_sell_dollar_volume_zscore = (spot_10th_percentile_sell_dollar_volume_pivot - spot_10th_percentile_sell_dollar_volume_pivot_mean) / spot_10th_percentile_sell_dollar_volume_pivot_std
-                spot_10th_percentile_sell_dollar_volume_zscore.columns = [f'{col}cs_spot_10th_percentile_sell_dollar_volume_zscore_{window}d' for col in spot_10th_percentile_sell_dollar_volume_zscore.columns]
-
-                # 4 moments of cross-sectional 10th-percentile sell dollar volume
-                spot_10th_percentile_sell_dollar_volume_pivot[f'cs_spot_10th_percentile_sell_dollar_volume_mean_{window}d'] = spot_10th_percentile_sell_dollar_volume_pivot.mean(axis=1)
-                spot_10th_percentile_sell_dollar_volume_pivot[f'cs_spot_10th_percentile_sell_dollar_volume_std_{window}d'] = spot_10th_percentile_sell_dollar_volume_pivot.std(axis=1)
-                spot_10th_percentile_sell_dollar_volume_pivot[f'cs_spot_10th_percentile_sell_dollar_volume_skew_{window}d'] = spot_10th_percentile_sell_dollar_volume_pivot.skew(axis=1)
-                spot_10th_percentile_sell_dollar_volume_pivot[f'cs_spot_10th_percentile_sell_dollar_volume_kurtosis_{window}d'] = spot_10th_percentile_sell_dollar_volume_pivot.kurtosis(axis=1)
-                spot_10th_percentile_sell_dollar_volume_pivot[f'cs_spot_10th_percentile_sell_dollar_volume_median_{window}d'] = spot_10th_percentile_sell_dollar_volume_pivot.median(axis=1)
-                spot_10th_percentile_sell_dollar_volume_pivot[f'cs_spot_10th_percentile_sell_dollar_volume_10th_percentile_{window}d'] = spot_10th_percentile_sell_dollar_volume_pivot.quantile(0.1, axis=1)
-                spot_10th_percentile_sell_dollar_volume_pivot[f'cs_spot_10th_percentile_sell_dollar_volume_90th_percentile_{window}d'] = spot_10th_percentile_sell_dollar_volume_pivot.quantile(0.9, axis=1)
 
                 # Cross-sectional median dollar volume percentile for each symbol/day
                 spot_median_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'median_dollar_volume_{window}d_spot', dropna=False).sort_index()
@@ -1159,7 +921,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 # Cross-sectional z-score of median dollar volume for each symbol/day
                 spot_median_dollar_volume_pivot_mean = spot_median_dollar_volume_pivot.mean(axis=1)
                 spot_median_dollar_volume_pivot_std = spot_median_dollar_volume_pivot.std(axis=1)
-                spot_median_dollar_volume_zscore = (spot_median_dollar_volume_pivot - spot_median_dollar_volume_pivot_mean) / spot_median_dollar_volume_pivot_std
+                spot_median_dollar_volume_zscore = spot_median_dollar_volume_pivot.sub(spot_median_dollar_volume_pivot_mean, axis=0).div(spot_median_dollar_volume_pivot_std, axis=0)
                 spot_median_dollar_volume_zscore.columns = [f'{col}cs_spot_median_dollar_volume_zscore_{window}d' for col in spot_median_dollar_volume_zscore.columns]
 
                 # 4 moments of cross-sectional median dollar volume
@@ -1168,8 +930,6 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 spot_median_dollar_volume_pivot[f'cs_spot_median_dollar_volume_skew_{window}d'] = spot_median_dollar_volume_pivot.skew(axis=1)
                 spot_median_dollar_volume_pivot[f'cs_spot_median_dollar_volume_kurtosis_{window}d'] = spot_median_dollar_volume_pivot.kurtosis(axis=1)
                 spot_median_dollar_volume_pivot[f'cs_spot_median_dollar_volume_median_{window}d'] = spot_median_dollar_volume_pivot.median(axis=1)
-                spot_median_dollar_volume_pivot[f'cs_spot_median_dollar_volume_10th_percentile_{window}d'] = spot_median_dollar_volume_pivot.quantile(0.1, axis=1)
-                spot_median_dollar_volume_pivot[f'cs_spot_median_dollar_volume_90th_percentile_{window}d'] = spot_median_dollar_volume_pivot.quantile(0.9, axis=1)
 
                 # Cross-sectional median buy dollar volume percentile for each symbol/day
                 spot_median_buy_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'median_buy_dollar_volume_{window}d_spot', dropna=False).sort_index()
@@ -1179,7 +939,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 # Cross-sectional z-score of median buy dollar volume for each symbol/day
                 spot_median_buy_dollar_volume_pivot_mean = spot_median_buy_dollar_volume_pivot.mean(axis=1)
                 spot_median_buy_dollar_volume_pivot_std = spot_median_buy_dollar_volume_pivot.std(axis=1)
-                spot_median_buy_dollar_volume_zscore = (spot_median_buy_dollar_volume_pivot - spot_median_buy_dollar_volume_pivot_mean) / spot_median_buy_dollar_volume_pivot_std
+                spot_median_buy_dollar_volume_zscore = spot_median_buy_dollar_volume_pivot.sub(spot_median_buy_dollar_volume_pivot_mean, axis=0).div(spot_median_buy_dollar_volume_pivot_std, axis=0)
                 spot_median_buy_dollar_volume_zscore.columns = [f'{col}cs_spot_median_buy_dollar_volume_zscore_{window}d' for col in spot_median_buy_dollar_volume_zscore.columns]
 
                 # 4 moments of cross-sectional median buy dollar volume
@@ -1188,8 +948,6 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 spot_median_buy_dollar_volume_pivot[f'cs_spot_median_buy_dollar_volume_skew_{window}d'] = spot_median_buy_dollar_volume_pivot.skew(axis=1)
                 spot_median_buy_dollar_volume_pivot[f'cs_spot_median_buy_dollar_volume_kurtosis_{window}d'] = spot_median_buy_dollar_volume_pivot.kurtosis(axis=1)
                 spot_median_buy_dollar_volume_pivot[f'cs_spot_median_buy_dollar_volume_median_{window}d'] = spot_median_buy_dollar_volume_pivot.median(axis=1)
-                spot_median_buy_dollar_volume_pivot[f'cs_spot_median_buy_dollar_volume_10th_percentile_{window}d'] = spot_median_buy_dollar_volume_pivot.quantile(0.1, axis=1)
-                spot_median_buy_dollar_volume_pivot[f'cs_spot_median_buy_dollar_volume_90th_percentile_{window}d'] = spot_median_buy_dollar_volume_pivot.quantile(0.9, axis=1)
 
                 # Cross-sectional median sell dollar volume percentile for each symbol/day
                 spot_median_sell_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'median_sell_dollar_volume_{window}d_spot', dropna=False).sort_index()
@@ -1199,7 +957,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 # Cross-sectional z-score of median sell dollar volume for each symbol/day
                 spot_median_sell_dollar_volume_pivot_mean = spot_median_sell_dollar_volume_pivot.mean(axis=1)
                 spot_median_sell_dollar_volume_pivot_std = spot_median_sell_dollar_volume_pivot.std(axis=1)
-                spot_median_sell_dollar_volume_zscore = (spot_median_sell_dollar_volume_pivot - spot_median_sell_dollar_volume_pivot_mean) / spot_median_sell_dollar_volume_pivot_std
+                spot_median_sell_dollar_volume_zscore = spot_median_sell_dollar_volume_pivot.sub(spot_median_sell_dollar_volume_pivot_mean, axis=0).div(spot_median_sell_dollar_volume_pivot_std, axis=0)
                 spot_median_sell_dollar_volume_zscore.columns = [f'{col}cs_spot_median_sell_dollar_volume_zscore_{window}d' for col in spot_median_sell_dollar_volume_zscore.columns]
 
                 # 4 moments of cross-sectional median sell dollar volume
@@ -1208,68 +966,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 spot_median_sell_dollar_volume_pivot[f'cs_spot_median_sell_dollar_volume_skew_{window}d'] = spot_median_sell_dollar_volume_pivot.skew(axis=1)
                 spot_median_sell_dollar_volume_pivot[f'cs_spot_median_sell_dollar_volume_kurtosis_{window}d'] = spot_median_sell_dollar_volume_pivot.kurtosis(axis=1)
                 spot_median_sell_dollar_volume_pivot[f'cs_spot_median_sell_dollar_volume_median_{window}d'] = spot_median_sell_dollar_volume_pivot.median(axis=1)
-                spot_median_sell_dollar_volume_pivot[f'cs_spot_median_sell_dollar_volume_10th_percentile_{window}d'] = spot_median_sell_dollar_volume_pivot.quantile(0.1, axis=1)
-                spot_median_sell_dollar_volume_pivot[f'cs_spot_median_sell_dollar_volume_90th_percentile_{window}d'] = spot_median_sell_dollar_volume_pivot.quantile(0.9, axis=1)
 
-                # Cross-sectional 90th-percentile dollar volume percentile for each symbol/day
-                spot_90th_percentile_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'90th_percentile_dollar_volume_{window}d_spot', dropna=False).sort_index()
-                spot_90th_percentile_dollar_volume_percentile = spot_90th_percentile_dollar_volume_pivot.rank(axis=1, pct=True)
-                spot_90th_percentile_dollar_volume_percentile.columns = [f'{col}cs_spot_90th_percentile_dollar_volume_percentile_{window}d' for col in spot_90th_percentile_dollar_volume_percentile.columns]
-
-                # Cross-sectional z-score of 90th-percentile dollar volume for each symbol/day
-                spot_90th_percentile_dollar_volume_pivot_mean = spot_90th_percentile_dollar_volume_pivot.mean(axis=1)
-                spot_90th_percentile_dollar_volume_pivot_std = spot_90th_percentile_dollar_volume_pivot.std(axis=1)
-                spot_90th_percentile_dollar_volume_zscore = (spot_90th_percentile_dollar_volume_pivot - spot_90th_percentile_dollar_volume_pivot_mean) / spot_90th_percentile_dollar_volume_pivot_std
-                spot_90th_percentile_dollar_volume_zscore.columns = [f'{col}cs_spot_90th_percentile_dollar_volume_zscore_{window}d' for col in spot_90th_percentile_dollar_volume_zscore.columns]
-
-                # 4 moments of cross-sectional 90th-percentile dollar volume
-                spot_90th_percentile_dollar_volume_pivot[f'cs_spot_90th_percentile_dollar_volume_mean_{window}d'] = spot_90th_percentile_dollar_volume_pivot.mean(axis=1)
-                spot_90th_percentile_dollar_volume_pivot[f'cs_spot_90th_percentile_dollar_volume_std_{window}d'] = spot_90th_percentile_dollar_volume_pivot.std(axis=1)
-                spot_90th_percentile_dollar_volume_pivot[f'cs_spot_90th_percentile_dollar_volume_skew_{window}d'] = spot_90th_percentile_dollar_volume_pivot.skew(axis=1)
-                spot_90th_percentile_dollar_volume_pivot[f'cs_spot_90th_percentile_dollar_volume_kurtosis_{window}d'] = spot_90th_percentile_dollar_volume_pivot.kurtosis(axis=1)
-                spot_90th_percentile_dollar_volume_pivot[f'cs_spot_90th_percentile_dollar_volume_median_{window}d'] = spot_90th_percentile_dollar_volume_pivot.median(axis=1)
-                spot_90th_percentile_dollar_volume_pivot[f'cs_spot_90th_percentile_dollar_volume_10th_percentile_{window}d'] = spot_90th_percentile_dollar_volume_pivot.quantile(0.1, axis=1)
-                spot_90th_percentile_dollar_volume_pivot[f'cs_spot_90th_percentile_dollar_volume_90th_percentile_{window}d'] = spot_90th_percentile_dollar_volume_pivot.quantile(0.9, axis=1)
-
-                # Cross-sectional 90th-percentile buy dollar volume percentile for each symbol/day
-                spot_90th_percentile_buy_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'90th_percentile_buy_dollar_volume_{window}d_spot', dropna=False).sort_index()
-                spot_90th_percentile_buy_dollar_volume_percentile = spot_90th_percentile_buy_dollar_volume_pivot.rank(axis=1, pct=True)
-                spot_90th_percentile_buy_dollar_volume_percentile.columns = [f'{col}cs_spot_90th_percentile_buy_dollar_volume_percentile_{window}d' for col in spot_90th_percentile_buy_dollar_volume_percentile.columns]
-
-                # Cross-sectional z-score of 90th-percentile buy dollar volume for each symbol/day
-                spot_90th_percentile_buy_dollar_volume_pivot_mean = spot_90th_percentile_buy_dollar_volume_pivot.mean(axis=1)
-                spot_90th_percentile_buy_dollar_volume_pivot_std = spot_90th_percentile_buy_dollar_volume_pivot.std(axis=1)
-                spot_90th_percentile_buy_dollar_volume_zscore = (spot_90th_percentile_buy_dollar_volume_pivot - spot_90th_percentile_buy_dollar_volume_pivot_mean) / spot_90th_percentile_buy_dollar_volume_pivot_std
-                spot_90th_percentile_buy_dollar_volume_zscore.columns = [f'{col}cs_spot_90th_percentile_buy_dollar_volume_zscore_{window}d' for col in spot_90th_percentile_buy_dollar_volume_zscore.columns]
-
-                # 4 moments of cross-sectional 90th-percentile buy dollar volume
-                spot_90th_percentile_buy_dollar_volume_pivot[f'cs_spot_90th_percentile_buy_dollar_volume_mean_{window}d'] = spot_90th_percentile_buy_dollar_volume_pivot.mean(axis=1)
-                spot_90th_percentile_buy_dollar_volume_pivot[f'cs_spot_90th_percentile_buy_dollar_volume_std_{window}d'] = spot_90th_percentile_buy_dollar_volume_pivot.std(axis=1)
-                spot_90th_percentile_buy_dollar_volume_pivot[f'cs_spot_90th_percentile_buy_dollar_volume_skew_{window}d'] = spot_90th_percentile_buy_dollar_volume_pivot.skew(axis=1)
-                spot_90th_percentile_buy_dollar_volume_pivot[f'cs_spot_90th_percentile_buy_dollar_volume_kurtosis_{window}d'] = spot_90th_percentile_buy_dollar_volume_pivot.kurtosis(axis=1)
-                spot_90th_percentile_buy_dollar_volume_pivot[f'cs_spot_90th_percentile_buy_dollar_volume_median_{window}d'] = spot_90th_percentile_buy_dollar_volume_pivot.median(axis=1)
-                spot_90th_percentile_buy_dollar_volume_pivot[f'cs_spot_90th_percentile_buy_dollar_volume_10th_percentile_{window}d'] = spot_90th_percentile_buy_dollar_volume_pivot.quantile(0.1, axis=1)
-                spot_90th_percentile_buy_dollar_volume_pivot[f'cs_spot_90th_percentile_buy_dollar_volume_90th_percentile_{window}d'] = spot_90th_percentile_buy_dollar_volume_pivot.quantile(0.9, axis=1)
-
-                # Cross-sectional 90th-percentile sell dollar volume percentile for each symbol/day
-                spot_90th_percentile_sell_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'90th_percentile_sell_dollar_volume_{window}d_spot', dropna=False).sort_index()
-                spot_90th_percentile_sell_dollar_volume_percentile = spot_90th_percentile_sell_dollar_volume_pivot.rank(axis=1, pct=True)
-                spot_90th_percentile_sell_dollar_volume_percentile.columns = [f'{col}cs_spot_90th_percentile_sell_dollar_volume_percentile_{window}d' for col in spot_90th_percentile_sell_dollar_volume_percentile.columns]
-
-                # Cross-sectional z-score of 90th-percentile sell dollar volume for each symbol/day
-                spot_90th_percentile_sell_dollar_volume_pivot_mean = spot_90th_percentile_sell_dollar_volume_pivot.mean(axis=1)
-                spot_90th_percentile_sell_dollar_volume_pivot_std = spot_90th_percentile_sell_dollar_volume_pivot.std(axis=1)
-                spot_90th_percentile_sell_dollar_volume_zscore = (spot_90th_percentile_sell_dollar_volume_pivot - spot_90th_percentile_sell_dollar_volume_pivot_mean) / spot_90th_percentile_sell_dollar_volume_pivot_std
-                spot_90th_percentile_sell_dollar_volume_zscore.columns = [f'{col}cs_spot_90th_percentile_sell_dollar_volume_zscore_{window}d' for col in spot_90th_percentile_sell_dollar_volume_zscore.columns]
-
-                # 4 moments of cross-sectional 90th-percentile sell dollar volume
-                spot_90th_percentile_sell_dollar_volume_pivot[f'cs_spot_90th_percentile_sell_dollar_volume_mean_{window}d'] = spot_90th_percentile_sell_dollar_volume_pivot.mean(axis=1)
-                spot_90th_percentile_sell_dollar_volume_pivot[f'cs_spot_90th_percentile_sell_dollar_volume_std_{window}d'] = spot_90th_percentile_sell_dollar_volume_pivot.std(axis=1)
-                spot_90th_percentile_sell_dollar_volume_pivot[f'cs_spot_90th_percentile_sell_dollar_volume_skew_{window}d'] = spot_90th_percentile_sell_dollar_volume_pivot.skew(axis=1)
-                spot_90th_percentile_sell_dollar_volume_pivot[f'cs_spot_90th_percentile_sell_dollar_volume_kurtosis_{window}d'] = spot_90th_percentile_sell_dollar_volume_pivot.kurtosis(axis=1)
-                spot_90th_percentile_sell_dollar_volume_pivot[f'cs_spot_90th_percentile_sell_dollar_volume_median_{window}d'] = spot_90th_percentile_sell_dollar_volume_pivot.median(axis=1)
-                spot_90th_percentile_sell_dollar_volume_pivot[f'cs_spot_90th_percentile_sell_dollar_volume_10th_percentile_{window}d'] = spot_90th_percentile_sell_dollar_volume_pivot.quantile(0.1, axis=1)
-                spot_90th_percentile_sell_dollar_volume_pivot[f'cs_spot_90th_percentile_sell_dollar_volume_90th_percentile_{window}d'] = spot_90th_percentile_sell_dollar_volume_pivot.quantile(0.9, axis=1)
 
                 # Add the cross-sectional percentile features to the final features list
                 final_features.extend([
@@ -1282,15 +979,9 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                     spot_kurtosis_dollar_volume_percentile,
                     spot_kurtosis_buy_dollar_volume_percentile,
                     spot_kurtosis_sell_dollar_volume_percentile,
-                    spot_10th_percentile_dollar_volume_percentile,
-                    spot_10th_percentile_buy_dollar_volume_percentile,
-                    spot_10th_percentile_sell_dollar_volume_percentile,
                     spot_median_dollar_volume_percentile,
                     spot_median_buy_dollar_volume_percentile,
                     spot_median_sell_dollar_volume_percentile,
-                    spot_90th_percentile_dollar_volume_percentile,
-                    spot_90th_percentile_buy_dollar_volume_percentile,
-                    spot_90th_percentile_sell_dollar_volume_percentile
                 ])
 
                 # Add the cross-sectional z-score features to the final features list
@@ -1304,15 +995,9 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                     spot_kurtosis_dollar_volume_zscore,
                     spot_kurtosis_buy_dollar_volume_zscore,
                     spot_kurtosis_sell_dollar_volume_zscore,
-                    spot_10th_percentile_dollar_volume_zscore,
-                    spot_10th_percentile_buy_dollar_volume_zscore,
-                    spot_10th_percentile_sell_dollar_volume_zscore,
                     spot_median_dollar_volume_zscore,
                     spot_median_buy_dollar_volume_zscore,
                     spot_median_sell_dollar_volume_zscore,
-                    spot_90th_percentile_dollar_volume_zscore,
-                    spot_90th_percentile_buy_dollar_volume_zscore,
-                    spot_90th_percentile_sell_dollar_volume_zscore
                 ])
 
                 # Add the cross-sectional moments features to the final features list
@@ -1326,15 +1011,9 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                     spot_kurtosis_dollar_volume_pivot,
                     spot_kurtosis_buy_dollar_volume_pivot,
                     spot_kurtosis_sell_dollar_volume_pivot,
-                    spot_10th_percentile_dollar_volume_pivot,
-                    spot_10th_percentile_buy_dollar_volume_pivot,
-                    spot_10th_percentile_sell_dollar_volume_pivot,
                     spot_median_dollar_volume_pivot,
                     spot_median_buy_dollar_volume_pivot,
                     spot_median_sell_dollar_volume_pivot,
-                    spot_90th_percentile_dollar_volume_pivot,
-                    spot_90th_percentile_buy_dollar_volume_pivot,
-                    spot_90th_percentile_sell_dollar_volume_pivot
                 ]
                 # Only keep cross-sectional moments features in the pivot table
                 for i, moment in enumerate(cs_moments):
@@ -1352,7 +1031,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             # Cross-sectional z-score of total buy dollar volume for each symbol/day
             futures_total_buy_dollar_volume_pivot_mean = futures_total_buy_dollar_volume_pivot.mean(axis=1)
             futures_total_buy_dollar_volume_pivot_std = futures_total_buy_dollar_volume_pivot.std(axis=1)
-            futures_total_buy_dollar_volume_zscore = (futures_total_buy_dollar_volume_pivot - futures_total_buy_dollar_volume_pivot_mean) / futures_total_buy_dollar_volume_pivot_std
+            futures_total_buy_dollar_volume_zscore = futures_total_buy_dollar_volume_pivot.sub(futures_total_buy_dollar_volume_pivot_mean, axis=0).div(futures_total_buy_dollar_volume_pivot_std, axis=0)
             futures_total_buy_dollar_volume_zscore.columns = [f'{col}cs_futures_total_buy_dollar_volume_zscore_{window}d' for col in futures_total_buy_dollar_volume_zscore.columns]
 
             # 4 moments of cross-sectional total buy dollar volume
@@ -1360,8 +1039,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             futures_total_buy_dollar_volume_pivot[f'cs_futures_total_buy_dollar_volume_std_{window}d'] = futures_total_buy_dollar_volume_pivot.std(axis=1)
             futures_total_buy_dollar_volume_pivot[f'cs_futures_total_buy_dollar_volume_skew_{window}d'] = futures_total_buy_dollar_volume_pivot.skew(axis=1)
             futures_total_buy_dollar_volume_pivot[f'cs_futures_total_buy_dollar_volume_kurtosis_{window}d'] = futures_total_buy_dollar_volume_pivot.kurtosis(axis=1)
-            futures_total_buy_dollar_volume_pivot[f'cs_futures_total_buy_dollar_volume_10th_percentile_{window}d'] = futures_total_buy_dollar_volume_pivot.quantile(0.1, axis=1)
-            futures_total_buy_dollar_volume_pivot[f'cs_futures_total_buy_dollar_volume_90th_percentile_{window}d'] = futures_total_buy_dollar_volume_pivot.quantile(0.9, axis=1)            
+            futures_total_buy_dollar_volume_pivot[f'cs_futures_total_buy_dollar_volume_median_{window}d'] = futures_total_buy_dollar_volume_pivot.median(axis=1)
 
             # Cross-sectional total sell dollar volume percentile for each symbol/day
             futures_total_sell_dollar_volume_pivot = trade_features.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'total_sell_dollar_volume_{window}d_futures', dropna=False).sort_index()
@@ -1371,7 +1049,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             # Cross-sectional z-score of total sell dollar volume for each symbol/day
             futures_total_sell_dollar_volume_pivot_mean = futures_total_sell_dollar_volume_pivot.mean(axis=1)
             futures_total_sell_dollar_volume_pivot_std = futures_total_sell_dollar_volume_pivot.std(axis=1)
-            futures_total_sell_dollar_volume_zscore = (futures_total_sell_dollar_volume_pivot - futures_total_sell_dollar_volume_pivot_mean) / futures_total_sell_dollar_volume_pivot_std
+            futures_total_sell_dollar_volume_zscore = futures_total_sell_dollar_volume_pivot.sub(futures_total_sell_dollar_volume_pivot_mean, axis=0).div(futures_total_sell_dollar_volume_pivot_std, axis=0)
             futures_total_sell_dollar_volume_zscore.columns = [f'{col}cs_futures_total_sell_dollar_volume_zscore_{window}d' for col in futures_total_sell_dollar_volume_zscore.columns]
 
             # 4 moments of cross-sectional total sell dollar volume
@@ -1379,8 +1057,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             futures_total_sell_dollar_volume_pivot[f'cs_futures_total_sell_dollar_volume_std_{window}d'] = futures_total_sell_dollar_volume_pivot.std(axis=1)
             futures_total_sell_dollar_volume_pivot[f'cs_futures_total_sell_dollar_volume_skew_{window}d'] = futures_total_sell_dollar_volume_pivot.skew(axis=1)
             futures_total_sell_dollar_volume_pivot[f'cs_futures_total_sell_dollar_volume_kurtosis_{window}d'] = futures_total_sell_dollar_volume_pivot.kurtosis(axis=1)
-            futures_total_sell_dollar_volume_pivot[f'cs_futures_total_sell_dollar_volume_10th_percentile_{window}d'] = futures_total_sell_dollar_volume_pivot.quantile(0.1, axis=1)
-            futures_total_sell_dollar_volume_pivot[f'cs_futures_total_sell_dollar_volume_90th_percentile_{window}d'] = futures_total_sell_dollar_volume_pivot.quantile(0.9, axis=1)
+            futures_total_sell_dollar_volume_pivot[f'cs_futures_total_sell_dollar_volume_median_{window}d'] = futures_total_sell_dollar_volume_pivot.median(axis=1)
 
             # Cross-sectional total dollar volume percentile for each symbol/day
             futures_total_dollar_volume_pivot = trade_features.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'total_dollar_volume_{window}d_futures', dropna=False).sort_index()
@@ -1390,7 +1067,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             # Cross-sectional z-score of total dollar volume for each symbol/day
             futures_total_dollar_volume_pivot_mean = futures_total_dollar_volume_pivot.mean(axis=1)
             futures_total_dollar_volume_pivot_std = futures_total_dollar_volume_pivot.std(axis=1)
-            futures_total_dollar_volume_zscore = (futures_total_dollar_volume_pivot - futures_total_dollar_volume_pivot_mean) / futures_total_dollar_volume_pivot_std
+            futures_total_dollar_volume_zscore = futures_total_dollar_volume_pivot.sub(futures_total_dollar_volume_pivot_mean, axis=0).div(futures_total_dollar_volume_pivot_std, axis=0)
             futures_total_dollar_volume_zscore.columns = [f'{col}cs_futures_total_dollar_volume_zscore_{window}d' for col in futures_total_dollar_volume_zscore.columns]
 
             # 4 moments of cross-sectional total dollar volume
@@ -1398,8 +1075,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             futures_total_dollar_volume_pivot[f'cs_futures_total_dollar_volume_std_{window}d'] = futures_total_dollar_volume_pivot.std(axis=1)
             futures_total_dollar_volume_pivot[f'cs_futures_total_dollar_volume_skew_{window}d'] = futures_total_dollar_volume_pivot.skew(axis=1)
             futures_total_dollar_volume_pivot[f'cs_futures_total_dollar_volume_kurtosis_{window}d'] = futures_total_dollar_volume_pivot.kurtosis(axis=1)
-            futures_total_dollar_volume_pivot[f'cs_futures_total_dollar_volume_10th_percentile_{window}d'] = futures_total_dollar_volume_pivot.quantile(0.1, axis=1)
-            futures_total_dollar_volume_pivot[f'cs_futures_total_dollar_volume_90th_percentile_{window}d'] = futures_total_dollar_volume_pivot.quantile(0.9, axis=1)
+            futures_total_dollar_volume_pivot[f'cs_futures_total_dollar_volume_median_{window}d'] = futures_total_dollar_volume_pivot.median(axis=1)
 
             # Cross-sectional number of buys percentile for each symbol/day
             futures_num_buys_pivot = trade_features.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'num_buys_{window}d_futures', dropna=False).sort_index()
@@ -1409,7 +1085,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             # Cross-sectional z-score of number of buys for each symbol/day
             futures_num_buys_pivot_mean = futures_num_buys_pivot.mean(axis=1)
             futures_num_buys_pivot_std = futures_num_buys_pivot.std(axis=1)
-            futures_num_buys_zscore = (futures_num_buys_pivot - futures_num_buys_pivot_mean) / futures_num_buys_pivot_std
+            futures_num_buys_zscore = futures_num_buys_pivot.sub(futures_num_buys_pivot_mean, axis=0).div(futures_num_buys_pivot_std, axis=0)
             futures_num_buys_zscore.columns = [f'{col}cs_futures_num_buys_zscore_{window}d' for col in futures_num_buys_zscore.columns]
 
             # 4 moments of cross-sectional number of buys
@@ -1417,9 +1093,8 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             futures_num_buys_pivot[f'cs_futures_num_buys_std_{window}d'] = futures_num_buys_pivot.std(axis=1)
             futures_num_buys_pivot[f'cs_futures_num_buys_skew_{window}d'] = futures_num_buys_pivot.skew(axis=1)
             futures_num_buys_pivot[f'cs_futures_num_buys_kurtosis_{window}d'] = futures_num_buys_pivot.kurtosis(axis=1)
-            futures_num_buys_pivot[f'cs_futures_num_buys_10th_percentile_{window}d'] = futures_num_buys_pivot.quantile(0.1, axis=1)
-            futures_num_buys_pivot[f'cs_futures_num_buys_90th_percentile_{window}d'] = futures_num_buys_pivot.quantile(0.9, axis=1)
-
+            futures_num_buys_pivot[f'cs_futures_num_buys_median_{window}d'] = futures_num_buys_pivot.median(axis=1)
+            
             # Cross-sectional number of sells percentile for each symbol/day
             futures_num_sells_pivot = trade_features.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'num_sells_{window}d_futures', dropna=False).sort_index()
             futures_num_sells_percentile = futures_num_sells_pivot.rank(axis=1, pct=True)
@@ -1428,7 +1103,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             # Cross-sectional z-score of number of sells for each symbol/day
             futures_num_sells_pivot_mean = futures_num_sells_pivot.mean(axis=1)
             futures_num_sells_pivot_std = futures_num_sells_pivot.std(axis=1)
-            futures_num_sells_zscore = (futures_num_sells_pivot - futures_num_sells_pivot_mean) / futures_num_sells_pivot_std
+            futures_num_sells_zscore = futures_num_sells_pivot.sub(futures_num_sells_pivot_mean, axis=0).div(futures_num_sells_pivot_std, axis=0)
             futures_num_sells_zscore.columns = [f'{col}cs_futures_num_sells_zscore_{window}d' for col in futures_num_sells_zscore.columns]
 
             # 4 moments of cross-sectional number of sells
@@ -1436,8 +1111,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             futures_num_sells_pivot[f'cs_futures_num_sells_std_{window}d'] = futures_num_sells_pivot.std(axis=1)
             futures_num_sells_pivot[f'cs_futures_num_sells_skew_{window}d'] = futures_num_sells_pivot.skew(axis=1)
             futures_num_sells_pivot[f'cs_futures_num_sells_kurtosis_{window}d'] = futures_num_sells_pivot.kurtosis(axis=1)
-            futures_num_sells_pivot[f'cs_futures_num_sells_10th_percentile_{window}d'] = futures_num_sells_pivot.quantile(0.1, axis=1)
-            futures_num_sells_pivot[f'cs_futures_num_sells_90th_percentile_{window}d'] = futures_num_sells_pivot.quantile(0.9, axis=1)
+            futures_num_sells_pivot[f'cs_futures_num_sells_median_{window}d'] = futures_num_sells_pivot.median(axis=1)
 
             # Cross-sectional percentage buys percentile for each symbol/day
             futures_pct_buys_pivot = trade_features.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'pct_buys_{window}d_futures', dropna=False).sort_index()
@@ -1447,7 +1121,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             # Cross-sectional z-score of percentage buys for each symbol/day
             futures_pct_buys_pivot_mean = futures_pct_buys_pivot.mean(axis=1)
             futures_pct_buys_pivot_std = futures_pct_buys_pivot.std(axis=1)
-            futures_pct_buys_zscore = (futures_pct_buys_pivot - futures_pct_buys_pivot_mean) / futures_pct_buys_pivot_std
+            futures_pct_buys_zscore = futures_pct_buys_pivot.sub(futures_pct_buys_pivot_mean, axis=0).div(futures_pct_buys_pivot_std, axis=0)
             futures_pct_buys_zscore.columns = [f'{col}cs_futures_pct_buys_zscore_{window}d' for col in futures_pct_buys_zscore.columns]
 
             # 4 moments of cross-sectional percentage buys
@@ -1455,8 +1129,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             futures_pct_buys_pivot[f'cs_futures_pct_buys_std_{window}d'] = futures_pct_buys_pivot.std(axis=1)
             futures_pct_buys_pivot[f'cs_futures_pct_buys_skew_{window}d'] = futures_pct_buys_pivot.skew(axis=1)
             futures_pct_buys_pivot[f'cs_futures_pct_buys_kurtosis_{window}d'] = futures_pct_buys_pivot.kurtosis(axis=1)
-            futures_pct_buys_pivot[f'cs_futures_pct_buys_10th_percentile_{window}d'] = futures_pct_buys_pivot.quantile(0.1, axis=1)
-            futures_pct_buys_pivot[f'cs_futures_pct_buys_90th_percentile_{window}d'] = futures_pct_buys_pivot.quantile(0.9, axis=1)
+            futures_pct_buys_pivot[f'cs_futures_pct_buys_median_{window}d'] = futures_pct_buys_pivot.median(axis=1)
 
             # Cross-sectional percentage sells percentile for each symbol/day
             futures_pct_sells_pivot = trade_features.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'pct_sells_{window}d_futures', dropna=False).sort_index()
@@ -1466,7 +1139,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             # Cross-sectional z-score of percentage sells for each symbol/day
             futures_pct_sells_pivot_mean = futures_pct_sells_pivot.mean(axis=1)
             futures_pct_sells_pivot_std = futures_pct_sells_pivot.std(axis=1)
-            futures_pct_sells_zscore = (futures_pct_sells_pivot - futures_pct_sells_pivot_mean) / futures_pct_sells_pivot_std
+            futures_pct_sells_zscore = futures_pct_sells_pivot.sub(futures_pct_sells_pivot_mean, axis=0).div(futures_pct_sells_pivot_std, axis=0)
             futures_pct_sells_zscore.columns = [f'{col}cs_futures_pct_sells_zscore_{window}d' for col in futures_pct_sells_zscore.columns]
 
             # 4 moments of cross-sectional percentage sells
@@ -1474,8 +1147,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             futures_pct_sells_pivot[f'cs_futures_pct_sells_std_{window}d'] = futures_pct_sells_pivot.std(axis=1)
             futures_pct_sells_pivot[f'cs_futures_pct_sells_skew_{window}d'] = futures_pct_sells_pivot.skew(axis=1)
             futures_pct_sells_pivot[f'cs_futures_pct_sells_kurtosis_{window}d'] = futures_pct_sells_pivot.kurtosis(axis=1)
-            futures_pct_sells_pivot[f'cs_futures_pct_sells_10th_percentile_{window}d'] = futures_pct_sells_pivot.quantile(0.1, axis=1)
-            futures_pct_sells_pivot[f'cs_futures_pct_sells_90th_percentile_{window}d'] = futures_pct_sells_pivot.quantile(0.9, axis=1)
+            futures_pct_sells_pivot[f'cs_futures_pct_sells_median_{window}d'] = futures_pct_sells_pivot.median(axis=1)
 
             # Cross-sectional trade imbalance percentile for each symbol/day
             futures_trade_dollar_volume_imbalance_pivot = trade_features.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'trade_imbalance_{window}d_futures', dropna=False).sort_index()
@@ -1485,7 +1157,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             # Cross-sectional z-score of trade imbalance for each symbol/day
             futures_trade_dollar_volume_imbalance_pivot_mean = futures_trade_dollar_volume_imbalance_pivot.mean(axis=1)
             futures_trade_dollar_volume_imbalance_pivot_std = futures_trade_dollar_volume_imbalance_pivot.std(axis=1)
-            futures_trade_dollar_volume_imbalance_zscore = (futures_trade_dollar_volume_imbalance_pivot - futures_trade_dollar_volume_imbalance_pivot_mean) / futures_trade_dollar_volume_imbalance_pivot_std
+            futures_trade_dollar_volume_imbalance_zscore = futures_trade_dollar_volume_imbalance_pivot.sub(futures_trade_dollar_volume_imbalance_pivot_mean, axis=0).div(futures_trade_dollar_volume_imbalance_pivot_std, axis=0)
             futures_trade_dollar_volume_imbalance_zscore.columns = [f'{col}cs_futures_trade_dollar_volume_imbalance_zscore_{window}d' for col in futures_trade_dollar_volume_imbalance_zscore.columns]
 
             # 4 moments of cross-sectional trade imbalance
@@ -1493,8 +1165,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             futures_trade_dollar_volume_imbalance_pivot[f'cs_futures_trade_dollar_volume_imbalance_std_{window}d'] = futures_trade_dollar_volume_imbalance_pivot.std(axis=1)
             futures_trade_dollar_volume_imbalance_pivot[f'cs_futures_trade_dollar_volume_imbalance_skew_{window}d'] = futures_trade_dollar_volume_imbalance_pivot.skew(axis=1)
             futures_trade_dollar_volume_imbalance_pivot[f'cs_futures_trade_dollar_volume_imbalance_kurtosis_{window}d'] = futures_trade_dollar_volume_imbalance_pivot.kurtosis(axis=1)
-            futures_trade_dollar_volume_imbalance_pivot[f'cs_futures_trade_dollar_volume_imbalance_10th_percentile_{window}d'] = futures_trade_dollar_volume_imbalance_pivot.quantile(0.1, axis=1)
-            futures_trade_dollar_volume_imbalance_pivot[f'cs_futures_trade_dollar_volume_imbalance_90th_percentile_{window}d'] = futures_trade_dollar_volume_imbalance_pivot.quantile(0.9, axis=1)
+            futures_trade_dollar_volume_imbalance_pivot[f'cs_futures_trade_dollar_volume_imbalance_median_{window}d'] = futures_trade_dollar_volume_imbalance_pivot.median(axis=1)
 
             # Cross-sectional percentage buy dollar volume percentile for each symbol/day
             futures_pct_buy_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id',values=f'pct_buy_dollar_volume_{window}d_futures', dropna=False).sort_index()
@@ -1504,7 +1175,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             # Cross-sectional z-score of percentage buy dollar volume for each symbol/day
             futures_pct_buy_dollar_volume_pivot_mean = futures_pct_buy_dollar_volume_pivot.mean(axis=1)
             futures_pct_buy_dollar_volume_pivot_std = futures_pct_buy_dollar_volume_pivot.std(axis=1)
-            futures_pct_buy_dollar_volume_zscore = (futures_pct_buy_dollar_volume_pivot - futures_pct_buy_dollar_volume_pivot_mean) / futures_pct_buy_dollar_volume_pivot_std
+            futures_pct_buy_dollar_volume_zscore = futures_pct_buy_dollar_volume_pivot.sub(futures_pct_buy_dollar_volume_pivot_mean, axis=0).div(futures_pct_buy_dollar_volume_pivot_std, axis=0)
             futures_pct_buy_dollar_volume_zscore.columns = [f'{col}cs_futures_pct_buy_dollar_volume_zscore_{window}d' for col in futures_pct_buy_dollar_volume_zscore.columns]
 
             # 4 moments of cross-sectional percentage buy dollar volume
@@ -1512,8 +1183,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             futures_pct_buy_dollar_volume_pivot[f'cs_futures_pct_buy_dollar_volume_std_{window}d'] = futures_pct_buy_dollar_volume_pivot.std(axis=1)
             futures_pct_buy_dollar_volume_pivot[f'cs_futures_pct_buy_dollar_volume_skew_{window}d'] = futures_pct_buy_dollar_volume_pivot.skew(axis=1)
             futures_pct_buy_dollar_volume_pivot[f'cs_futures_pct_buy_dollar_volume_kurtosis_{window}d'] = futures_pct_buy_dollar_volume_pivot.kurtosis(axis=1)
-            futures_pct_buy_dollar_volume_pivot[f'cs_futures_pct_buy_dollar_volume_10th_percentile_{window}d'] = futures_pct_buy_dollar_volume_pivot.quantile(0.1, axis=1)
-            futures_pct_buy_dollar_volume_pivot[f'cs_futures_pct_buy_dollar_volume_90th_percentile_{window}d'] = futures_pct_buy_dollar_volume_pivot.quantile(0.9, axis=1)
+            futures_pct_buy_dollar_volume_pivot[f'cs_futures_pct_buy_dollar_volume_median_{window}d'] = futures_pct_buy_dollar_volume_pivot.median(axis=1)
 
             # Cross-sectional percentage sell dollar volume percentile for each symbol/day
             futures_pct_sell_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id',values=f'pct_sell_dollar_volume_{window}d_futures', dropna=False).sort_index()
@@ -1523,7 +1193,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             # Cross-sectional z-score of percentage sell dollar volume for each symbol/day
             futures_pct_sell_dollar_volume_pivot_mean = futures_pct_sell_dollar_volume_pivot.mean(axis=1)
             futures_pct_sell_dollar_volume_pivot_std = futures_pct_sell_dollar_volume_pivot.std(axis=1)
-            futures_pct_sell_dollar_volume_zscore = (futures_pct_sell_dollar_volume_pivot - futures_pct_sell_dollar_volume_pivot_mean) / futures_pct_sell_dollar_volume_pivot_std
+            futures_pct_sell_dollar_volume_zscore = futures_pct_sell_dollar_volume_pivot.sub(futures_pct_sell_dollar_volume_pivot_mean, axis=0).div(futures_pct_sell_dollar_volume_pivot_std, axis=0)
             futures_pct_sell_dollar_volume_zscore.columns = [f'{col}cs_futures_pct_sell_dollar_volume_zscore_{window}d' for col in futures_pct_sell_dollar_volume_zscore.columns]
 
             # 4 moments of cross-sectional percentage sell dollar volume
@@ -1531,8 +1201,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             futures_pct_sell_dollar_volume_pivot[f'cs_futures_pct_sell_dollar_volume_std_{window}d'] = futures_pct_sell_dollar_volume_pivot.std(axis=1)
             futures_pct_sell_dollar_volume_pivot[f'cs_futures_pct_sell_dollar_volume_skew_{window}d'] = futures_pct_sell_dollar_volume_pivot.skew(axis=1)
             futures_pct_sell_dollar_volume_pivot[f'cs_futures_pct_sell_dollar_volume_kurtosis_{window}d'] = futures_pct_sell_dollar_volume_pivot.kurtosis(axis=1)
-            futures_pct_sell_dollar_volume_pivot[f'cs_futures_pct_sell_dollar_volume_10th_percentile_{window}d'] = futures_pct_sell_dollar_volume_pivot.quantile(0.1, axis=1)
-            futures_pct_sell_dollar_volume_pivot[f'cs_futures_pct_sell_dollar_volume_90th_percentile_{window}d'] = futures_pct_sell_dollar_volume_pivot.quantile(0.9, axis=1)
+            futures_pct_sell_dollar_volume_pivot[f'cs_futures_pct_sell_dollar_volume_median_{window}d'] = futures_pct_sell_dollar_volume_pivot.median(axis=1)
 
             # Cross-sectional avg dollar volume percentile for each symbol/day
             futures_avg_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'avg_dollar_volume_{window}d_futures', dropna=False).sort_index()
@@ -1542,7 +1211,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             # Cross-sectional z-score of avg dollar volume for each symbol/day
             futures_avg_dollar_volume_pivot_mean = futures_avg_dollar_volume_pivot.mean(axis=1)
             futures_avg_dollar_volume_pivot_std = futures_avg_dollar_volume_pivot.std(axis=1)
-            futures_avg_dollar_volume_zscore = (futures_avg_dollar_volume_pivot - futures_avg_dollar_volume_pivot_mean) / futures_avg_dollar_volume_pivot_std
+            futures_avg_dollar_volume_zscore = futures_avg_dollar_volume_pivot.sub(futures_avg_dollar_volume_pivot_mean, axis=0).div(futures_avg_dollar_volume_pivot_std, axis=0)
             futures_avg_dollar_volume_zscore.columns = [f'{col}cs_futures_avg_dollar_volume_zscore_{window}d' for col in futures_avg_dollar_volume_zscore.columns]
 
             # 4 moments of cross-sectional avg dollar volume
@@ -1550,8 +1219,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             futures_avg_dollar_volume_pivot[f'cs_futures_avg_dollar_volume_std_{window}d'] = futures_avg_dollar_volume_pivot.std(axis=1)
             futures_avg_dollar_volume_pivot[f'cs_futures_avg_dollar_volume_skew_{window}d'] = futures_avg_dollar_volume_pivot.skew(axis=1)
             futures_avg_dollar_volume_pivot[f'cs_futures_avg_dollar_volume_kurtosis_{window}d'] = futures_avg_dollar_volume_pivot.kurtosis(axis=1)
-            futures_avg_dollar_volume_pivot[f'cs_futures_avg_dollar_volume_10th_percentile_{window}d'] = futures_avg_dollar_volume_pivot.quantile(0.1, axis=1)
-            futures_avg_dollar_volume_pivot[f'cs_futures_avg_dollar_volume_90th_percentile_{window}d'] = futures_avg_dollar_volume_pivot.quantile(0.9, axis=1)
+            futures_avg_dollar_volume_pivot[f'cs_futures_avg_dollar_volume_median_{window}d'] = futures_avg_dollar_volume_pivot.median(axis=1)
 
             # Cross-sectional avg buy dollar volume percentile for each symbol/day
             futures_avg_buy_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'avg_buy_dollar_volume_{window}d_futures', dropna=False).sort_index()
@@ -1561,7 +1229,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             # Cross-sectional z-score of avg buy dollar volume for each symbol/day
             futures_avg_buy_dollar_volume_pivot_mean = futures_avg_buy_dollar_volume_pivot.mean(axis=1)
             futures_avg_buy_dollar_volume_pivot_std = futures_avg_buy_dollar_volume_pivot.std(axis=1)
-            futures_avg_buy_dollar_volume_zscore = (futures_avg_buy_dollar_volume_pivot - futures_avg_buy_dollar_volume_pivot_mean) / futures_avg_buy_dollar_volume_pivot_std
+            futures_avg_buy_dollar_volume_zscore = futures_avg_buy_dollar_volume_pivot.sub(futures_avg_buy_dollar_volume_pivot_mean, axis=0).div(futures_avg_buy_dollar_volume_pivot_std, axis=0)
             futures_avg_buy_dollar_volume_zscore.columns = [f'{col}cs_futures_avg_buy_dollar_volume_zscore_{window}d' for col in futures_avg_buy_dollar_volume_zscore.columns]
 
             # 4 moments of cross-sectional avg buy dollar volume
@@ -1569,8 +1237,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             futures_avg_buy_dollar_volume_pivot[f'cs_futures_avg_buy_dollar_volume_std_{window}d'] = futures_avg_buy_dollar_volume_pivot.std(axis=1)
             futures_avg_buy_dollar_volume_pivot[f'cs_futures_avg_buy_dollar_volume_skew_{window}d'] = futures_avg_buy_dollar_volume_pivot.skew(axis=1)
             futures_avg_buy_dollar_volume_pivot[f'cs_futures_avg_buy_dollar_volume_kurtosis_{window}d'] = futures_avg_buy_dollar_volume_pivot.kurtosis(axis=1)
-            futures_avg_buy_dollar_volume_pivot[f'cs_futures_avg_buy_dollar_volume_10th_percentile_{window}d'] = futures_avg_buy_dollar_volume_pivot.quantile(0.1, axis=1)
-            futures_avg_buy_dollar_volume_pivot[f'cs_futures_avg_buy_dollar_volume_90th_percentile_{window}d'] = futures_avg_buy_dollar_volume_pivot.quantile(0.9, axis=1)
+            futures_avg_buy_dollar_volume_pivot[f'cs_futures_avg_buy_dollar_volume_median_{window}d'] = futures_avg_buy_dollar_volume_pivot.median(axis=1)
 
             # Cross-sectional avg sell dollar volume percentile for each symbol/day
             futures_avg_sell_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'avg_sell_dollar_volume_{window}d_futures', dropna=False).sort_index()
@@ -1580,7 +1247,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             # Cross-sectional z-score of avg sell dollar volume for each symbol/day
             futures_avg_sell_dollar_volume_pivot_mean = futures_avg_sell_dollar_volume_pivot.mean(axis=1)
             futures_avg_sell_dollar_volume_pivot_std = futures_avg_sell_dollar_volume_pivot.std(axis=1)
-            futures_avg_sell_dollar_volume_zscore = (futures_avg_sell_dollar_volume_pivot - futures_avg_sell_dollar_volume_pivot_mean) / futures_avg_sell_dollar_volume_pivot_std
+            futures_avg_sell_dollar_volume_zscore = futures_avg_sell_dollar_volume_pivot.sub(futures_avg_sell_dollar_volume_pivot_mean, axis=0).div(futures_avg_sell_dollar_volume_pivot_std, axis=0)
             futures_avg_sell_dollar_volume_zscore.columns = [f'{col}cs_futures_avg_sell_dollar_volume_zscore_{window}d' for col in futures_avg_sell_dollar_volume_zscore.columns]
 
             # 4 moments of cross-sectional avg sell dollar volume
@@ -1588,8 +1255,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             futures_avg_sell_dollar_volume_pivot[f'cs_futures_avg_sell_dollar_volume_std_{window}d'] = futures_avg_sell_dollar_volume_pivot.std(axis=1)
             futures_avg_sell_dollar_volume_pivot[f'cs_futures_avg_sell_dollar_volume_skew_{window}d'] = futures_avg_sell_dollar_volume_pivot.skew(axis=1)
             futures_avg_sell_dollar_volume_pivot[f'cs_futures_avg_sell_dollar_volume_kurtosis_{window}d'] = futures_avg_sell_dollar_volume_pivot.kurtosis(axis=1)
-            futures_avg_sell_dollar_volume_pivot[f'cs_futures_avg_sell_dollar_volume_10th_percentile_{window}d'] = futures_avg_sell_dollar_volume_pivot.quantile(0.1, axis=1)
-            futures_avg_sell_dollar_volume_pivot[f'cs_futures_avg_sell_dollar_volume_90th_percentile_{window}d'] = futures_avg_sell_dollar_volume_pivot.quantile(0.9, axis=1)
+            futures_avg_sell_dollar_volume_pivot[f'cs_futures_avg_sell_dollar_volume_median_{window}d'] = futures_avg_sell_dollar_volume_pivot.median(axis=1)
 
             if window == 1:
                 # Cross-sectional std dollar volume percentile for each symbol/day
@@ -1600,7 +1266,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 # Cross-sectional z-score of std dollar volume for each symbol/day
                 futures_std_dollar_volume_pivot_mean = futures_std_dollar_volume_pivot.mean(axis=1)
                 futures_std_dollar_volume_pivot_std = futures_std_dollar_volume_pivot.std(axis=1)
-                futures_std_dollar_volume_zscore = (futures_std_dollar_volume_pivot - futures_std_dollar_volume_pivot_mean) / futures_std_dollar_volume_pivot_std
+                futures_std_dollar_volume_zscore = futures_std_dollar_volume_pivot.sub(futures_std_dollar_volume_pivot_mean, axis=0).div(futures_std_dollar_volume_pivot_std, axis=0)
                 futures_std_dollar_volume_zscore.columns = [f'{col}cs_futures_std_dollar_volume_zscore_{window}d' for col in futures_std_dollar_volume_zscore.columns]
 
                 # 4 moments of cross-sectional std dollar volume
@@ -1608,8 +1274,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 futures_std_dollar_volume_pivot[f'cs_futures_std_dollar_volume_std_{window}d'] = futures_std_dollar_volume_pivot.std(axis=1)
                 futures_std_dollar_volume_pivot[f'cs_futures_std_dollar_volume_skew_{window}d'] = futures_std_dollar_volume_pivot.skew(axis=1)
                 futures_std_dollar_volume_pivot[f'cs_futures_std_dollar_volume_kurtosis_{window}d'] = futures_std_dollar_volume_pivot.kurtosis(axis=1)
-                futures_std_dollar_volume_pivot[f'cs_futures_std_dollar_volume_10th_percentile_{window}d'] = futures_std_dollar_volume_pivot.quantile(0.1, axis=1)
-                futures_std_dollar_volume_pivot[f'cs_futures_std_dollar_volume_90th_percentile_{window}d'] = futures_std_dollar_volume_pivot.quantile(0.9, axis=1)
+                futures_std_dollar_volume_pivot[f'cs_futures_std_dollar_volume_median_{window}d'] = futures_std_dollar_volume_pivot.median(axis=1)
 
                 # Cross-sectional std buy dollar volume percentile for each symbol/day
                 futures_std_buy_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'std_buy_dollar_volume_{window}d_futures', dropna=False).sort_index()
@@ -1619,7 +1284,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 # Cross-sectional z-score of std buy dollar volume for each symbol/day
                 futures_std_buy_dollar_volume_pivot_mean = futures_std_buy_dollar_volume_pivot.mean(axis=1)
                 futures_std_buy_dollar_volume_pivot_std = futures_std_buy_dollar_volume_pivot.std(axis=1)
-                futures_std_buy_dollar_volume_zscore = (futures_std_buy_dollar_volume_pivot - futures_std_buy_dollar_volume_pivot_mean) / futures_std_buy_dollar_volume_pivot_std
+                futures_std_buy_dollar_volume_zscore = futures_std_buy_dollar_volume_pivot.sub(futures_std_buy_dollar_volume_pivot_mean, axis=0).div(futures_std_buy_dollar_volume_pivot_std, axis=0)
                 futures_std_buy_dollar_volume_zscore.columns = [f'{col}cs_futures_std_buy_dollar_volume_zscore_{window}d' for col in futures_std_buy_dollar_volume_zscore.columns]
 
                 # 4 moments of cross-sectional std buy dollar volume
@@ -1627,8 +1292,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 futures_std_buy_dollar_volume_pivot[f'cs_futures_std_buy_dollar_volume_std_{window}d'] = futures_std_buy_dollar_volume_pivot.std(axis=1)
                 futures_std_buy_dollar_volume_pivot[f'cs_futures_std_buy_dollar_volume_skew_{window}d'] = futures_std_buy_dollar_volume_pivot.skew(axis=1)
                 futures_std_buy_dollar_volume_pivot[f'cs_futures_std_buy_dollar_volume_kurtosis_{window}d'] = futures_std_buy_dollar_volume_pivot.kurtosis(axis=1)
-                futures_std_buy_dollar_volume_pivot[f'cs_futures_std_buy_dollar_volume_10th_percentile_{window}d'] = futures_std_buy_dollar_volume_pivot.quantile(0.1, axis=1)
-                futures_std_buy_dollar_volume_pivot[f'cs_futures_std_buy_dollar_volume_90th_percentile_{window}d'] = futures_std_buy_dollar_volume_pivot.quantile(0.9, axis=1)
+                futures_std_buy_dollar_volume_pivot[f'cs_futures_std_buy_dollar_volume_median_{window}d'] = futures_std_buy_dollar_volume_pivot.median(axis=1)
 
                 # Cross-sectional std sell dollar volume percentile for each symbol/day
                 futures_std_sell_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'std_sell_dollar_volume_{window}d_futures', dropna=False).sort_index()
@@ -1638,7 +1302,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 # Cross-sectional z-score of std sell dollar volume for each symbol/day
                 futures_std_sell_dollar_volume_pivot_mean = futures_std_sell_dollar_volume_pivot.mean(axis=1)
                 futures_std_sell_dollar_volume_pivot_std = futures_std_sell_dollar_volume_pivot.std(axis=1)
-                futures_std_sell_dollar_volume_zscore = (futures_std_sell_dollar_volume_pivot - futures_std_sell_dollar_volume_pivot_mean) / futures_std_sell_dollar_volume_pivot_std
+                futures_std_sell_dollar_volume_zscore = futures_std_sell_dollar_volume_pivot.sub(futures_std_sell_dollar_volume_pivot_mean, axis=0).div(futures_std_sell_dollar_volume_pivot_std, axis=0)
                 futures_std_sell_dollar_volume_zscore.columns = [f'{col}cs_futures_std_sell_dollar_volume_zscore_{window}d' for col in futures_std_sell_dollar_volume_zscore.columns]
 
                 # 4 moments of cross-sectional std sell dollar volume
@@ -1646,8 +1310,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 futures_std_sell_dollar_volume_pivot[f'cs_futures_std_sell_dollar_volume_std_{window}d'] = futures_std_sell_dollar_volume_pivot.std(axis=1)
                 futures_std_sell_dollar_volume_pivot[f'cs_futures_std_sell_dollar_volume_skew_{window}d'] = futures_std_sell_dollar_volume_pivot.skew(axis=1)
                 futures_std_sell_dollar_volume_pivot[f'cs_futures_std_sell_dollar_volume_kurtosis_{window}d'] = futures_std_sell_dollar_volume_pivot.kurtosis(axis=1)
-                futures_std_sell_dollar_volume_pivot[f'cs_futures_std_sell_dollar_volume_10th_percentile_{window}d'] = futures_std_sell_dollar_volume_pivot.quantile(0.1, axis=1)
-                futures_std_sell_dollar_volume_pivot[f'cs_futures_std_sell_dollar_volume_90th_percentile_{window}d'] = futures_std_sell_dollar_volume_pivot.quantile(0.9, axis=1)
+                futures_std_sell_dollar_volume_pivot[f'cs_futures_std_sell_dollar_volume_median_{window}d'] = futures_std_sell_dollar_volume_pivot.median(axis=1)
 
                 # Cross-sectional skewness dollar volume percentile for each symbol/day
                 futures_skewness_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'skew_dollar_volume_{window}d_futures', dropna=False).sort_index()
@@ -1657,7 +1320,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 # Cross-sectional z-score of skewness dollar volume for each symbol/day
                 futures_skewness_dollar_volume_pivot_mean = futures_skewness_dollar_volume_pivot.mean(axis=1)
                 futures_skewness_dollar_volume_pivot_std = futures_skewness_dollar_volume_pivot.std(axis=1)
-                futures_skewness_dollar_volume_zscore = (futures_skewness_dollar_volume_pivot - futures_skewness_dollar_volume_pivot_mean) / futures_skewness_dollar_volume_pivot_std
+                futures_skewness_dollar_volume_zscore = futures_skewness_dollar_volume_pivot.sub(futures_skewness_dollar_volume_pivot_mean, axis=0).div(futures_skewness_dollar_volume_pivot_std, axis=0)
                 futures_skewness_dollar_volume_zscore.columns = [f'{col}cs_futures_skewness_dollar_volume_zscore_{window}d' for col in futures_skewness_dollar_volume_zscore.columns]
 
                 # 4 moments of cross-sectional skewness dollar volume
@@ -1665,8 +1328,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 futures_skewness_dollar_volume_pivot[f'cs_futures_skewness_dollar_volume_std_{window}d'] = futures_skewness_dollar_volume_pivot.std(axis=1)
                 futures_skewness_dollar_volume_pivot[f'cs_futures_skewness_dollar_volume_skew_{window}d'] = futures_skewness_dollar_volume_pivot.skew(axis=1)
                 futures_skewness_dollar_volume_pivot[f'cs_futures_skewness_dollar_volume_kurtosis_{window}d'] = futures_skewness_dollar_volume_pivot.kurtosis(axis=1)
-                futures_skewness_dollar_volume_pivot[f'cs_futures_skewness_dollar_volume_10th_percentile_{window}d'] = futures_skewness_dollar_volume_pivot.quantile(0.1, axis=1)
-                futures_skewness_dollar_volume_pivot[f'cs_futures_skewness_dollar_volume_90th_percentile_{window}d'] = futures_skewness_dollar_volume_pivot.quantile(0.9, axis=1)
+                futures_skewness_dollar_volume_pivot[f'cs_futures_skewness_dollar_volume_median_{window}d'] = futures_skewness_dollar_volume_pivot.median(axis=1)
 
                 # Cross-sectional skewness buy dollar volume percentile for each symbol/day
                 futures_skewness_buy_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'skew_buy_dollar_volume_{window}d_futures', dropna=False).sort_index()
@@ -1676,7 +1338,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 # Cross-sectional z-score of skewness buy dollar volume for each symbol/day
                 futures_skewness_buy_dollar_volume_pivot_mean = futures_skewness_buy_dollar_volume_pivot.mean(axis=1)
                 futures_skewness_buy_dollar_volume_pivot_std = futures_skewness_buy_dollar_volume_pivot.std(axis=1)
-                futures_skewness_buy_dollar_volume_zscore = (futures_skewness_buy_dollar_volume_pivot - futures_skewness_buy_dollar_volume_pivot_mean) / futures_skewness_buy_dollar_volume_pivot_std
+                futures_skewness_buy_dollar_volume_zscore = futures_skewness_buy_dollar_volume_pivot.sub(futures_skewness_buy_dollar_volume_pivot_mean, axis=0).div(futures_skewness_buy_dollar_volume_pivot_std, axis=0)
                 futures_skewness_buy_dollar_volume_zscore.columns = [f'{col}cs_futures_skewness_buy_dollar_volume_zscore_{window}d' for col in futures_skewness_buy_dollar_volume_zscore.columns]
 
                 # 4 moments of cross-sectional skewness buy dollar volume
@@ -1684,8 +1346,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 futures_skewness_buy_dollar_volume_pivot[f'cs_futures_skewness_buy_dollar_volume_std_{window}d'] = futures_skewness_buy_dollar_volume_pivot.std(axis=1)
                 futures_skewness_buy_dollar_volume_pivot[f'cs_futures_skewness_buy_dollar_volume_skew_{window}d'] = futures_skewness_buy_dollar_volume_pivot.skew(axis=1)
                 futures_skewness_buy_dollar_volume_pivot[f'cs_futures_skewness_buy_dollar_volume_kurtosis_{window}d'] = futures_skewness_buy_dollar_volume_pivot.kurtosis(axis=1)
-                futures_skewness_buy_dollar_volume_pivot[f'cs_futures_skewness_buy_dollar_volume_10th_percentile_{window}d'] = futures_skewness_buy_dollar_volume_pivot.quantile(0.1, axis=1)
-                futures_skewness_buy_dollar_volume_pivot[f'cs_futures_skewness_buy_dollar_volume_90th_percentile_{window}d'] = futures_skewness_buy_dollar_volume_pivot.quantile(0.9, axis=1)
+                futures_skewness_buy_dollar_volume_pivot[f'cs_futures_skewness_buy_dollar_volume_median_{window}d'] = futures_skewness_buy_dollar_volume_pivot.median(axis=1)
 
                 # Cross-sectional skewness sell dollar volume percentile for each symbol/day
                 futures_skewness_sell_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'skew_sell_dollar_volume_{window}d_futures', dropna=False).sort_index()
@@ -1695,7 +1356,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 # Cross-sectional z-score of skewness sell dollar volume for each symbol/day
                 futures_skewness_sell_dollar_volume_pivot_mean = futures_skewness_sell_dollar_volume_pivot.mean(axis=1)
                 futures_skewness_sell_dollar_volume_pivot_std = futures_skewness_sell_dollar_volume_pivot.std(axis=1)
-                futures_skewness_sell_dollar_volume_zscore = (futures_skewness_sell_dollar_volume_pivot - futures_skewness_sell_dollar_volume_pivot_mean) / futures_skewness_sell_dollar_volume_pivot_std
+                futures_skewness_sell_dollar_volume_zscore = futures_skewness_sell_dollar_volume_pivot.sub(futures_skewness_sell_dollar_volume_pivot_mean, axis=0).div(futures_skewness_sell_dollar_volume_pivot_std, axis=0)
                 futures_skewness_sell_dollar_volume_zscore.columns = [f'{col}cs_futures_skewness_sell_dollar_volume_zscore_{window}d' for col in futures_skewness_sell_dollar_volume_zscore.columns]
 
                 # 4 moments of cross-sectional skewness sell dollar volume
@@ -1703,8 +1364,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 futures_skewness_sell_dollar_volume_pivot[f'cs_futures_skewness_sell_dollar_volume_std_{window}d'] = futures_skewness_sell_dollar_volume_pivot.std(axis=1)
                 futures_skewness_sell_dollar_volume_pivot[f'cs_futures_skewness_sell_dollar_volume_skew_{window}d'] = futures_skewness_sell_dollar_volume_pivot.skew(axis=1)
                 futures_skewness_sell_dollar_volume_pivot[f'cs_futures_skewness_sell_dollar_volume_kurtosis_{window}d'] = futures_skewness_sell_dollar_volume_pivot.kurtosis(axis=1)
-                futures_skewness_sell_dollar_volume_pivot[f'cs_futures_skewness_sell_dollar_volume_10th_percentile_{window}d'] = futures_skewness_sell_dollar_volume_pivot.quantile(0.1, axis=1)
-                futures_skewness_sell_dollar_volume_pivot[f'cs_futures_skewness_sell_dollar_volume_90th_percentile_{window}d'] = futures_skewness_sell_dollar_volume_pivot.quantile(0.9, axis=1)
+                futures_skewness_sell_dollar_volume_pivot[f'cs_futures_skewness_sell_dollar_volume_median_{window}d'] = futures_skewness_sell_dollar_volume_pivot.median(axis=1)
 
                 # Cross-sectional kurtosis dollar volume percentile for each symbol/day
                 futures_kurtosis_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'kurtosis_dollar_volume_{window}d_futures', dropna=False).sort_index()
@@ -1714,7 +1374,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 # Cross-sectional z-score of kurtosis dollar volume for each symbol/day
                 futures_kurtosis_dollar_volume_pivot_mean = futures_kurtosis_dollar_volume_pivot.mean(axis=1)
                 futures_kurtosis_dollar_volume_pivot_std = futures_kurtosis_dollar_volume_pivot.std(axis=1)
-                futures_kurtosis_dollar_volume_zscore = (futures_kurtosis_dollar_volume_pivot - futures_kurtosis_dollar_volume_pivot_mean) / futures_kurtosis_dollar_volume_pivot_std
+                futures_kurtosis_dollar_volume_zscore = futures_kurtosis_dollar_volume_pivot.sub(futures_kurtosis_dollar_volume_pivot_mean, axis=0).div(futures_kurtosis_dollar_volume_pivot_std, axis=0)
                 futures_kurtosis_dollar_volume_zscore.columns = [f'{col}cs_futures_kurtosis_dollar_volume_zscore_{window}d' for col in futures_kurtosis_dollar_volume_zscore.columns]
 
                 # 4 moments of cross-sectional kurtosis dollar volume
@@ -1722,8 +1382,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 futures_kurtosis_dollar_volume_pivot[f'cs_futures_kurtosis_dollar_volume_std_{window}d'] = futures_kurtosis_dollar_volume_pivot.std(axis=1)
                 futures_kurtosis_dollar_volume_pivot[f'cs_futures_kurtosis_dollar_volume_skew_{window}d'] = futures_kurtosis_dollar_volume_pivot.skew(axis=1)
                 futures_kurtosis_dollar_volume_pivot[f'cs_futures_kurtosis_dollar_volume_kurtosis_{window}d'] = futures_kurtosis_dollar_volume_pivot.kurtosis(axis=1)
-                futures_kurtosis_dollar_volume_pivot[f'cs_futures_kurtosis_dollar_volume_10th_percentile_{window}d'] = futures_kurtosis_dollar_volume_pivot.quantile(0.1, axis=1)
-                futures_kurtosis_dollar_volume_pivot[f'cs_futures_kurtosis_dollar_volume_90th_percentile_{window}d'] = futures_kurtosis_dollar_volume_pivot.quantile(0.9, axis=1)
+                futures_kurtosis_dollar_volume_pivot[f'cs_futures_kurtosis_dollar_volume_median_{window}d'] = futures_kurtosis_dollar_volume_pivot.median(axis=1)
 
                 # Cross-sectional kurtosis buy dollar volume percentile for each symbol/day
                 futures_kurtosis_buy_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'kurtosis_buy_dollar_volume_{window}d_futures', dropna=False).sort_index()
@@ -1733,7 +1392,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 # Cross-sectional z-score of kurtosis buy dollar volume for each symbol/day
                 futures_kurtosis_buy_dollar_volume_pivot_mean = futures_kurtosis_buy_dollar_volume_pivot.mean(axis=1)
                 futures_kurtosis_buy_dollar_volume_pivot_std = futures_kurtosis_buy_dollar_volume_pivot.std(axis=1)
-                futures_kurtosis_buy_dollar_volume_zscore = (futures_kurtosis_buy_dollar_volume_pivot - futures_kurtosis_buy_dollar_volume_pivot_mean) / futures_kurtosis_buy_dollar_volume_pivot_std
+                futures_kurtosis_buy_dollar_volume_zscore = futures_kurtosis_buy_dollar_volume_pivot.sub(futures_kurtosis_buy_dollar_volume_pivot_mean, axis=0).div(futures_kurtosis_buy_dollar_volume_pivot_std, axis=0)
                 futures_kurtosis_buy_dollar_volume_zscore.columns = [f'{col}cs_futures_kurtosis_buy_dollar_volume_zscore_{window}d' for col in futures_kurtosis_buy_dollar_volume_zscore.columns]
 
                 # 4 moments of cross-sectional kurtosis buy dollar volume
@@ -1741,8 +1400,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 futures_kurtosis_buy_dollar_volume_pivot[f'cs_futures_kurtosis_buy_dollar_volume_std_{window}d'] = futures_kurtosis_buy_dollar_volume_pivot.std(axis=1)
                 futures_kurtosis_buy_dollar_volume_pivot[f'cs_futures_kurtosis_buy_dollar_volume_skew_{window}d'] = futures_kurtosis_buy_dollar_volume_pivot.skew(axis=1)
                 futures_kurtosis_buy_dollar_volume_pivot[f'cs_futures_kurtosis_buy_dollar_volume_kurtosis_{window}d'] = futures_kurtosis_buy_dollar_volume_pivot.kurtosis(axis=1)
-                futures_kurtosis_buy_dollar_volume_pivot[f'cs_futures_kurtosis_buy_dollar_volume_10th_percentile_{window}d'] = futures_kurtosis_buy_dollar_volume_pivot.quantile(0.1, axis=1)
-                futures_kurtosis_buy_dollar_volume_pivot[f'cs_futures_kurtosis_buy_dollar_volume_90th_percentile_{window}d'] = futures_kurtosis_buy_dollar_volume_pivot.quantile(0.9, axis=1)
+                futures_kurtosis_buy_dollar_volume_pivot[f'cs_futures_kurtosis_buy_dollar_volume_median_{window}d'] = futures_kurtosis_buy_dollar_volume_pivot.median(axis=1)
 
                 # Cross-sectional kurtosis sell dollar volume percentile for each symbol/day
                 futures_kurtosis_sell_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'kurtosis_sell_dollar_volume_{window}d_futures', dropna=False).sort_index()
@@ -1752,7 +1410,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 # Cross-sectional z-score of kurtosis sell dollar volume for each symbol/day
                 futures_kurtosis_sell_dollar_volume_pivot_mean = futures_kurtosis_sell_dollar_volume_pivot.mean(axis=1)
                 futures_kurtosis_sell_dollar_volume_pivot_std = futures_kurtosis_sell_dollar_volume_pivot.std(axis=1)
-                futures_kurtosis_sell_dollar_volume_zscore = (futures_kurtosis_sell_dollar_volume_pivot - futures_kurtosis_sell_dollar_volume_pivot_mean) / futures_kurtosis_sell_dollar_volume_pivot_std
+                futures_kurtosis_sell_dollar_volume_zscore = futures_kurtosis_sell_dollar_volume_pivot.sub(futures_kurtosis_sell_dollar_volume_pivot_mean, axis=0).div(futures_kurtosis_sell_dollar_volume_pivot_std, axis=0)
                 futures_kurtosis_sell_dollar_volume_zscore.columns = [f'{col}cs_futures_kurtosis_sell_dollar_volume_zscore_{window}d' for col in futures_kurtosis_sell_dollar_volume_zscore.columns]
 
                 # 4 moments of cross-sectional kurtosis sell dollar volume
@@ -1760,65 +1418,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 futures_kurtosis_sell_dollar_volume_pivot[f'cs_futures_kurtosis_sell_dollar_volume_std_{window}d'] = futures_kurtosis_sell_dollar_volume_pivot.std(axis=1)
                 futures_kurtosis_sell_dollar_volume_pivot[f'cs_futures_kurtosis_sell_dollar_volume_skew_{window}d'] = futures_kurtosis_sell_dollar_volume_pivot.skew(axis=1)
                 futures_kurtosis_sell_dollar_volume_pivot[f'cs_futures_kurtosis_sell_dollar_volume_kurtosis_{window}d'] = futures_kurtosis_sell_dollar_volume_pivot.kurtosis(axis=1)
-                futures_kurtosis_sell_dollar_volume_pivot[f'cs_futures_kurtosis_sell_dollar_volume_10th_percentile_{window}d'] = futures_kurtosis_sell_dollar_volume_pivot.quantile(0.1, axis=1)
-                futures_kurtosis_sell_dollar_volume_pivot[f'cs_futures_kurtosis_sell_dollar_volume_90th_percentile_{window}d'] = futures_kurtosis_sell_dollar_volume_pivot.quantile(0.9, axis=1)
-
-                # Cross-sectional 10th-percentile dollar volume percentile for each symbol/day
-                futures_10th_percentile_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'10th_percentile_dollar_volume_{window}d_futures', dropna=False).sort_index()
-                futures_10th_percentile_dollar_volume_percentile = futures_10th_percentile_dollar_volume_pivot.rank(axis=1, pct=True)
-                futures_10th_percentile_dollar_volume_percentile.columns = [f'{col}cs_futures_10th_percentile_dollar_volume_percentile_{window}d' for col in futures_10th_percentile_dollar_volume_percentile.columns]
-
-                # Cross-sectional z-score of 10th-percentile dollar volume for each symbol/day
-                futures_10th_percentile_dollar_volume_pivot_mean = futures_10th_percentile_dollar_volume_pivot.mean(axis=1)
-                futures_10th_percentile_dollar_volume_pivot_std = futures_10th_percentile_dollar_volume_pivot.std(axis=1)
-                futures_10th_percentile_dollar_volume_zscore = (futures_10th_percentile_dollar_volume_pivot - futures_10th_percentile_dollar_volume_pivot_mean) / futures_10th_percentile_dollar_volume_pivot_std
-                futures_10th_percentile_dollar_volume_zscore.columns = [f'{col}cs_futures_10th_percentile_dollar_volume_zscore_{window}d' for col in futures_10th_percentile_dollar_volume_zscore.columns]
-
-                # 4 moments of cross-sectional 10th-percentile dollar volume
-                futures_10th_percentile_dollar_volume_pivot[f'cs_futures_10th_percentile_dollar_volume_mean_{window}d'] = futures_10th_percentile_dollar_volume_pivot.mean(axis=1)
-                futures_10th_percentile_dollar_volume_pivot[f'cs_futures_10th_percentile_dollar_volume_std_{window}d'] = futures_10th_percentile_dollar_volume_pivot.std(axis=1)
-                futures_10th_percentile_dollar_volume_pivot[f'cs_futures_10th_percentile_dollar_volume_skew_{window}d'] = futures_10th_percentile_dollar_volume_pivot.skew(axis=1)
-                futures_10th_percentile_dollar_volume_pivot[f'cs_futures_10th_percentile_dollar_volume_kurtosis_{window}d'] = futures_10th_percentile_dollar_volume_pivot.kurtosis(axis=1)
-                futures_10th_percentile_dollar_volume_pivot[f'cs_futures_10th_percentile_dollar_volume_10th_percentile_{window}d'] = futures_10th_percentile_dollar_volume_pivot.quantile(0.1, axis=1)
-                futures_10th_percentile_dollar_volume_pivot[f'cs_futures_10th_percentile_dollar_volume_90th_percentile_{window}d'] = futures_10th_percentile_dollar_volume_pivot.quantile(0.9, axis=1)
-
-                # Cross-sectional 10th-percentile buy dollar volume percentile for each symbol/day
-                futures_10th_percentile_buy_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'10th_percentile_buy_dollar_volume_{window}d_futures', dropna=False).sort_index()
-                futures_10th_percentile_buy_dollar_volume_percentile = futures_10th_percentile_buy_dollar_volume_pivot.rank(axis=1, pct=True)
-                futures_10th_percentile_buy_dollar_volume_percentile.columns = [f'{col}cs_futures_10th_percentile_buy_dollar_volume_percentile_{window}d' for col in futures_10th_percentile_buy_dollar_volume_percentile.columns]
-
-                # Cross-sectional z-score of 10th-percentile buy dollar volume for each symbol/day
-                futures_10th_percentile_buy_dollar_volume_pivot_mean = futures_10th_percentile_buy_dollar_volume_pivot.mean(axis=1)
-                futures_10th_percentile_buy_dollar_volume_pivot_std = futures_10th_percentile_buy_dollar_volume_pivot.std(axis=1)
-                futures_10th_percentile_buy_dollar_volume_zscore = (futures_10th_percentile_buy_dollar_volume_pivot - futures_10th_percentile_buy_dollar_volume_pivot_mean) / futures_10th_percentile_buy_dollar_volume_pivot_std
-                futures_10th_percentile_buy_dollar_volume_zscore.columns = [f'{col}cs_futures_10th_percentile_buy_dollar_volume_zscore_{window}d' for col in futures_10th_percentile_buy_dollar_volume_zscore.columns]
-
-                # 4 moments of cross-sectional 10th-percentile buy dollar volume
-                futures_10th_percentile_buy_dollar_volume_pivot[f'cs_futures_10th_percentile_buy_dollar_volume_mean_{window}d'] = futures_10th_percentile_buy_dollar_volume_pivot.mean(axis=1)
-                futures_10th_percentile_buy_dollar_volume_pivot[f'cs_futures_10th_percentile_buy_dollar_volume_std_{window}d'] = futures_10th_percentile_buy_dollar_volume_pivot.std(axis=1)
-                futures_10th_percentile_buy_dollar_volume_pivot[f'cs_futures_10th_percentile_buy_dollar_volume_skew_{window}d'] = futures_10th_percentile_buy_dollar_volume_pivot.skew(axis=1)
-                futures_10th_percentile_buy_dollar_volume_pivot[f'cs_futures_10th_percentile_buy_dollar_volume_kurtosis_{window}d'] = futures_10th_percentile_buy_dollar_volume_pivot.kurtosis(axis=1)
-                futures_10th_percentile_buy_dollar_volume_pivot[f'cs_futures_10th_percentile_buy_dollar_volume_10th_percentile_{window}d'] = futures_10th_percentile_buy_dollar_volume_pivot.quantile(0.1, axis=1)
-                futures_10th_percentile_buy_dollar_volume_pivot[f'cs_futures_10th_percentile_buy_dollar_volume_90th_percentile_{window}d'] = futures_10th_percentile_buy_dollar_volume_pivot.quantile(0.9, axis=1)
-
-                # Cross-sectional 10th-percentile sell dollar volume percentile for each symbol/day
-                futures_10th_percentile_sell_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'10th_percentile_sell_dollar_volume_{window}d_futures', dropna=False).sort_index()
-                futures_10th_percentile_sell_dollar_volume_percentile = futures_10th_percentile_sell_dollar_volume_pivot.rank(axis=1, pct=True)
-                futures_10th_percentile_sell_dollar_volume_percentile.columns = [f'{col}cs_futures_10th_percentile_sell_dollar_volume_percentile_{window}d' for col in futures_10th_percentile_sell_dollar_volume_percentile.columns]
-
-                # Cross-sectional z-score of 10th-percentile sell dollar volume for each symbol/day
-                futures_10th_percentile_sell_dollar_volume_pivot_mean = futures_10th_percentile_sell_dollar_volume_pivot.mean(axis=1)
-                futures_10th_percentile_sell_dollar_volume_pivot_std = futures_10th_percentile_sell_dollar_volume_pivot.std(axis=1)
-                futures_10th_percentile_sell_dollar_volume_zscore = (futures_10th_percentile_sell_dollar_volume_pivot - futures_10th_percentile_sell_dollar_volume_pivot_mean) / futures_10th_percentile_sell_dollar_volume_pivot_std
-                futures_10th_percentile_sell_dollar_volume_zscore.columns = [f'{col}cs_futures_10th_percentile_sell_dollar_volume_zscore_{window}d' for col in futures_10th_percentile_sell_dollar_volume_zscore.columns]
-
-                # 4 moments of cross-sectional 10th-percentile sell dollar volume
-                futures_10th_percentile_sell_dollar_volume_pivot[f'cs_futures_10th_percentile_sell_dollar_volume_mean_{window}d'] = futures_10th_percentile_sell_dollar_volume_pivot.mean(axis=1)
-                futures_10th_percentile_sell_dollar_volume_pivot[f'cs_futures_10th_percentile_sell_dollar_volume_std_{window}d'] = futures_10th_percentile_sell_dollar_volume_pivot.std(axis=1)
-                futures_10th_percentile_sell_dollar_volume_pivot[f'cs_futures_10th_percentile_sell_dollar_volume_skew_{window}d'] = futures_10th_percentile_sell_dollar_volume_pivot.skew(axis=1)
-                futures_10th_percentile_sell_dollar_volume_pivot[f'cs_futures_10th_percentile_sell_dollar_volume_kurtosis_{window}d'] = futures_10th_percentile_sell_dollar_volume_pivot.kurtosis(axis=1)
-                futures_10th_percentile_sell_dollar_volume_pivot[f'cs_futures_10th_percentile_sell_dollar_volume_10th_percentile_{window}d'] = futures_10th_percentile_sell_dollar_volume_pivot.quantile(0.1, axis=1)
-                futures_10th_percentile_sell_dollar_volume_pivot[f'cs_futures_10th_percentile_sell_dollar_volume_90th_percentile_{window}d'] = futures_10th_percentile_sell_dollar_volume_pivot.quantile(0.9, axis=1)
+                futures_kurtosis_sell_dollar_volume_pivot[f'cs_futures_kurtosis_sell_dollar_volume_median_{window}d'] = futures_kurtosis_sell_dollar_volume_pivot.median(axis=1)
 
                 # Cross-sectional median dollar volume percentile for each symbol/day
                 futures_median_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'median_dollar_volume_{window}d_futures', dropna=False).sort_index()
@@ -1828,7 +1428,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 # Cross-sectional z-score of median dollar volume for each symbol/day
                 futures_median_dollar_volume_pivot_mean = futures_median_dollar_volume_pivot.mean(axis=1)
                 futures_median_dollar_volume_pivot_std = futures_median_dollar_volume_pivot.std(axis=1)
-                futures_median_dollar_volume_zscore = (futures_median_dollar_volume_pivot - futures_median_dollar_volume_pivot_mean) / futures_median_dollar_volume_pivot_std
+                futures_median_dollar_volume_zscore = futures_median_dollar_volume_pivot.sub(futures_median_dollar_volume_pivot_mean, axis=0).div(futures_median_dollar_volume_pivot_std, axis=0)
                 futures_median_dollar_volume_zscore.columns = [f'{col}cs_futures_median_dollar_volume_zscore_{window}d' for col in futures_median_dollar_volume_zscore.columns]
 
                 # 4 moments of cross-sectional median dollar volume
@@ -1836,8 +1436,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 futures_median_dollar_volume_pivot[f'cs_futures_median_dollar_volume_std_{window}d'] = futures_median_dollar_volume_pivot.std(axis=1)
                 futures_median_dollar_volume_pivot[f'cs_futures_median_dollar_volume_skew_{window}d'] = futures_median_dollar_volume_pivot.skew(axis=1)
                 futures_median_dollar_volume_pivot[f'cs_futures_median_dollar_volume_kurtosis_{window}d'] = futures_median_dollar_volume_pivot.kurtosis(axis=1)
-                futures_median_dollar_volume_pivot[f'cs_futures_median_dollar_volume_10th_percentile_{window}d'] = futures_median_dollar_volume_pivot.quantile(0.1, axis=1)
-                futures_median_dollar_volume_pivot[f'cs_futures_median_dollar_volume_90th_percentile_{window}d'] = futures_median_dollar_volume_pivot.quantile(0.9, axis=1)
+                futures_median_dollar_volume_pivot[f'cs_futures_median_dollar_volume_median_{window}d'] = futures_median_dollar_volume_pivot.median(axis=1)
 
                 # Cross-sectional median buy dollar volume percentile for each symbol/day
                 futures_median_buy_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'median_buy_dollar_volume_{window}d_futures', dropna=False).sort_index()
@@ -1847,7 +1446,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 # Cross-sectional z-score of median buy dollar volume for each symbol/day
                 futures_median_buy_dollar_volume_pivot_mean = futures_median_buy_dollar_volume_pivot.mean(axis=1)
                 futures_median_buy_dollar_volume_pivot_std = futures_median_buy_dollar_volume_pivot.std(axis=1)
-                futures_median_buy_dollar_volume_zscore = (futures_median_buy_dollar_volume_pivot - futures_median_buy_dollar_volume_pivot_mean) / futures_median_buy_dollar_volume_pivot_std
+                futures_median_buy_dollar_volume_zscore = futures_median_buy_dollar_volume_pivot.sub(futures_median_buy_dollar_volume_pivot_mean, axis=0).div(futures_median_buy_dollar_volume_pivot_std, axis=0)
                 futures_median_buy_dollar_volume_zscore.columns = [f'{col}cs_futures_median_buy_dollar_volume_zscore_{window}d' for col in futures_median_buy_dollar_volume_zscore.columns]
 
                 # 4 moments of cross-sectional median buy dollar volume
@@ -1855,8 +1454,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 futures_median_buy_dollar_volume_pivot[f'cs_futures_median_buy_dollar_volume_std_{window}d'] = futures_median_buy_dollar_volume_pivot.std(axis=1)
                 futures_median_buy_dollar_volume_pivot[f'cs_futures_median_buy_dollar_volume_skew_{window}d'] = futures_median_buy_dollar_volume_pivot.skew(axis=1)
                 futures_median_buy_dollar_volume_pivot[f'cs_futures_median_buy_dollar_volume_kurtosis_{window}d'] = futures_median_buy_dollar_volume_pivot.kurtosis(axis=1)
-                futures_median_buy_dollar_volume_pivot[f'cs_futures_median_buy_dollar_volume_10th_percentile_{window}d'] = futures_median_buy_dollar_volume_pivot.quantile(0.1, axis=1)
-                futures_median_buy_dollar_volume_pivot[f'cs_futures_median_buy_dollar_volume_90th_percentile_{window}d'] = futures_median_buy_dollar_volume_pivot.quantile(0.9, axis=1)
+                futures_median_buy_dollar_volume_pivot[f'cs_futures_median_buy_dollar_volume_median_{window}d'] = futures_median_buy_dollar_volume_pivot.median(axis=1)
 
                 # Cross-sectional median sell dollar volume percentile for each symbol/day
                 futures_median_sell_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'median_sell_dollar_volume_{window}d_futures', dropna=False).sort_index()
@@ -1866,7 +1464,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 # Cross-sectional z-score of median sell dollar volume for each symbol/day
                 futures_median_sell_dollar_volume_pivot_mean = futures_median_sell_dollar_volume_pivot.mean(axis=1)
                 futures_median_sell_dollar_volume_pivot_std = futures_median_sell_dollar_volume_pivot.std(axis=1)
-                futures_median_sell_dollar_volume_zscore = (futures_median_sell_dollar_volume_pivot - futures_median_sell_dollar_volume_pivot_mean) / futures_median_sell_dollar_volume_pivot_std
+                futures_median_sell_dollar_volume_zscore = futures_median_sell_dollar_volume_pivot.sub(futures_median_sell_dollar_volume_pivot_mean, axis=0).div(futures_median_sell_dollar_volume_pivot_std, axis=0)
                 futures_median_sell_dollar_volume_zscore.columns = [f'{col}cs_futures_median_sell_dollar_volume_zscore_{window}d' for col in futures_median_sell_dollar_volume_zscore.columns]
 
                 # 4 moments of cross-sectional median sell dollar volume
@@ -1874,65 +1472,7 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                 futures_median_sell_dollar_volume_pivot[f'cs_futures_median_sell_dollar_volume_std_{window}d'] = futures_median_sell_dollar_volume_pivot.std(axis=1)
                 futures_median_sell_dollar_volume_pivot[f'cs_futures_median_sell_dollar_volume_skew_{window}d'] = futures_median_sell_dollar_volume_pivot.skew(axis=1)
                 futures_median_sell_dollar_volume_pivot[f'cs_futures_median_sell_dollar_volume_kurtosis_{window}d'] = futures_median_sell_dollar_volume_pivot.kurtosis(axis=1)
-                futures_median_sell_dollar_volume_pivot[f'cs_futures_median_sell_dollar_volume_10th_percentile_{window}d'] = futures_median_sell_dollar_volume_pivot.quantile(0.1, axis=1)
-                futures_median_sell_dollar_volume_pivot[f'cs_futures_median_sell_dollar_volume_90th_percentile_{window}d'] = futures_median_sell_dollar_volume_pivot.quantile(0.9, axis=1)
-
-                # Cross-sectional 90th-percentile dollar volume percentile for each symbol/day
-                futures_90th_percentile_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'90th_percentile_dollar_volume_{window}d_futures', dropna=False).sort_index()
-                futures_90th_percentile_dollar_volume_percentile = futures_90th_percentile_dollar_volume_pivot.rank(axis=1, pct=True)
-                futures_90th_percentile_dollar_volume_percentile.columns = [f'{col}cs_futures_90th_percentile_dollar_volume_percentile_{window}d' for col in futures_90th_percentile_dollar_volume_percentile.columns]
-
-                # Cross-sectional z-score of 90th-percentile dollar volume for each symbol/day
-                futures_90th_percentile_dollar_volume_pivot_mean = futures_90th_percentile_dollar_volume_pivot.mean(axis=1)
-                futures_90th_percentile_dollar_volume_pivot_std = futures_90th_percentile_dollar_volume_pivot.std(axis=1)
-                futures_90th_percentile_dollar_volume_zscore = (futures_90th_percentile_dollar_volume_pivot - futures_90th_percentile_dollar_volume_pivot_mean) / futures_90th_percentile_dollar_volume_pivot_std
-                futures_90th_percentile_dollar_volume_zscore.columns = [f'{col}cs_futures_90th_percentile_dollar_volume_zscore_{window}d' for col in futures_90th_percentile_dollar_volume_zscore.columns]
-
-                # 4 moments of cross-sectional 90th-percentile dollar volume
-                futures_90th_percentile_dollar_volume_pivot[f'cs_futures_90th_percentile_dollar_volume_mean_{window}d'] = futures_90th_percentile_dollar_volume_pivot.mean(axis=1)
-                futures_90th_percentile_dollar_volume_pivot[f'cs_futures_90th_percentile_dollar_volume_std_{window}d'] = futures_90th_percentile_dollar_volume_pivot.std(axis=1)
-                futures_90th_percentile_dollar_volume_pivot[f'cs_futures_90th_percentile_dollar_volume_skew_{window}d'] = futures_90th_percentile_dollar_volume_pivot.skew(axis=1)
-                futures_90th_percentile_dollar_volume_pivot[f'cs_futures_90th_percentile_dollar_volume_kurtosis_{window}d'] = futures_90th_percentile_dollar_volume_pivot.kurtosis(axis=1)
-                futures_90th_percentile_dollar_volume_pivot[f'cs_futures_90th_percentile_dollar_volume_10th_percentile_{window}d'] = futures_90th_percentile_dollar_volume_pivot.quantile(0.1, axis=1)
-                futures_90th_percentile_dollar_volume_pivot[f'cs_futures_90th_percentile_dollar_volume_90th_percentile_{window}d'] = futures_90th_percentile_dollar_volume_pivot.quantile(0.9, axis=1)
-
-                # Cross-sectional 90th-percentile buy dollar volume percentile for each symbol/day
-                futures_90th_percentile_buy_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'90th_percentile_buy_dollar_volume_{window}d_futures', dropna=False).sort_index()
-                futures_90th_percentile_buy_dollar_volume_percentile = futures_90th_percentile_buy_dollar_volume_pivot.rank(axis=1, pct=True)
-                futures_90th_percentile_buy_dollar_volume_percentile.columns = [f'{col}cs_futures_90th_percentile_buy_dollar_volume_percentile_{window}d' for col in futures_90th_percentile_buy_dollar_volume_percentile.columns]
-
-                # Cross-sectional z-score of 90th-percentile buy dollar volume for each symbol/day
-                futures_90th_percentile_buy_dollar_volume_pivot_mean = futures_90th_percentile_buy_dollar_volume_pivot.mean(axis=1)
-                futures_90th_percentile_buy_dollar_volume_pivot_std = futures_90th_percentile_buy_dollar_volume_pivot.std(axis=1)
-                futures_90th_percentile_buy_dollar_volume_zscore = (futures_90th_percentile_buy_dollar_volume_pivot - futures_90th_percentile_buy_dollar_volume_pivot_mean) / futures_90th_percentile_buy_dollar_volume_pivot_std
-                futures_90th_percentile_buy_dollar_volume_zscore.columns = [f'{col}cs_futures_90th_percentile_buy_dollar_volume_zscore_{window}d' for col in futures_90th_percentile_buy_dollar_volume_zscore.columns]
-
-                # 4 moments of cross-sectional 90th-percentile buy dollar volume
-                futures_90th_percentile_buy_dollar_volume_pivot[f'cs_futures_90th_percentile_buy_dollar_volume_mean_{window}d'] = futures_90th_percentile_buy_dollar_volume_pivot.mean(axis=1)
-                futures_90th_percentile_buy_dollar_volume_pivot[f'cs_futures_90th_percentile_buy_dollar_volume_std_{window}d'] = futures_90th_percentile_buy_dollar_volume_pivot.std(axis=1)
-                futures_90th_percentile_buy_dollar_volume_pivot[f'cs_futures_90th_percentile_buy_dollar_volume_skew_{window}d'] = futures_90th_percentile_buy_dollar_volume_pivot.skew(axis=1)
-                futures_90th_percentile_buy_dollar_volume_pivot[f'cs_futures_90th_percentile_buy_dollar_volume_kurtosis_{window}d'] = futures_90th_percentile_buy_dollar_volume_pivot.kurtosis(axis=1)
-                futures_90th_percentile_buy_dollar_volume_pivot[f'cs_futures_90th_percentile_buy_dollar_volume_10th_percentile_{window}d'] = futures_90th_percentile_buy_dollar_volume_pivot.quantile(0.1, axis=1)
-                futures_90th_percentile_buy_dollar_volume_pivot[f'cs_futures_90th_percentile_buy_dollar_volume_90th_percentile_{window}d'] = futures_90th_percentile_buy_dollar_volume_pivot.quantile(0.9, axis=1)
-
-                # Cross-sectional 90th-percentile sell dollar volume percentile for each symbol/day
-                futures_90th_percentile_sell_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'90th_percentile_sell_dollar_volume_{window}d_futures', dropna=False).sort_index()
-                futures_90th_percentile_sell_dollar_volume_percentile = futures_90th_percentile_sell_dollar_volume_pivot.rank(axis=1, pct=True)
-                futures_90th_percentile_sell_dollar_volume_percentile.columns = [f'{col}cs_futures_90th_percentile_sell_dollar_volume_percentile_{window}d' for col in futures_90th_percentile_sell_dollar_volume_percentile.columns]
-
-                # Cross-sectional z-score of 90th-percentile sell dollar volume for each symbol/day
-                futures_90th_percentile_sell_dollar_volume_pivot_mean = futures_90th_percentile_sell_dollar_volume_pivot.mean(axis=1)
-                futures_90th_percentile_sell_dollar_volume_pivot_std = futures_90th_percentile_sell_dollar_volume_pivot.std(axis=1)
-                futures_90th_percentile_sell_dollar_volume_zscore = (futures_90th_percentile_sell_dollar_volume_pivot - futures_90th_percentile_sell_dollar_volume_pivot_mean) / futures_90th_percentile_sell_dollar_volume_pivot_std
-                futures_90th_percentile_sell_dollar_volume_zscore.columns = [f'{col}cs_futures_90th_percentile_sell_dollar_volume_zscore_{window}d' for col in futures_90th_percentile_sell_dollar_volume_zscore.columns]
-
-                # 4 moments of cross-sectional 90th-percentile sell dollar volume
-                futures_90th_percentile_sell_dollar_volume_pivot[f'cs_futures_90th_percentile_sell_dollar_volume_mean_{window}d'] = futures_90th_percentile_sell_dollar_volume_pivot.mean(axis=1)
-                futures_90th_percentile_sell_dollar_volume_pivot[f'cs_futures_90th_percentile_sell_dollar_volume_std_{window}d'] = futures_90th_percentile_sell_dollar_volume_pivot.std(axis=1)
-                futures_90th_percentile_sell_dollar_volume_pivot[f'cs_futures_90th_percentile_sell_dollar_volume_skew_{window}d'] = futures_90th_percentile_sell_dollar_volume_pivot.skew(axis=1)
-                futures_90th_percentile_sell_dollar_volume_pivot[f'cs_futures_90th_percentile_sell_dollar_volume_kurtosis_{window}d'] = futures_90th_percentile_sell_dollar_volume_pivot.kurtosis(axis=1)
-                futures_90th_percentile_sell_dollar_volume_pivot[f'cs_futures_90th_percentile_sell_dollar_volume_10th_percentile_{window}d'] = futures_90th_percentile_sell_dollar_volume_pivot.quantile(0.1, axis=1)
-                futures_90th_percentile_sell_dollar_volume_pivot[f'cs_futures_90th_percentile_sell_dollar_volume_90th_percentile_{window}d'] = futures_90th_percentile_sell_dollar_volume_pivot.quantile(0.9, axis=1)
+                futures_median_sell_dollar_volume_pivot[f'cs_futures_median_sell_dollar_volume_median_{window}d'] = futures_median_sell_dollar_volume_pivot.median(axis=1)
 
                 # Add the 1d features to the final features list
                 final_features.extend([
@@ -1945,15 +1485,9 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                     futures_kurtosis_dollar_volume_percentile,
                     futures_kurtosis_buy_dollar_volume_percentile,
                     futures_kurtosis_sell_dollar_volume_percentile,
-                    futures_10th_percentile_dollar_volume_percentile,
-                    futures_10th_percentile_buy_dollar_volume_percentile,
-                    futures_10th_percentile_sell_dollar_volume_percentile,
                     futures_median_dollar_volume_percentile,
                     futures_median_buy_dollar_volume_percentile,
                     futures_median_sell_dollar_volume_percentile,
-                    futures_90th_percentile_dollar_volume_percentile,
-                    futures_90th_percentile_buy_dollar_volume_percentile,
-                    futures_90th_percentile_sell_dollar_volume_percentile
                 ])     
 
                 # Add the z-score features to the final features list
@@ -1967,15 +1501,9 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                     futures_kurtosis_dollar_volume_zscore,
                     futures_kurtosis_buy_dollar_volume_zscore,
                     futures_kurtosis_sell_dollar_volume_zscore,
-                    futures_10th_percentile_dollar_volume_zscore,
-                    futures_10th_percentile_buy_dollar_volume_zscore,
-                    futures_10th_percentile_sell_dollar_volume_zscore,
                     futures_median_dollar_volume_zscore,
                     futures_median_buy_dollar_volume_zscore,
                     futures_median_sell_dollar_volume_zscore,
-                    futures_90th_percentile_dollar_volume_zscore,
-                    futures_90th_percentile_buy_dollar_volume_zscore,
-                    futures_90th_percentile_sell_dollar_volume_zscore
                 ])   
 
                 # Add the 4 moments features to the final features list
@@ -1989,15 +1517,9 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
                     futures_kurtosis_dollar_volume_pivot,
                     futures_kurtosis_buy_dollar_volume_pivot,
                     futures_kurtosis_sell_dollar_volume_pivot,
-                    futures_10th_percentile_dollar_volume_pivot,
-                    futures_10th_percentile_buy_dollar_volume_pivot,
-                    futures_10th_percentile_sell_dollar_volume_pivot,
                     futures_median_dollar_volume_pivot,
                     futures_median_buy_dollar_volume_pivot,
                     futures_median_sell_dollar_volume_pivot,
-                    futures_90th_percentile_dollar_volume_pivot,
-                    futures_90th_percentile_buy_dollar_volume_pivot,
-                    futures_90th_percentile_sell_dollar_volume_pivot
                 ]
                 for i, moment in enumerate(cs_moments):
                     valid_cols = [m for m in moment.columns if 'cs_' in m]
@@ -2107,10 +1629,12 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
     def transform(self, X):
         asset_id_base, asset_id_quote, exchange_id = X['symbol_id'].iloc[0].split('_')
         symbol_id = f'{asset_id_base}_{asset_id_quote}_{exchange_id}'
-        curr_token_trade_features = QUERY(
+        X_spot = QUERY(
             f"""
-            SELECT *
-            FROM market_data.trade_features_rolling
+            SELECT 
+            asset_id_base || '_' || asset_id_quote ||'_' || exchange_id as symbol_id,
+            *
+            FROM market_data.spot_trade_features_rolling
             WHERE
                 asset_id_base = '{asset_id_base}' AND
                 asset_id_quote = '{asset_id_quote}' AND
@@ -2118,291 +1642,225 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             ORDER BY time_period_end 
             """
         )
-        curr_token_trade_features['time_period_end'] = pd.to_datetime(curr_token_trade_features['time_period_end'])
+        X_spot['time_period_end'] = pd.to_datetime(X_spot['time_period_end'])
+        X_futures = QUERY(
+            f"""
+            SELECT 
+            asset_id_base || '_' || asset_id_quote ||'_' || exchange_id as symbol_id,
+            *
+            FROM market_data.futures_trade_features_rolling
+            WHERE
+                asset_id_base = '{asset_id_base}' AND
+                asset_id_quote = '{asset_id_quote}' AND
+                exchange_id = '{exchange_id}'
+            ORDER BY time_period_end 
+            """
+        )
+        X_futures['time_period_end'] = pd.to_datetime(X_futures['time_period_end'])
+
+        merged = pd.merge(
+            X_spot,
+            X_futures,
+            on = 'time_period_end',
+            how = 'outer',
+            suffixes = ('_spot', '_futures')
+        )
+        merged.rename({
+            'time_period_end_spot': 'time_period_end',
+            'symbol_id_spot': 'symbol_id',
+            'asset_id_base_spot': 'asset_id_base',
+            'asset_id_quote_spot': 'asset_id_quote',
+            'exchange_id_spot': 'exchange_id'
+        }, axis = 1, inplace = True)
+        merged.drop(columns = ['time_period_end_futures', 'symbol_id_futures', 'asset_id_base_futures', 'asset_id_quote_futures', 'exchange_id_futures'], errors = 'ignore', axis = 1, inplace = True)
+
+        X = pd.merge(
+            X,
+            merged,
+            on = ['time_period_end', 'symbol_id'],
+            how = 'left'
+        )
 
         for window in self.windows:
             for lookback in self.lookback_windows:
                 for market_type in ['spot', 'futures']:
                     # Rolling 4 moments of total buy dollar volume
-                    curr_token_trade_features[f'{market_type}_avg_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
-                    curr_token_trade_features[f'{market_type}_std_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
-                    curr_token_trade_features[f'{market_type}_skewness_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
-                    curr_token_trade_features[f'{market_type}_kurtosis_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
-                    curr_token_trade_features[f'{market_type}_median_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
-                    curr_token_trade_features[f'{market_type}_10th_percentile_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.1)
-                    curr_token_trade_features[f'{market_type}_90th_percentile_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.9)
+                    X[f'{market_type}_avg_total_buy_dollar_volume_{window}d_{lookback}d'] = X[f'total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
+                    X[f'{market_type}_std_buy_dollar_volume_{window}d_{lookback}d'] = X[f'total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
+                    X[f'{market_type}_skew_buy_dollar_volume_{window}d_{lookback}d'] = X[f'total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
+                    X[f'{market_type}_kurtosis_buy_dollar_volume_{window}d_{lookback}d'] = X[f'total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
+                    X[f'{market_type}_median_total_buy_dollar_volume_{window}d_{lookback}d'] = X[f'total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
 
                     # Rolling 4 moments of total sell dollar volume
-                    curr_token_trade_features[f'{market_type}_avg_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
-                    curr_token_trade_features[f'{market_type}_std_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
-                    curr_token_trade_features[f'{market_type}_skewness_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
-                    curr_token_trade_features[f'{market_type}_kurtosis_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
-                    curr_token_trade_features[f'{market_type}_median_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
-                    curr_token_trade_features[f'{market_type}_10th_percentile_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.1)
-                    curr_token_trade_features[f'{market_type}_90th_percentile_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.9)
+                    X[f'{market_type}_avg_total_sell_dollar_volume_{window}d_{lookback}d'] = X[f'total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
+                    X[f'{market_type}_std_sell_dollar_volume_{window}d_{lookback}d'] = X[f'total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
+                    X[f'{market_type}_skew_sell_dollar_volume_{window}d_{lookback}d'] = X[f'total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
+                    X[f'{market_type}_kurtosis_sell_dollar_volume_{window}d_{lookback}d'] = X[f'total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
+                    X[f'{market_type}_median_total_sell_dollar_volume_{window}d_{lookback}d'] = X[f'total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
 
                     # Rolling 4 moments of total dollar volume
-                    curr_token_trade_features[f'{market_type}_avg_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
-                    curr_token_trade_features[f'{market_type}_std_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
-                    curr_token_trade_features[f'{market_type}_skewness_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
-                    curr_token_trade_features[f'{market_type}_kurtosis_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
-                    curr_token_trade_features[f'{market_type}_median_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
-                    curr_token_trade_features[f'{market_type}_10th_percentile_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.1)
-                    curr_token_trade_features[f'{market_type}_90th_percentile_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.9)
+                    X[f'{market_type}_avg_total_dollar_volume_{window}d_{lookback}d'] = X[f'total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
+                    X[f'{market_type}_std_dollar_volume_{window}d_{lookback}d'] = X[f'total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
+                    X[f'{market_type}_skew_dollar_volume_{window}d_{lookback}d'] = X[f'total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
+                    X[f'{market_type}_kurtosis_dollar_volume_{window}d_{lookback}d'] = X[f'total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
+                    X[f'{market_type}_median_total_dollar_volume_{window}d_{lookback}d'] = X[f'total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
 
                     # Rolling 4 moments of number of buys
-                    curr_token_trade_features[f'{market_type}_avg_num_buys_{window}d_{lookback}d'] = curr_token_trade_features[f'num_buys_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
-                    curr_token_trade_features[f'{market_type}_std_num_buys_{window}d_{lookback}d'] = curr_token_trade_features[f'num_buys_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
-                    curr_token_trade_features[f'{market_type}_skewness_num_buys_{window}d_{lookback}d'] = curr_token_trade_features[f'num_buys_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
-                    curr_token_trade_features[f'{market_type}_kurtosis_num_buys_{window}d_{lookback}d'] = curr_token_trade_features[f'num_buys_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
-                    curr_token_trade_features[f'{market_type}_median_num_buys_{window}d_{lookback}d'] = curr_token_trade_features[f'num_buys_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
-                    curr_token_trade_features[f'{market_type}_10th_percentile_num_buys_{window}d_{lookback}d'] = curr_token_trade_features[f'num_buys_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.1)
-                    curr_token_trade_features[f'{market_type}_90th_percentile_num_buys_{window}d_{lookback}d'] = curr_token_trade_features[f'num_buys_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.9)
+                    X[f'{market_type}_avg_num_buys_{window}d_{lookback}d'] = X[f'num_buys_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
+                    X[f'{market_type}_std_num_buys_{window}d_{lookback}d'] = X[f'num_buys_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
+                    X[f'{market_type}_skewness_num_buys_{window}d_{lookback}d'] = X[f'num_buys_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
+                    X[f'{market_type}_kurtosis_num_buys_{window}d_{lookback}d'] = X[f'num_buys_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
+                    X[f'{market_type}_median_num_buys_{window}d_{lookback}d'] = X[f'num_buys_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
 
                     # Rolling 4 moments of number of sells
-                    curr_token_trade_features[f'{market_type}_avg_num_sells_{window}d_{lookback}d'] = curr_token_trade_features[f'num_sells_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
-                    curr_token_trade_features[f'{market_type}_std_num_sells_{window}d_{lookback}d'] = curr_token_trade_features[f'num_sells_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
-                    curr_token_trade_features[f'{market_type}_skewness_num_sells_{window}d_{lookback}d'] = curr_token_trade_features[f'num_sells_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
-                    curr_token_trade_features[f'{market_type}_kurtosis_num_sells_{window}d_{lookback}d'] = curr_token_trade_features[f'num_sells_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
-                    curr_token_trade_features[f'{market_type}_median_num_sells_{window}d_{lookback}d'] = curr_token_trade_features[f'num_sells_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
-                    curr_token_trade_features[f'{market_type}_10th_percentile_num_sells_{window}d_{lookback}d'] = curr_token_trade_features[f'num_sells_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.1)
-                    curr_token_trade_features[f'{market_type}_90th_percentile_num_sells_{window}d_{lookback}d'] = curr_token_trade_features[f'num_sells_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.9)
+                    X[f'{market_type}_avg_num_sells_{window}d_{lookback}d'] = X[f'num_sells_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
+                    X[f'{market_type}_std_num_sells_{window}d_{lookback}d'] = X[f'num_sells_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
+                    X[f'{market_type}_skewness_num_sells_{window}d_{lookback}d'] = X[f'num_sells_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
+                    X[f'{market_type}_kurtosis_num_sells_{window}d_{lookback}d'] = X[f'num_sells_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
+                    X[f'{market_type}_median_num_sells_{window}d_{lookback}d'] = X[f'num_sells_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
 
                     # Rolling 4 moments of pct_buys
-                    curr_token_trade_features[f'{market_type}_avg_pct_buys_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_buys_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
-                    curr_token_trade_features[f'{market_type}_std_pct_buys_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_buys_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
-                    curr_token_trade_features[f'{market_type}_skewness_pct_buys_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_buys_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
-                    curr_token_trade_features[f'{market_type}_kurtosis_pct_buys_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_buys_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
-                    curr_token_trade_features[f'{market_type}_median_pct_buys_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_buys_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
-                    curr_token_trade_features[f'{market_type}_10th_percentile_pct_buys_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_buys_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.1)
-                    curr_token_trade_features[f'{market_type}_90th_percentile_pct_buys_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_buys_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.9)
+                    X[f'{market_type}_avg_pct_buys_{window}d_{lookback}d'] = X[f'pct_buys_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
+                    X[f'{market_type}_std_pct_buys_{window}d_{lookback}d'] = X[f'pct_buys_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
+                    X[f'{market_type}_skewness_pct_buys_{window}d_{lookback}d'] = X[f'pct_buys_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
+                    X[f'{market_type}_kurtosis_pct_buys_{window}d_{lookback}d'] = X[f'pct_buys_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
+                    X[f'{market_type}_median_pct_buys_{window}d_{lookback}d'] = X[f'pct_buys_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
 
                     # Rolling 4 moments of pct_sells
-                    curr_token_trade_features[f'{market_type}_avg_pct_sells_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_sells_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
-                    curr_token_trade_features[f'{market_type}_std_pct_sells_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_sells_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
-                    curr_token_trade_features[f'{market_type}_skewness_pct_sells_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_sells_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
-                    curr_token_trade_features[f'{market_type}_kurtosis_pct_sells_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_sells_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
-                    curr_token_trade_features[f'{market_type}_median_pct_sells_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_sells_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
-                    curr_token_trade_features[f'{market_type}_10th_percentile_pct_sells_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_sells_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.1)
-                    curr_token_trade_features[f'{market_type}_90th_percentile_pct_sells_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_sells_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.9)
+                    X[f'{market_type}_avg_pct_sells_{window}d_{lookback}d'] = X[f'pct_sells_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
+                    X[f'{market_type}_std_pct_sells_{window}d_{lookback}d'] = X[f'pct_sells_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
+                    X[f'{market_type}_skewness_pct_sells_{window}d_{lookback}d'] = X[f'pct_sells_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
+                    X[f'{market_type}_kurtosis_pct_sells_{window}d_{lookback}d'] = X[f'pct_sells_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
+                    X[f'{market_type}_median_pct_sells_{window}d_{lookback}d'] = X[f'pct_sells_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
 
                     # Rolling 4 moments of trade dollar volume imbalance
-                    curr_token_trade_features[f'{market_type}_avg_trade_dollar_volume_imbalance_{window}d_{lookback}d'] = curr_token_trade_features[f'trade_imbalance_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
-                    curr_token_trade_features[f'{market_type}_std_trade_dollar_volume_imbalance_{window}d_{lookback}d'] = curr_token_trade_features[f'trade_imbalance_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
-                    curr_token_trade_features[f'{market_type}_skewness_trade_dollar_volume_imbalance_{window}d_{lookback}d'] = curr_token_trade_features[f'trade_imbalance_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
-                    curr_token_trade_features[f'{market_type}_kurtosis_trade_dollar_volume_imbalance_{window}d_{lookback}d'] = curr_token_trade_features[f'trade_imbalance_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
-                    curr_token_trade_features[f'{market_type}_median_trade_dollar_volume_imbalance_{window}d_{lookback}d'] = curr_token_trade_features[f'trade_imbalance_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
-                    curr_token_trade_features[f'{market_type}_10th_percentile_trade_dollar_volume_imbalance_{window}d_{lookback}d'] = curr_token_trade_features[f'trade_imbalance_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.1)
-                    curr_token_trade_features[f'{market_type}_90th_percentile_trade_dollar_volume_imbalance_{window}d_{lookback}d'] = curr_token_trade_features[f'trade_imbalance_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.9)
+                    X[f'{market_type}_avg_trade_dollar_volume_imbalance_{window}d_{lookback}d'] = X[f'trade_imbalance_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
+                    X[f'{market_type}_std_trade_dollar_volume_imbalance_{window}d_{lookback}d'] = X[f'trade_imbalance_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
+                    X[f'{market_type}_skewness_trade_dollar_volume_imbalance_{window}d_{lookback}d'] = X[f'trade_imbalance_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
+                    X[f'{market_type}_kurtosis_trade_dollar_volume_imbalance_{window}d_{lookback}d'] = X[f'trade_imbalance_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
+                    X[f'{market_type}_median_trade_dollar_volume_imbalance_{window}d_{lookback}d'] = X[f'trade_imbalance_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
 
                     # Rolling 4 moments of pct buy dollar volume
-                    curr_token_trade_features[f'{market_type}_avg_pct_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
-                    curr_token_trade_features[f'{market_type}_std_pct_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
-                    curr_token_trade_features[f'{market_type}_skewness_pct_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
-                    curr_token_trade_features[f'{market_type}_kurtosis_pct_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
-                    curr_token_trade_features[f'{market_type}_median_pct_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
-                    curr_token_trade_features[f'{market_type}_10th_percentile_pct_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.1)
-                    curr_token_trade_features[f'{market_type}_90th_percentile_pct_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.9)
+                    X[f'{market_type}_avg_pct_buy_dollar_volume_{window}d_{lookback}d'] = X[f'pct_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
+                    X[f'{market_type}_std_pct_buy_dollar_volume_{window}d_{lookback}d'] = X[f'pct_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
+                    X[f'{market_type}_skewness_pct_buy_dollar_volume_{window}d_{lookback}d'] = X[f'pct_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
+                    X[f'{market_type}_kurtosis_pct_buy_dollar_volume_{window}d_{lookback}d'] = X[f'pct_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
+                    X[f'{market_type}_median_pct_buy_dollar_volume_{window}d_{lookback}d'] = X[f'pct_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
 
                     # Rolling 4 moments of pct sell dollar volume
-                    curr_token_trade_features[f'{market_type}_avg_pct_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
-                    curr_token_trade_features[f'{market_type}_std_pct_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
-                    curr_token_trade_features[f'{market_type}_skewness_pct_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
-                    curr_token_trade_features[f'{market_type}_kurtosis_pct_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
-                    curr_token_trade_features[f'{market_type}_median_pct_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
-                    curr_token_trade_features[f'{market_type}_10th_percentile_pct_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.1)
-                    curr_token_trade_features[f'{market_type}_90th_percentile_pct_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'pct_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.9)
+                    X[f'{market_type}_avg_pct_sell_dollar_volume_{window}d_{lookback}d'] = X[f'pct_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
+                    X[f'{market_type}_std_pct_sell_dollar_volume_{window}d_{lookback}d'] = X[f'pct_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
+                    X[f'{market_type}_skewness_pct_sell_dollar_volume_{window}d_{lookback}d'] = X[f'pct_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
+                    X[f'{market_type}_kurtosis_pct_sell_dollar_volume_{window}d_{lookback}d'] = X[f'pct_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
+                    X[f'{market_type}_median_pct_sell_dollar_volume_{window}d_{lookback}d'] = X[f'pct_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
 
                     # Rolling 4 moments of avg dollar volume
-                    curr_token_trade_features[f'{market_type}_avg_avg_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'avg_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
-                    curr_token_trade_features[f'{market_type}_std_avg_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'avg_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
-                    curr_token_trade_features[f'{market_type}_skewness_avg_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'avg_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
-                    curr_token_trade_features[f'{market_type}_kurtosis_avg_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'avg_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
-                    curr_token_trade_features[f'{market_type}_median_avg_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'avg_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
-                    curr_token_trade_features[f'{market_type}_10th_percentile_avg_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'avg_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.1)
-                    curr_token_trade_features[f'{market_type}_90th_percentile_avg_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'avg_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.9)
+                    X[f'{market_type}_avg_avg_dollar_volume_{window}d_{lookback}d'] = X[f'avg_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
+                    X[f'{market_type}_std_avg_dollar_volume_{window}d_{lookback}d'] = X[f'avg_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
+                    X[f'{market_type}_skewness_avg_dollar_volume_{window}d_{lookback}d'] = X[f'avg_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
+                    X[f'{market_type}_kurtosis_avg_dollar_volume_{window}d_{lookback}d'] = X[f'avg_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
+                    X[f'{market_type}_median_avg_dollar_volume_{window}d_{lookback}d'] = X[f'avg_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
 
                     # Rolling 4 moments of avg buy dollar volume
-                    curr_token_trade_features[f'{market_type}_avg_avg_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'avg_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
-                    curr_token_trade_features[f'{market_type}_std_avg_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'avg_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
-                    curr_token_trade_features[f'{market_type}_skewness_avg_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'avg_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
-                    curr_token_trade_features[f'{market_type}_kurtosis_avg_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'avg_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
-                    curr_token_trade_features[f'{market_type}_median_avg_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'avg_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
-                    curr_token_trade_features[f'{market_type}_10th_percentile_avg_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'avg_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.1)
-                    curr_token_trade_features[f'{market_type}_90th_percentile_avg_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'avg_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.9)
+                    X[f'{market_type}_avg_avg_buy_dollar_volume_{window}d_{lookback}d'] = X[f'avg_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
+                    X[f'{market_type}_std_avg_buy_dollar_volume_{window}d_{lookback}d'] = X[f'avg_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
+                    X[f'{market_type}_skewness_avg_buy_dollar_volume_{window}d_{lookback}d'] = X[f'avg_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
+                    X[f'{market_type}_kurtosis_avg_buy_dollar_volume_{window}d_{lookback}d'] = X[f'avg_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
+                    X[f'{market_type}_median_avg_buy_dollar_volume_{window}d_{lookback}d'] = X[f'avg_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
 
                     # Rolling 4 moments of avg sell dollar volume
-                    curr_token_trade_features[f'{market_type}_avg_avg_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'avg_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
-                    curr_token_trade_features[f'{market_type}_std_avg_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'avg_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
-                    curr_token_trade_features[f'{market_type}_skewness_avg_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'avg_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
-                    curr_token_trade_features[f'{market_type}_kurtosis_avg_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'avg_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
-                    curr_token_trade_features[f'{market_type}_median_avg_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'avg_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
-                    curr_token_trade_features[f'{market_type}_10th_percentile_avg_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'avg_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.1)
-                    curr_token_trade_features[f'{market_type}_90th_percentile_avg_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'avg_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.9)
+                    X[f'{market_type}_avg_avg_sell_dollar_volume_{window}d_{lookback}d'] = X[f'avg_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
+                    X[f'{market_type}_std_avg_sell_dollar_volume_{window}d_{lookback}d'] = X[f'avg_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
+                    X[f'{market_type}_skewness_avg_sell_dollar_volume_{window}d_{lookback}d'] = X[f'avg_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
+                    X[f'{market_type}_kurtosis_avg_sell_dollar_volume_{window}d_{lookback}d'] = X[f'avg_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
+                    X[f'{market_type}_median_avg_sell_dollar_volume_{window}d_{lookback}d'] = X[f'avg_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
 
                     if window == 1:
                         # Rolling 4 moments of standard deviation of total buy dollar volume
-                        curr_token_trade_features[f'{market_type}_avg_std_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'std_total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
-                        curr_token_trade_features[f'{market_type}_std_std_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'std_total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
-                        curr_token_trade_features[f'{market_type}_skewness_std_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'std_total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
-                        curr_token_trade_features[f'{market_type}_kurtosis_std_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'std_total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
-                        curr_token_trade_features[f'{market_type}_median_std_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'std_total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
-                        curr_token_trade_features[f'{market_type}_10th_percentile_std_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'std_total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.1)
-                        curr_token_trade_features[f'{market_type}_90th_percentile_std_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'std_total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.9)
+                        X[f'{market_type}_avg_std_buy_dollar_volume_{window}d_{lookback}d'] = X[f'std_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
+                        X[f'{market_type}_std_std_buy_dollar_volume_{window}d_{lookback}d'] = X[f'std_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
+                        X[f'{market_type}_skewness_std_buy_dollar_volume_{window}d_{lookback}d'] = X[f'std_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
+                        X[f'{market_type}_kurtosis_std_buy_dollar_volume_{window}d_{lookback}d'] = X[f'std_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
+                        X[f'{market_type}_median_std_buy_dollar_volume_{window}d_{lookback}d'] = X[f'std_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
 
                         # Rolling 4 moments of standard deviation of total sell dollar volume
-                        curr_token_trade_features[f'{market_type}_avg_std_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'std_total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
-                        curr_token_trade_features[f'{market_type}_std_std_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'std_total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
-                        curr_token_trade_features[f'{market_type}_skewness_std_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'std_total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
-                        curr_token_trade_features[f'{market_type}_kurtosis_std_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'std_total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
-                        curr_token_trade_features[f'{market_type}_median_std_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'std_total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
-                        curr_token_trade_features[f'{market_type}_10th_percentile_std_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'std_total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.1)
-                        curr_token_trade_features[f'{market_type}_90th_percentile_std_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'std_total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.9)
+                        X[f'{market_type}_avg_std_sell_dollar_volume_{window}d_{lookback}d'] = X[f'std_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
+                        X[f'{market_type}_std_std_sell_dollar_volume_{window}d_{lookback}d'] = X[f'std_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
+                        X[f'{market_type}_skewness_std_sell_dollar_volume_{window}d_{lookback}d'] = X[f'std_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
+                        X[f'{market_type}_kurtosis_std_sell_dollar_volume_{window}d_{lookback}d'] = X[f'std_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
+                        X[f'{market_type}_median_std_sell_dollar_volume_{window}d_{lookback}d'] = X[f'std_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
 
                         # Rolling 4 moments of standard deviation of total dollar volume
-                        curr_token_trade_features[f'{market_type}_avg_std_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'std_total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
-                        curr_token_trade_features[f'{market_type}_std_std_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'std_total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
-                        curr_token_trade_features[f'{market_type}_skewness_std_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'std_total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
-                        curr_token_trade_features[f'{market_type}_kurtosis_std_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'std_total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
-                        curr_token_trade_features[f'{market_type}_median_std_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'std_total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
-                        curr_token_trade_features[f'{market_type}_10th_percentile_std_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'std_total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.1)
-                        curr_token_trade_features[f'{market_type}_90th_percentile_std_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'std_total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.9)
+                        X[f'{market_type}_avg_std_dollar_volume_{window}d_{lookback}d'] = X[f'std_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
+                        X[f'{market_type}_std_std_dollar_volume_{window}d_{lookback}d'] = X[f'std_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
+                        X[f'{market_type}_skewness_std_dollar_volume_{window}d_{lookback}d'] = X[f'std_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
+                        X[f'{market_type}_kurtosis_std_dollar_volume_{window}d_{lookback}d'] = X[f'std_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
+                        X[f'{market_type}_median_std_dollar_volume_{window}d_{lookback}d'] = X[f'std_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
 
                         # Rolling 4 moments of skewness of total buy dollar volume
-                        curr_token_trade_features[f'{market_type}_avg_skewness_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'skewness_total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
-                        curr_token_trade_features[f'{market_type}_std_skewness_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'skewness_total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
-                        curr_token_trade_features[f'{market_type}_skewness_skewness_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'skewness_total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
-                        curr_token_trade_features[f'{market_type}_kurtosis_skewness_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'skewness_total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
-                        curr_token_trade_features[f'{market_type}_median_skewness_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'skewness_total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
-                        curr_token_trade_features[f'{market_type}_10th_percentile_skewness_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'skewness_total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.1)
-                        curr_token_trade_features[f'{market_type}_90th_percentile_skewness_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'skewness_total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.9)
-
+                        X[f'{market_type}_avg_skew_buy_dollar_volume_{window}d_{lookback}d'] = X[f'skew_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
+                        X[f'{market_type}_std_skew_buy_dollar_volume_{window}d_{lookback}d'] = X[f'skew_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
+                        X[f'{market_type}_skewness_skew_buy_dollar_volume_{window}d_{lookback}d'] = X[f'skew_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
+                        X[f'{market_type}_kurtosis_skew_buy_dollar_volume_{window}d_{lookback}d'] = X[f'skew_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
+                        X[f'{market_type}_median_skew_buy_dollar_volume_{window}d_{lookback}d'] = X[f'skew_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
                         # Rolling 4 moments of skewness of total sell dollar volume
-                        curr_token_trade_features[f'{market_type}_avg_skewness_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'skewness_total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
-                        curr_token_trade_features[f'{market_type}_std_skewness_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'skewness_total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
-                        curr_token_trade_features[f'{market_type}_skewness_skewness_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'skewness_total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
-                        curr_token_trade_features[f'{market_type}_kurtosis_skewness_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'skewness_total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
-                        curr_token_trade_features[f'{market_type}_median_skewness_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'skewness_total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
-                        curr_token_trade_features[f'{market_type}_10th_percentile_skewness_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'skewness_total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.1)
-                        curr_token_trade_features[f'{market_type}_90th_percentile_skewness_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'skewness_total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.9)
+                        X[f'{market_type}_avg_skew_sell_dollar_volume_{window}d_{lookback}d'] = X[f'skew_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
+                        X[f'{market_type}_std_skew_sell_dollar_volume_{window}d_{lookback}d'] = X[f'skew_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
+                        X[f'{market_type}_skewness_skew_sell_dollar_volume_{window}d_{lookback}d'] = X[f'skew_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
+                        X[f'{market_type}_kurtosis_skew_sell_dollar_volume_{window}d_{lookback}d'] = X[f'skew_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
+                        X[f'{market_type}_median_skew_sell_dollar_volume_{window}d_{lookback}d'] = X[f'skew_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
 
                         # Rolling 4 moments of skewness of total dollar volume
-                        curr_token_trade_features[f'{market_type}_avg_skewness_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'skewness_total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
-                        curr_token_trade_features[f'{market_type}_std_skewness_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'skewness_total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
-                        curr_token_trade_features[f'{market_type}_skewness_skewness_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'skewness_total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
-                        curr_token_trade_features[f'{market_type}_kurtosis_skewness_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'skewness_total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
-                        curr_token_trade_features[f'{market_type}_median_skewness_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'skewness_total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
-                        curr_token_trade_features[f'{market_type}_10th_percentile_skewness_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'skewness_total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.1)
-                        curr_token_trade_features[f'{market_type}_90th_percentile_skewness_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'skewness_total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.9)
+                        X[f'{market_type}_avg_skew_dollar_volume_{window}d_{lookback}d'] = X[f'skew_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
+                        X[f'{market_type}_std_skew_dollar_volume_{window}d_{lookback}d'] = X[f'skew_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
+                        X[f'{market_type}_skewness_skew_dollar_volume_{window}d_{lookback}d'] = X[f'skew_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
+                        X[f'{market_type}_kurtosis_skew_dollar_volume_{window}d_{lookback}d'] = X[f'skew_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
+                        X[f'{market_type}_median_skew_dollar_volume_{window}d_{lookback}d'] = X[f'skew_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
 
                         # Rolling 4 moments of kurtosis of total buy dollar volume
-                        curr_token_trade_features[f'{market_type}_avg_kurtosis_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'kurtosis_total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
-                        curr_token_trade_features[f'{market_type}_std_kurtosis_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'kurtosis_total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
-                        curr_token_trade_features[f'{market_type}_skewness_kurtosis_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'kurtosis_total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
-                        curr_token_trade_features[f'{market_type}_kurtosis_kurtosis_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'kurtosis_total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
-                        curr_token_trade_features[f'{market_type}_median_kurtosis_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'kurtosis_total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
-                        curr_token_trade_features[f'{market_type}_10th_percentile_kurtosis_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'kurtosis_total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.1)
-                        curr_token_trade_features[f'{market_type}_90th_percentile_kurtosis_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'kurtosis_total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.9)
+                        X[f'{market_type}_avg_kurtosis_buy_dollar_volume_{window}d_{lookback}d'] = X[f'kurtosis_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
+                        X[f'{market_type}_std_kurtosis_buy_dollar_volume_{window}d_{lookback}d'] = X[f'kurtosis_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
+                        X[f'{market_type}_skewness_kurtosis_buy_dollar_volume_{window}d_{lookback}d'] = X[f'kurtosis_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
+                        X[f'{market_type}_kurtosis_kurtosis_buy_dollar_volume_{window}d_{lookback}d'] = X[f'kurtosis_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
+                        X[f'{market_type}_median_kurtosis_buy_dollar_volume_{window}d_{lookback}d'] = X[f'kurtosis_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
 
                         # Rolling 4 moments of kurtosis of total sell dollar volume
-                        curr_token_trade_features[f'{market_type}_avg_kurtosis_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'kurtosis_total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
-                        curr_token_trade_features[f'{market_type}_std_kurtosis_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'kurtosis_total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
-                        curr_token_trade_features[f'{market_type}_skewness_kurtosis_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'kurtosis_total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
-                        curr_token_trade_features[f'{market_type}_kurtosis_kurtosis_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'kurtosis_total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
-                        curr_token_trade_features[f'{market_type}_median_kurtosis_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'kurtosis_total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
-                        curr_token_trade_features[f'{market_type}_10th_percentile_kurtosis_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'kurtosis_total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.1)
-                        curr_token_trade_features[f'{market_type}_90th_percentile_kurtosis_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'kurtosis_total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.9)
-
+                        X[f'{market_type}_avg_kurtosis_sell_dollar_volume_{window}d_{lookback}d'] = X[f'kurtosis_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
+                        X[f'{market_type}_std_kurtosis_sell_dollar_volume_{window}d_{lookback}d'] = X[f'kurtosis_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
+                        X[f'{market_type}_skewness_kurtosis_sell_dollar_volume_{window}d_{lookback}d'] = X[f'kurtosis_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
+                        X[f'{market_type}_kurtosis_kurtosis_sell_dollar_volume_{window}d_{lookback}d'] = X[f'kurtosis_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
+                        X[f'{market_type}_median_kurtosis_sell_dollar_volume_{window}d_{lookback}d'] = X[f'kurtosis_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
                         # Rolling 4 moments of kurtosis of total dollar volume
-                        curr_token_trade_features[f'{market_type}_avg_kurtosis_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'kurtosis_total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
-                        curr_token_trade_features[f'{market_type}_std_kurtosis_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'kurtosis_total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
-                        curr_token_trade_features[f'{market_type}_skewness_kurtosis_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'kurtosis_total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
-                        curr_token_trade_features[f'{market_type}_kurtosis_kurtosis_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'kurtosis_total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
-                        curr_token_trade_features[f'{market_type}_median_kurtosis_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'kurtosis_total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
-                        curr_token_trade_features[f'{market_type}_10th_percentile_kurtosis_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'kurtosis_total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.1)
-                        curr_token_trade_features[f'{market_type}_90th_percentile_kurtosis_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'kurtosis_total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.9)
+                        X[f'{market_type}_avg_kurtosis_dollar_volume_{window}d_{lookback}d'] = X[f'kurtosis_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
+                        X[f'{market_type}_std_kurtosis_dollar_volume_{window}d_{lookback}d'] = X[f'kurtosis_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
+                        X[f'{market_type}_skewness_kurtosis_dollar_volume_{window}d_{lookback}d'] = X[f'kurtosis_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
+                        X[f'{market_type}_kurtosis_kurtosis_dollar_volume_{window}d_{lookback}d'] = X[f'kurtosis_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
+                        X[f'{market_type}_median_kurtosis_dollar_volume_{window}d_{lookback}d'] = X[f'kurtosis_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
 
-                        # Rolling 4 moments of 10th percentile of total buy dollar volume
-                        curr_token_trade_features[f'{market_type}_avg_10th_percentile_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'10th_percentile_total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
-                        curr_token_trade_features[f'{market_type}_std_10th_percentile_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'10th_percentile_total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
-                        curr_token_trade_features[f'{market_type}_skewness_10th_percentile_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'10th_percentile_total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
-                        curr_token_trade_features[f'{market_type}_kurtosis_10th_percentile_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'10th_percentile_total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
-                        curr_token_trade_features[f'{market_type}_median_10th_percentile_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'10th_percentile_total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
-                        curr_token_trade_features[f'{market_type}_10th_percentile_10th_percentile_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'10th_percentile_total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.1)
-                        curr_token_trade_features[f'{market_type}_90th_percentile_10th_percentile_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'10th_percentile_total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.9)
 
-                        # Rolling 4 moments of 10th percentile of total sell dollar volume
-                        curr_token_trade_features[f'{market_type}_avg_10th_percentile_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'10th_percentile_total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
-                        curr_token_trade_features[f'{market_type}_std_10th_percentile_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'10th_percentile_total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
-                        curr_token_trade_features[f'{market_type}_skewness_10th_percentile_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'10th_percentile_total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
-                        curr_token_trade_features[f'{market_type}_kurtosis_10th_percentile_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'10th_percentile_total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
-                        curr_token_trade_features[f'{market_type}_median_10th_percentile_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'10th_percentile_total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
-                        curr_token_trade_features[f'{market_type}_10th_percentile_10th_percentile_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'10th_percentile_total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.1)
-                        curr_token_trade_features[f'{market_type}_90th_percentile_10th_percentile_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'10th_percentile_total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.9)
 
-                        # Rolling 4 moments of 10th percentile of total dollar volume
-                        curr_token_trade_features[f'{market_type}_avg_10th_percentile_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'10th_percentile_total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
-                        curr_token_trade_features[f'{market_type}_std_10th_percentile_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'10th_percentile_total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
-                        curr_token_trade_features[f'{market_type}_skewness_10th_percentile_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'10th_percentile_total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
-                        curr_token_trade_features[f'{market_type}_kurtosis_10th_percentile_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'10th_percentile_total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
-                        curr_token_trade_features[f'{market_type}_median_10th_percentile_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'10th_percentile_total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
-                        curr_token_trade_features[f'{market_type}_10th_percentile_10th_percentile_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'10th_percentile_total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.1)
-                        curr_token_trade_features[f'{market_type}_90th_percentile_10th_percentile_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'10th_percentile_total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.9)
 
-                        # Rolling 4 moments of 90th percentile of total buy dollar volume
-                        curr_token_trade_features[f'{market_type}_avg_90th_percentile_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'90th_percentile_total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
-                        curr_token_trade_features[f'{market_type}_std_90th_percentile_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'90th_percentile_total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
-                        curr_token_trade_features[f'{market_type}_skewness_90th_percentile_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'90th_percentile_total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
-                        curr_token_trade_features[f'{market_type}_kurtosis_90th_percentile_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'90th_percentile_total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
-                        curr_token_trade_features[f'{market_type}_median_90th_percentile_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'90th_percentile_total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
-                        curr_token_trade_features[f'{market_type}_10th_percentile_90th_percentile_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'90th_percentile_total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.1)
-                        curr_token_trade_features[f'{market_type}_90th_percentile_90th_percentile_total_buy_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'90th_percentile_total_buy_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.9)
-
-                        # Rolling 4 moments of 90th percentile of total sell dollar volume
-                        curr_token_trade_features[f'{market_type}_avg_90th_percentile_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'90th_percentile_total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
-                        curr_token_trade_features[f'{market_type}_std_90th_percentile_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'90th_percentile_total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
-                        curr_token_trade_features[f'{market_type}_skewness_90th_percentile_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'90th_percentile_total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
-                        curr_token_trade_features[f'{market_type}_kurtosis_90th_percentile_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'90th_percentile_total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
-                        curr_token_trade_features[f'{market_type}_median_90th_percentile_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'90th_percentile_total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
-                        curr_token_trade_features[f'{market_type}_10th_percentile_90th_percentile_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'90th_percentile_total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.1)
-                        curr_token_trade_features[f'{market_type}_90th_percentile_90th_percentile_total_sell_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'90th_percentile_total_sell_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.9)
-
-                        # Rolling 4 moments of 90th percentile of total dollar volume
-                        curr_token_trade_features[f'{market_type}_avg_90th_percentile_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'90th_percentile_total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).mean()
-                        curr_token_trade_features[f'{market_type}_std_90th_percentile_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'90th_percentile_total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).std()
-                        curr_token_trade_features[f'{market_type}_skewness_90th_percentile_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'90th_percentile_total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).skew()
-                        curr_token_trade_features[f'{market_type}_kurtosis_90th_percentile_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'90th_percentile_total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).kurt()
-                        curr_token_trade_features[f'{market_type}_median_90th_percentile_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'90th_percentile_total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).median()
-                        curr_token_trade_features[f'{market_type}_10th_percentile_90th_percentile_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'90th_percentile_total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.1)
-                        curr_token_trade_features[f'{market_type}_90th_percentile_90th_percentile_total_dollar_volume_{window}d_{lookback}d'] = curr_token_trade_features[f'90th_percentile_total_dollar_volume_{window}d_{market_type}'].rolling(window = lookback, min_periods = 7).quantile(0.9)
-
-        cross_sectional_percentile_cols = [col for col in self.trade_features.columns if col.startswith(symbol_id) and 'percentile' in col]
-        cross_sectional_z_cols = [col for col in self.trade_features.columns if col.startswith(symbol_id) and 'zscore' in col]
+        cross_sectional_ranking_cols = self.trade_features.filter(like = symbol_id).columns.tolist()
         cross_sectional_moments_cols = [col for col in self.trade_features.columns if col.startswith('cs_spot') or col.startswith('cs_futures')]
-        valid_cols = cross_sectional_percentile_cols + cross_sectional_z_cols + cross_sectional_moments_cols
+        valid_cols = cross_sectional_ranking_cols + cross_sectional_moments_cols
 
         # Merge current token trade features with the cross-sectional features
-        curr_token_trade_features = pd.merge(
-            curr_token_trade_features, 
+        X = pd.merge(
+            X, 
             self.trade_features[['time_period_end'] + valid_cols],
             on = 'time_period_end', 
             how = 'left', 
             suffixes = ('', '__remove')
         )
-        curr_token_trade_features = curr_token_trade_features.drop(columns = [col for col in curr_token_trade_features.columns if '__remove' in col], axis = 1)
+        X = X.drop(columns = [col for col in X.columns if '__remove' in col], axis = 1)
 
-        # Rename the cross-sectional percentile columns to remove the symbol_id from it
-        for col in cross_sectional_percentile_cols:
+        # Rename the cross-sectional ranking columns to remove the symbol_id from it
+        for col in X.columns:
             new_col = col.replace(symbol_id, '')
-            curr_token_trade_features.rename(columns = {col: new_col}, inplace = True)
-
-        # Rename the cross-sectional z-score columns to remove the symbol_id from it
-        for col in cross_sectional_z_cols:
-            new_col = col.replace(symbol_id, '')
-            curr_token_trade_features.rename(columns = {col: new_col}, inplace = True)
+            X.rename({col: new_col}, inplace = True, axis = 1)
 
         # Merge data to final features
-        X = pd.merge(X, curr_token_trade_features, on = 'time_period_end', suffixes = ('', '__remove'), how = 'left')
+        X = pd.merge(X, X, on = 'time_period_end', suffixes = ('', '__remove'), how = 'left')
 
         # Drop the columns with '__remove' suffix
         X = X.drop(columns = [col for col in X.columns if '__remove' in col], axis = 1)
@@ -2411,7 +1869,6 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
 
 class RiskFeatures(BaseEstimator, TransformerMixin):
     def __init__(self, windows, lookback_windows):
-        print('RiskFeatures...')
         self.windows = windows
         self.lookback_windows = lookback_windows
 
@@ -2473,7 +1930,7 @@ class RiskFeatures(BaseEstimator, TransformerMixin):
                         self.ml_dataset.loc[filter, f'returns_{window}']
                         .rolling(window = lookback_window)
                         .cov(self.ml_dataset.loc[filter, f'market_returns_{window}'])
-                        / self.ml_dataset.loc[filter, f'market_returns_{window}'].rolling(window = lookback_window, min_periodss = 7).var()
+                        / self.ml_dataset.loc[filter, f'market_returns_{window}'].rolling(window = lookback_window, min_periods = 7).var()
                     )
 
                     # Rolling alpha
@@ -2481,7 +1938,7 @@ class RiskFeatures(BaseEstimator, TransformerMixin):
                         self.ml_dataset.loc[filter, f'returns_{window}']
                         .rolling(window = lookback_window)
                         .mean()
-                        - self.ml_dataset.loc[filter, f'beta_{window}d_{lookback_window}d'] * self.ml_dataset.loc[filter, f'market_returns_{window}'].rolling(window = lookback_window, min_periodss = 7).mean()
+                        - self.ml_dataset.loc[filter, f'beta_{window}d_{lookback_window}d'] * self.ml_dataset.loc[filter, f'market_returns_{window}'].rolling(window = lookback_window, min_periods = 7).mean()
                     )
 
                     # Rolling alpha_div_beta
@@ -2498,13 +1955,13 @@ class RiskFeatures(BaseEstimator, TransformerMixin):
                 # Cross-sectional alpha percentile
                 alpha_pivot = self.ml_dataset.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'alpha_{window}d_{lookback_window}d', dropna = False)
                 cs_alpha_percentile = alpha_pivot.rank(axis = 1, pct = True)
-                cs_alpha_percentile.columns = [col + f'_alpha_{window}d_{lookback_window}d_percentile' for col in cs_alpha_percentile.columns]
+                cs_alpha_percentile.columns = [col + f'alpha_{window}d_{lookback_window}d_percentile' for col in cs_alpha_percentile.columns]
 
                 # Cross-sectional alpha z-score
                 alpha_pivot_mean = alpha_pivot.mean(axis = 1)
                 alpha_pivot_std = alpha_pivot.std(axis = 1)
-                alpha_pivot_zscore = (alpha_pivot - alpha_pivot_mean) / alpha_pivot_std
-                alpha_pivot_zscore.columns = [col + f'_alpha_{window}d_{lookback_window}d_zscore' for col in alpha_pivot_zscore.columns]
+                alpha_pivot_zscore = alpha_pivot.sub(alpha_pivot_mean, axis = 0).div(alpha_pivot_std, axis = 0)
+                alpha_pivot_zscore.columns = [col + f'alpha_{window}d_{lookback_window}d_zscore' for col in alpha_pivot_zscore.columns]
 
                 # 4 moments of cross-sectional alpha
                 alpha_pivot[f'cs_avg_alpha_{window}d_{lookback_window}d'] = alpha_pivot.mean(axis = 1)
@@ -2512,8 +1969,6 @@ class RiskFeatures(BaseEstimator, TransformerMixin):
                 alpha_pivot[f'cs_skewness_alpha_{window}d_{lookback_window}d'] = alpha_pivot.skew(axis = 1)
                 alpha_pivot[f'cs_kurtosis_alpha_{window}d_{lookback_window}d'] = alpha_pivot.kurtosis(axis = 1)
                 alpha_pivot[f'cs_median_alpha_{window}d_{lookback_window}d'] = alpha_pivot.median(axis = 1)
-                alpha_pivot[f'cs_10th_percentile_alpha_{window}d_{lookback_window}d'] = alpha_pivot.quantile(0.1, axis = 1)
-                alpha_pivot[f'cs_90th_percentile_alpha_{window}d_{lookback_window}d'] = alpha_pivot.quantile(0.9, axis = 1)
 
                 # Append alpha percentile features
                 final_features.append(cs_alpha_percentile)
@@ -2528,13 +1983,13 @@ class RiskFeatures(BaseEstimator, TransformerMixin):
                 # Cross-sectional beta
                 beta_pivot = self.ml_dataset.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'beta_{window}d_{lookback_window}d', dropna = False)
                 cs_beta_percentile = beta_pivot.rank(axis = 1, pct = True)
-                cs_beta_percentile.columns = [col + f'_beta_{window}d_{lookback_window}d_percentile' for col in cs_beta_percentile.columns]
+                cs_beta_percentile.columns = [col + f'beta_{window}d_{lookback_window}d_percentile' for col in cs_beta_percentile.columns]
 
                 # Cross-sectional beta z-score
                 beta_pivot_mean = beta_pivot.mean(axis = 1)
                 beta_pivot_std = beta_pivot.std(axis = 1)
-                beta_pivot_zscore = (beta_pivot - beta_pivot_mean) / beta_pivot_std
-                beta_pivot_zscore.columns = [col + f'_beta_{window}d_{lookback_window}d_zscore' for col in beta_pivot_zscore.columns]
+                beta_pivot_zscore = beta_pivot.sub(beta_pivot_mean, axis = 0).div(beta_pivot_std, axis = 0)
+                beta_pivot_zscore.columns = [col + f'beta_{window}d_{lookback_window}d_zscore' for col in beta_pivot_zscore.columns]
 
                 # 4 moments of cross-sectional beta
                 beta_pivot[f'cs_avg_beta_{window}d_{lookback_window}d'] = beta_pivot.mean(axis = 1)
@@ -2542,8 +1997,6 @@ class RiskFeatures(BaseEstimator, TransformerMixin):
                 beta_pivot[f'cs_skewness_beta_{window}d_{lookback_window}d'] = beta_pivot.skew(axis = 1)
                 beta_pivot[f'cs_kurtosis_beta_{window}d_{lookback_window}d'] = beta_pivot.kurtosis(axis = 1)
                 beta_pivot[f'cs_median_beta_{window}d_{lookback_window}d'] = beta_pivot.median(axis = 1)
-                beta_pivot[f'cs_10th_percentile_beta_{window}d_{lookback_window}d'] = beta_pivot.quantile(0.1, axis = 1)
-                beta_pivot[f'cs_90th_percentile_beta_{window}d_{lookback_window}d'] = beta_pivot.quantile(0.9, axis = 1)
 
                 # Append beta percentile features
                 final_features.append(cs_beta_percentile)
@@ -2558,13 +2011,13 @@ class RiskFeatures(BaseEstimator, TransformerMixin):
                 # Cross-sectional alpha_div_beta
                 alpha_div_beta_pivot = self.ml_dataset.pivot_table(index = 'time_period_end', columns = 'symbol_id', values = f'alpha_div_beta_{window}d_{lookback_window}d', dropna = False)
                 cs_alpha_div_beta_percentile = alpha_div_beta_pivot.rank(axis = 1, pct = True)
-                cs_alpha_div_beta_percentile.columns = [col + f'_alpha_div_beta_{window}d_{lookback_window}d_percentile' for col in cs_alpha_div_beta_percentile.columns]
+                cs_alpha_div_beta_percentile.columns = [col + f'alpha_div_beta_{window}d_{lookback_window}d_percentile' for col in cs_alpha_div_beta_percentile.columns]
 
                 # Cross-sectional alpha_div_beta z-score
                 alpha_div_beta_pivot_mean = alpha_div_beta_pivot.mean(axis = 1)
                 alpha_div_beta_pivot_std = alpha_div_beta_pivot.std(axis = 1)
-                alpha_div_beta_pivot_zscore = (alpha_div_beta_pivot - alpha_div_beta_pivot_mean) / alpha_div_beta_pivot_std
-                alpha_div_beta_pivot_zscore.columns = [col + f'_alpha_div_beta_{window}d_{lookback_window}d_zscore' for col in alpha_div_beta_pivot_zscore.columns]
+                alpha_div_beta_pivot_zscore = alpha_div_beta_pivot.sub(alpha_div_beta_pivot_mean, axis = 0).div(alpha_div_beta_pivot_std, axis = 0)
+                alpha_div_beta_pivot_zscore.columns = [col + f'alpha_div_beta_{window}d_{lookback_window}d_zscore' for col in alpha_div_beta_pivot_zscore.columns]
 
                 # 4 moments of cross-sectional alpha_div_beta
                 alpha_div_beta_pivot[f'cs_avg_alpha_div_beta_{window}d_{lookback_window}d'] = alpha_div_beta_pivot.mean(axis = 1)
@@ -2572,9 +2025,6 @@ class RiskFeatures(BaseEstimator, TransformerMixin):
                 alpha_div_beta_pivot[f'cs_skewness_alpha_div_beta_{window}d_{lookback_window}d'] = alpha_div_beta_pivot.skew(axis = 1)
                 alpha_div_beta_pivot[f'cs_kurtosis_alpha_div_beta_{window}d_{lookback_window}d'] = alpha_div_beta_pivot.kurtosis(axis = 1)
                 alpha_div_beta_pivot[f'cs_median_alpha_div_beta_{window}d_{lookback_window}d'] = alpha_div_beta_pivot.median(axis = 1)
-                alpha_div_beta_pivot[f'cs_10th_percentile_alpha_div_beta_{window}d_{lookback_window}d'] = alpha_div_beta_pivot.quantile(0.1, axis = 1)
-                alpha_div_beta_pivot[f'cs_90th_percentile_alpha_div_beta_{window}d_{lookback_window}d'] = alpha_div_beta_pivot.quantile(0.9, axis = 1)
-
                 # Append alpha_div_beta percentile features
                 final_features.append(cs_alpha_div_beta_percentile)
                 
@@ -2587,7 +2037,7 @@ class RiskFeatures(BaseEstimator, TransformerMixin):
         
         # Concatenate all final features
         final_features = pd.concat(final_features, axis = 1)
-        self.risk_features = final_features.reset_index()
+        self.final_features = final_features.reset_index()
         self.ml_dataset = self.ml_dataset.reset_index()
 
     def fit(self, X, y=None):
@@ -2597,13 +2047,11 @@ class RiskFeatures(BaseEstimator, TransformerMixin):
         # Cross-sectional rank features for current token and time period
         symbol_id = X['symbol_id'].iloc[0]
 
-        alpha_cols = list(set([col for col in self.ml_dataset.columns if 'alpha' in col]))
-        beta_cols = list(set([col for col in self.ml_dataset.columns if 'beta' in col]))
+        alpha_cols = list(set([col for col in self.ml_dataset.columns if 'alpha' in col and 'div' not in col]))
+        beta_cols = list(set([col for col in self.ml_dataset.columns if 'beta' in col and 'div' not in col]))
         alpha_div_beta_cols = list(set([col for col in self.ml_dataset.columns if 'alpha_div_beta' in col]))
-        
-        percentile_cols = [col for col in self.risk_features.columns if col.startswith(symbol_id) and 'percentile' in col]
-        rz_cols = [col for col in self.risk_features.columns if col.startswith(symbol_id) and 'zscore' in col]
-        cs_cols = [col for col in self.risk_features.columns if col.startswith('cs_')]
+        cross_sectional_ranking_cols = self.final_features.filter(like = symbol_id).columns.tolist()
+        cross_sectional_moments_cols = [col for col in self.final_features.columns if col.startswith('cs_')]
 
         # Filter the ml_dataset for the current token and columns of interest
         data = self.ml_dataset[self.ml_dataset['symbol_id'] == symbol_id][['time_period_end'] + alpha_cols + beta_cols + alpha_div_beta_cols].sort_values(by = 'time_period_end')
@@ -2612,100 +2060,102 @@ class RiskFeatures(BaseEstimator, TransformerMixin):
         X = pd.merge(X, data, on = 'time_period_end', suffixes = ('', '__remove'), how = 'left')
         X = X.drop(columns = [col for col in X.columns if '__remove' in col], axis = 1)
 
-        # Merge data to percentile, z-score and cross-sectional features
+        # Merge data to cross-sectional ranking and moments features
         X = pd.merge(
-            X, self.risk_features[['time_period_end'] + percentile_cols + rz_cols + cs_cols],
+            X, self.final_features[['time_period_end'] + cross_sectional_ranking_cols + cross_sectional_moments_cols],
             on = 'time_period_end',
             suffixes = ('', '__remove'),
             how = 'left'
         )
         X = X.drop(columns = [col for col in X.columns if '__remove' in col], axis = 1)
         
-        # Rename the cross-sectional percentile columns to remove the symbol_id from it
-        for col in percentile_cols:
+        # Rename the cross-sectional ranking columns to remove the symbol_id from it
+        for col in cross_sectional_ranking_cols:
             new_col = col.replace(symbol_id, '')
-            X = X.rename(columns = {col: new_col})
-
-        # Rename the cross-sectional z-score columns to remove the symbol_id from it
-        for col in rz_cols:
-            new_col = col.replace(symbol_id, '')
-            X = X.rename(columns = {col: new_col})
+            X.rename({col: new_col}, inplace = True, axis = 1)
 
         return X
 
 class SpotFuturesInteractionFeatures(BaseEstimator, TransformerMixin):
+    
     def __init__(self, windows, lookback_windows):
-        print('SpotFuturesInteractionFeatures...')
         self.windows = windows
         self.lookback_windows = lookback_windows
 
-        # Load the spot trade features
-        self.spot_trade_features = QUERY(
-            """
-            SELECT *
-            FROM market_data.spot_trade_features_rolling
-            ORDER BY asset_id_base, asset_id_quote, exchange_id, time_period_end
-            """
-        )
-        self.spot_trade_features['symbol_id'] = self.spot_trade_features['asset_id_base'] + '_' + self.spot_trade_features['asset_id_quote'] + '_' + self.spot_trade_features['exchange_id']
-        self.spot_trade_features['time_period_end'] = pd.to_datetime(self.spot_trade_features['time_period_end'])
-
         # Load the spot price data
-        self.spot_price_data = QUERY(
+        spot_price_data = QUERY(
             """
             SELECT *
             FROM market_data.ml_dataset
             ORDER BY asset_id_base, asset_id_quote, exchange_id, time_period_end
             """
         )
-        self.spot_price_data['symbol_id'] = self.spot_price_data['asset_id_base'] + '_' + self.spot_price_data['asset_id_quote'] + '_' + self.spot_price_data['exchange_id']
-        self.spot_price_data['time_period_end'] = pd.to_datetime(self.spot_price_data['time_period_end'])
-
-        # Load the futures trade features
-        self.futures_trade_features = QUERY(
-            """
-            SELECT *
-            FROM market_data.futures_trade_features_rolling
-            ORDER BY asset_id_base, asset_id_quote, exchange_id, time_period_end
-            """
-        )
-        self.futures_trade_features['symbol_id'] = self.futures_trade_features['asset_id_base'] + '_' + self.futures_trade_features['asset_id_quote'] + '_' + self.futures_trade_features['exchange_id']
-        self.futures_trade_features['time_period_end'] = pd.to_datetime(self.futures_trade_features['time_period_end'])
-
+        spot_price_data['symbol_id'] = spot_price_data['asset_id_base'] + '_' + spot_price_data['asset_id_quote'] + '_' + spot_price_data['exchange_id']
+        spot_price_data['time_period_end'] = pd.to_datetime(spot_price_data['time_period_end'])
+        
         # Load the futures price data
-        self.futures_price_data = QUERY(
+        futures_price_data = QUERY(
             """
             SELECT *
             FROM market_data.ml_dataset_futures
             ORDER BY asset_id_base, asset_id_quote, exchange_id, time_period_end
             """
         )
-        self.futures_price_data['symbol_id'] = self.futures_price_data['asset_id_base'] + '_' + self.futures_price_data['asset_id_quote'] + '_' + self.futures_price_data['exchange_id']
-        self.futures_price_data['time_period_end'] = pd.to_datetime(self.futures_price_data['time_period_end'])
+        futures_price_data['symbol_id'] = futures_price_data['asset_id_base'] + '_' + futures_price_data['asset_id_quote'] + '_' + futures_price_data['exchange_id']
+        futures_price_data['time_period_end'] = pd.to_datetime(futures_price_data['time_period_end'])
+        agix = futures_price_data[futures_price_data['symbol_id'] == 'AGIX_USDT_BINANCE']
 
-        tokens_spot = sorted(self.spot_price_data['symbol_id'].unique().tolist())
-        tokens_futures = sorted(self.futures_price_data['symbol_id'].unique().tolist())
+        tokens_spot = sorted(spot_price_data['symbol_id'].unique().tolist())
+        tokens_futures = sorted(futures_price_data['symbol_id'].unique().tolist())
 
         # Returns for spot and futures prices
         for token in tokens_spot:
             for window in self.windows:
                 # Filter the price data for the current token
-                filter_spot = self.spot_price_data['symbol_id'] == token
-                self.spot_price_data.loc[filter_spot, f'returns_{window}d'] = self.spot_price_data.loc[filter_spot, 'close'].pct_change(window).clip(-1, 10)
+                filter_spot = spot_price_data['symbol_id'] == token
+                if window == 1:
+                    clip_upper_bound = 0.57
+                elif window == 7:
+                    clip_upper_bound = 3.55
+                elif window == 30:
+                    clip_upper_bound = 9.44
+                elif window == 180:
+                    clip_upper_bound = 59
+                
+                # Calculate returns
+                spot_price_data.loc[filter_spot, f'returns_{window}d'] = spot_price_data.loc[filter_spot, 'close'].pct_change(window).clip(-1, clip_upper_bound)
         
         for token in tokens_futures:
             for window in self.windows:
                 # Filter the price data for the current token
-                filter_futures = self.futures_price_data['symbol_id'] == token
-                self.futures_price_data.loc[filter_futures, f'returns_{window}d'] = self.futures_price_data.loc[filter_futures, 'close'].pct_change(window).clip(-1, 10)
+                filter_futures = futures_price_data['symbol_id'] == token
+                if window == 1:
+                    clip_upper_bound = 0.47
+                elif window == 7:
+                    clip_upper_bound = 2.05
+                elif window == 30:
+                    clip_upper_bound = 7.09
+                elif window == 180:
+                    clip_upper_bound = 22.7
+                    
+                futures_price_data.loc[filter_futures, f'returns_{window}d'] = futures_price_data.loc[filter_futures, 'close'].pct_change(window).clip(-1, clip_upper_bound)
 
         # Basis (futures - spot) related features
         price_data = pd.merge(
-            self.spot_price_data,
-            self.futures_price_data,
+            spot_price_data,
+            futures_price_data,
             on = ['time_period_end', 'symbol_id'],
+            how = 'outer',
             suffixes = ('_spot', '_futures')
         )
+        price_data.rename({
+            'time_period_end_spot': 'time_period_end',
+            'asset_id_base_spot': 'asset_id_base',
+            'asset_id_quote_spot': 'asset_id_quote',
+            'exchange_id_spot': 'exchange_id',
+            'symbol_id_spot': 'symbol_id',
+        }, inplace = True, axis = 1)
+        price_data.drop(columns = ['asset_id_base_futures', 'asset_id_quote_futures', 'exchange_id_futures', 'symbol_id_futures', 'time_period_end_futures'], axis = 1, errors = 'ignore', inplace = True)
         self.price_data = price_data
         self.price_data['basis'] = self.price_data['close_futures'] - self.price_data['close_spot']
         self.price_data['basis_pct'] = self.price_data['basis'] / self.price_data['close_spot']
@@ -2726,7 +2176,7 @@ class SpotFuturesInteractionFeatures(BaseEstimator, TransformerMixin):
         # Cross-sectional z-scores of basis
         basis_pivot_mean = basis_pivot.mean(axis = 1)
         basis_pivot_std = basis_pivot.std(axis = 1)
-        basis_pivot_zscore = (basis_pivot - basis_pivot_mean) / basis_pivot_std  
+        basis_pivot_zscore = basis_pivot.sub(basis_pivot_mean, axis = 0).div(basis_pivot_std, axis = 0)
         basis_pivot_zscore.columns = [col + 'cs_basis_zscore' for col in basis_pivot_zscore.columns]
 
         # 4 moments of basis
@@ -2735,8 +2185,6 @@ class SpotFuturesInteractionFeatures(BaseEstimator, TransformerMixin):
         basis_pivot['cs_skewness_basis'] = basis_pivot.skew(axis = 1)
         basis_pivot['cs_kurtosis_basis'] = basis_pivot.kurtosis(axis = 1)
         basis_pivot['cs_median_basis'] = basis_pivot.median(axis = 1)
-        basis_pivot['cs_10th_percentile_basis'] = basis_pivot.quantile(0.1, axis = 1)
-        basis_pivot['cs_90th_percentile_basis'] = basis_pivot.quantile(0.9, axis = 1)
 
         basis_pct_pivot = self.price_data.pivot_table(
             index = 'time_period_end',
@@ -2752,7 +2200,7 @@ class SpotFuturesInteractionFeatures(BaseEstimator, TransformerMixin):
         # Cross-sectional z-scores of basis_pct
         basis_pct_pivot_mean = basis_pct_pivot.mean(axis = 1)
         basis_pct_pivot_std = basis_pct_pivot.std(axis = 1)
-        basis_pct_pivot_zscore = (basis_pct_pivot - basis_pct_pivot_mean) / basis_pct_pivot_std
+        basis_pct_pivot_zscore = basis_pct_pivot.sub(basis_pct_pivot_mean, axis = 0).div(basis_pct_pivot_std, axis = 0)
         basis_pct_pivot_zscore.columns = [col + 'cs_basis_pct_zscore' for col in basis_pct_pivot_zscore.columns]
 
         # 4 moments of basis_pct
@@ -2761,8 +2209,6 @@ class SpotFuturesInteractionFeatures(BaseEstimator, TransformerMixin):
         basis_pct_pivot['cs_skewness_basis_pct'] = basis_pct_pivot.skew(axis = 1)
         basis_pct_pivot['cs_kurtosis_basis_pct'] = basis_pct_pivot.kurtosis(axis = 1)
         basis_pct_pivot['cs_median_basis_pct'] = basis_pct_pivot.median(axis = 1)
-        basis_pct_pivot['cs_10th_percentile_basis_pct'] = basis_pct_pivot.quantile(0.1, axis = 1)
-        basis_pct_pivot['cs_90th_percentile_basis_pct'] = basis_pct_pivot.quantile(0.9, axis = 1)
 
         # Append basis percentile features to the list
         basis_features.append(cs_basis_percentile)
@@ -2782,13 +2228,44 @@ class SpotFuturesInteractionFeatures(BaseEstimator, TransformerMixin):
             moments_feature = moments_feature[valid_cols]
             basis_features.append(moments_feature)
 
+        # Load the spot trade features
+        spot_trade_features = QUERY(
+            """
+            SELECT *
+            FROM market_data.spot_trade_features_rolling
+            ORDER BY asset_id_base, asset_id_quote, exchange_id, time_period_end
+            """
+        )
+        spot_trade_features['symbol_id'] = spot_trade_features['asset_id_base'] + '_' + spot_trade_features['asset_id_quote'] + '_' + spot_trade_features['exchange_id']
+        spot_trade_features['time_period_end'] = pd.to_datetime(spot_trade_features['time_period_end'])
+
+        # Load the futures trade features
+        futures_trade_features = QUERY(
+            """
+            SELECT *
+            FROM market_data.futures_trade_features_rolling
+            ORDER BY asset_id_base, asset_id_quote, exchange_id, time_period_end
+            """
+        )
+        futures_trade_features['symbol_id'] = futures_trade_features['asset_id_base'] + '_' + futures_trade_features['asset_id_quote'] + '_' + futures_trade_features['exchange_id']
+        futures_trade_features['time_period_end'] = pd.to_datetime(futures_trade_features['time_period_end'])
+
         # Trade-related features
         trade_data = pd.merge(
-            self.spot_trade_features,
-            self.futures_trade_features,
+            spot_trade_features,
+            futures_trade_features,
             on = ['time_period_end', 'symbol_id'],
+            how = 'outer',
             suffixes = ('_spot', '_futures')
         )
+        trade_data.rename({
+            'time_period_end_spot': 'time_period_end',
+            'asset_id_base_spot': 'asset_id_base',
+            'asset_id_quote_spot': 'asset_id_quote',
+            'exchange_id_spot': 'exchange_id',
+            'symbol_id_spot': 'symbol_id',
+        }, inplace = True, axis = 1)
+        trade_data.drop(columns = ['asset_id_base_futures', 'asset_id_quote_futures', 'exchange_id_futures', 'symbol_id_futures', 'time_period_end_futures'], axis = 1, errors = 'ignore', inplace = True)
         self.trade_data = trade_data
 
         for window in self.windows:
@@ -2809,7 +2286,7 @@ class SpotFuturesInteractionFeatures(BaseEstimator, TransformerMixin):
             # Cross-sectional z-scores of buy volume delta
             buy_volume_delta_pivot_mean = buy_volume_delta_pivot.mean(axis = 1)
             buy_volume_delta_pivot_std = buy_volume_delta_pivot.std(axis = 1)
-            buy_volume_delta_pivot_zscore = (buy_volume_delta_pivot - buy_volume_delta_pivot_mean) / buy_volume_delta_pivot_std
+            buy_volume_delta_pivot_zscore = buy_volume_delta_pivot.sub(buy_volume_delta_pivot_mean, axis = 0).div(buy_volume_delta_pivot_std, axis = 0)
             buy_volume_delta_pivot_zscore.columns = [col + f'cs_buy_volume_delta_{window}d_zscore' for col in buy_volume_delta_pivot_zscore.columns]
 
             # 4 moments of buy volume delta
@@ -2818,8 +2295,6 @@ class SpotFuturesInteractionFeatures(BaseEstimator, TransformerMixin):
             buy_volume_delta_pivot[f'cs_skewness_buy_volume_delta_{window}d'] = buy_volume_delta_pivot.skew(axis = 1)
             buy_volume_delta_pivot[f'cs_kurtosis_buy_volume_delta_{window}d'] = buy_volume_delta_pivot.kurtosis(axis = 1)
             buy_volume_delta_pivot[f'cs_median_buy_volume_delta_{window}d'] = buy_volume_delta_pivot.median(axis = 1)
-            buy_volume_delta_pivot[f'cs_10th_percentile_buy_volume_delta_{window}d'] = buy_volume_delta_pivot.quantile(0.1, axis = 1)
-            buy_volume_delta_pivot[f'cs_90th_percentile_buy_volume_delta_{window}d'] = buy_volume_delta_pivot.quantile(0.9, axis = 1)
 
             # Append buy volume delta percentile features to the basis features
             basis_features.append(cs_buy_volume_delta_percentile)
@@ -2849,7 +2324,7 @@ class SpotFuturesInteractionFeatures(BaseEstimator, TransformerMixin):
             # Cross-sectional z-scores of sell volume delta
             sell_volume_delta_pivot_mean = sell_volume_delta_pivot.mean(axis = 1)
             sell_volume_delta_pivot_std = sell_volume_delta_pivot.std(axis = 1)
-            sell_volume_delta_pivot_zscore = (sell_volume_delta_pivot - sell_volume_delta_pivot_mean) / sell_volume_delta_pivot_std
+            sell_volume_delta_pivot_zscore = sell_volume_delta_pivot.sub(sell_volume_delta_pivot_mean, axis = 0).div(sell_volume_delta_pivot_std, axis = 0)
             sell_volume_delta_pivot_zscore.columns = [col + f'cs_sell_volume_delta_{window}d_zscore' for col in sell_volume_delta_pivot_zscore.columns]
 
             # 4 moments of sell volume delta
@@ -2858,8 +2333,6 @@ class SpotFuturesInteractionFeatures(BaseEstimator, TransformerMixin):
             sell_volume_delta_pivot[f'cs_skewness_sell_volume_delta_{window}d'] = sell_volume_delta_pivot.skew(axis = 1)
             sell_volume_delta_pivot[f'cs_kurtosis_sell_volume_delta_{window}d'] = sell_volume_delta_pivot.kurtosis(axis = 1)
             sell_volume_delta_pivot[f'cs_median_sell_volume_delta_{window}d'] = sell_volume_delta_pivot.median(axis = 1)
-            sell_volume_delta_pivot[f'cs_10th_percentile_sell_volume_delta_{window}d'] = sell_volume_delta_pivot.quantile(0.1, axis = 1)
-            sell_volume_delta_pivot[f'cs_90th_percentile_sell_volume_delta_{window}d'] = sell_volume_delta_pivot.quantile(0.9, axis = 1)
 
             # Append sell volume delta percentile features to the basis features
             basis_features.append(cs_sell_volume_delta_percentile)
@@ -2892,7 +2365,7 @@ class SpotFuturesInteractionFeatures(BaseEstimator, TransformerMixin):
             # Cross-sectional z-scores of trade imbalance delta
             trade_imbalance_pivot_mean = trade_imbalance_pivot.mean(axis = 1)
             trade_imbalance_pivot_std = trade_imbalance_pivot.std(axis = 1)
-            trade_imbalance_pivot_zscore = (trade_imbalance_pivot - trade_imbalance_pivot_mean) / trade_imbalance_pivot_std
+            trade_imbalance_pivot_zscore = trade_imbalance_pivot.sub(trade_imbalance_pivot_mean, axis = 0).div(trade_imbalance_pivot_std, axis = 0)
             trade_imbalance_pivot_zscore.columns = [col + f'cs_trade_imbalance_delta_{window}d_zscore' for col in trade_imbalance_pivot_zscore.columns]
 
             # 4 moments of trade imbalance delta
@@ -2901,8 +2374,6 @@ class SpotFuturesInteractionFeatures(BaseEstimator, TransformerMixin):
             trade_imbalance_pivot[f'cs_skewness_trade_imbalance_delta_{window}d'] = trade_imbalance_pivot.skew(axis = 1)
             trade_imbalance_pivot[f'cs_kurtosis_trade_imbalance_delta_{window}d'] = trade_imbalance_pivot.kurtosis(axis = 1)
             trade_imbalance_pivot[f'cs_median_trade_imbalance_delta_{window}d'] = trade_imbalance_pivot.median(axis = 1)
-            trade_imbalance_pivot[f'cs_10th_percentile_trade_imbalance_delta_{window}d'] = trade_imbalance_pivot.quantile(0.1, axis = 1)
-            trade_imbalance_pivot[f'cs_90th_percentile_trade_imbalance_delta_{window}d'] = trade_imbalance_pivot.quantile(0.9, axis = 1)
 
             # Append trade imbalance delta percentile features to the basis features 
             basis_features.append(cs_trade_imbalance_delta_percentile)
@@ -2937,7 +2408,7 @@ class SpotFuturesInteractionFeatures(BaseEstimator, TransformerMixin):
             # Cross-sectional z-scores of average dollar volume delta (buy)
             avg_buy_volume_delta_pivot_mean = avg_buy_volume_delta_pivot.mean(axis = 1)
             avg_buy_volume_delta_pivot_std = avg_buy_volume_delta_pivot.std(axis = 1)
-            avg_buy_volume_delta_pivot_zscore = (avg_buy_volume_delta_pivot - avg_buy_volume_delta_pivot_mean) / avg_buy_volume_delta_pivot_std
+            avg_buy_volume_delta_pivot_zscore = avg_buy_volume_delta_pivot.sub(avg_buy_volume_delta_pivot_mean, axis = 0).div(avg_buy_volume_delta_pivot_std, axis = 0)
             avg_buy_volume_delta_pivot_zscore.columns = [col + f'cs_avg_buy_volume_delta_{window}d_zscore' for col in avg_buy_volume_delta_pivot_zscore.columns]
 
             # 4 moments of average dollar volume delta (buy)
@@ -2946,8 +2417,6 @@ class SpotFuturesInteractionFeatures(BaseEstimator, TransformerMixin):
             avg_buy_volume_delta_pivot[f'cs_skewness_avg_buy_volume_delta_{window}d'] = avg_buy_volume_delta_pivot.skew(axis = 1)
             avg_buy_volume_delta_pivot[f'cs_kurtosis_avg_buy_volume_delta_{window}d'] = avg_buy_volume_delta_pivot.kurtosis(axis = 1)
             avg_buy_volume_delta_pivot[f'cs_median_avg_buy_volume_delta_{window}d'] = avg_buy_volume_delta_pivot.median(axis = 1)
-            avg_buy_volume_delta_pivot[f'cs_10th_percentile_avg_buy_volume_delta_{window}d'] = avg_buy_volume_delta_pivot.quantile(0.1, axis = 1)
-            avg_buy_volume_delta_pivot[f'cs_90th_percentile_avg_buy_volume_delta_{window}d'] = avg_buy_volume_delta_pivot.quantile(0.9, axis = 1)
 
             # Append average dollar volume delta percentile features to the basis features (buy)
             basis_features.append(cs_avg_buy_volume_delta_percentile)
@@ -2977,7 +2446,7 @@ class SpotFuturesInteractionFeatures(BaseEstimator, TransformerMixin):
             # Cross-sectional z-scores of average dollar volume delta (sell)
             avg_sell_volume_delta_pivot_mean = avg_sell_volume_delta_pivot.mean(axis = 1)
             avg_sell_volume_delta_pivot_std = avg_sell_volume_delta_pivot.std(axis = 1)
-            avg_sell_volume_delta_pivot_zscore = (avg_sell_volume_delta_pivot - avg_sell_volume_delta_pivot_mean) / avg_sell_volume_delta_pivot_std
+            avg_sell_volume_delta_pivot_zscore = avg_sell_volume_delta_pivot.sub(avg_sell_volume_delta_pivot_mean, axis = 0).div(avg_sell_volume_delta_pivot_std, axis = 0)
             avg_sell_volume_delta_pivot_zscore.columns = [col + f'cs_avg_sell_volume_delta_{window}d_zscore' for col in avg_sell_volume_delta_pivot_zscore.columns]
 
             # 4 moments of average dollar volume delta (sell)
@@ -2986,8 +2455,6 @@ class SpotFuturesInteractionFeatures(BaseEstimator, TransformerMixin):
             avg_sell_volume_delta_pivot[f'cs_skewness_avg_sell_volume_delta_{window}d'] = avg_sell_volume_delta_pivot.skew(axis = 1)
             avg_sell_volume_delta_pivot[f'cs_kurtosis_avg_sell_volume_delta_{window}d'] = avg_sell_volume_delta_pivot.kurtosis(axis = 1)
             avg_sell_volume_delta_pivot[f'cs_median_avg_sell_volume_delta_{window}d'] = avg_sell_volume_delta_pivot.median(axis = 1)
-            avg_sell_volume_delta_pivot[f'cs_10th_percentile_avg_sell_volume_delta_{window}d'] = avg_sell_volume_delta_pivot.quantile(0.1, axis = 1)
-            avg_sell_volume_delta_pivot[f'cs_90th_percentile_avg_sell_volume_delta_{window}d'] = avg_sell_volume_delta_pivot.quantile(0.9, axis = 1)
 
             # Append average dollar volume delta percentile features to the basis features (sell)
             basis_features.append(cs_avg_sell_volume_delta_percentile)
@@ -3022,7 +2489,7 @@ class SpotFuturesInteractionFeatures(BaseEstimator, TransformerMixin):
                 # Cross-sectional z-scores of standard deviation delta (buy)
                 std_buy_volume_delta_pivot_mean = std_buy_volume_delta_pivot.mean(axis = 1)
                 std_buy_volume_delta_pivot_std = std_buy_volume_delta_pivot.std(axis = 1)
-                std_buy_volume_delta_pivot_zscore = (std_buy_volume_delta_pivot - std_buy_volume_delta_pivot_mean) / std_buy_volume_delta_pivot_std
+                std_buy_volume_delta_pivot_zscore = std_buy_volume_delta_pivot.sub(std_buy_volume_delta_pivot_mean, axis = 0).div(std_buy_volume_delta_pivot_std, axis = 0)
                 std_buy_volume_delta_pivot_zscore.columns = [col + f'cs_std_buy_volume_delta_{window}d_zscore' for col in std_buy_volume_delta_pivot_zscore.columns]
 
                 # 4 moments of standard deviation delta (buy)
@@ -3031,8 +2498,6 @@ class SpotFuturesInteractionFeatures(BaseEstimator, TransformerMixin):
                 std_buy_volume_delta_pivot[f'cs_skewness_std_buy_volume_delta_{window}d'] = std_buy_volume_delta_pivot.skew(axis = 1)
                 std_buy_volume_delta_pivot[f'cs_kurtosis_std_buy_volume_delta_{window}d'] = std_buy_volume_delta_pivot.kurtosis(axis = 1)
                 std_buy_volume_delta_pivot[f'cs_median_std_buy_volume_delta_{window}d'] = std_buy_volume_delta_pivot.median(axis = 1)
-                std_buy_volume_delta_pivot[f'cs_10th_percentile_std_buy_volume_delta_{window}d'] = std_buy_volume_delta_pivot.quantile(0.1, axis = 1)
-                std_buy_volume_delta_pivot[f'cs_90th_percentile_std_buy_volume_delta_{window}d'] = std_buy_volume_delta_pivot.quantile(0.9, axis = 1)
 
                 # Append standard deviation delta percentile features to the basis features (buy)
                 basis_features.append(cs_std_buy_volume_delta_percentile)
@@ -3062,7 +2527,7 @@ class SpotFuturesInteractionFeatures(BaseEstimator, TransformerMixin):
                 # Cross-sectional z-scores of standard deviation delta (sell)
                 std_sell_volume_delta_pivot_mean = std_sell_volume_delta_pivot.mean(axis = 1)
                 std_sell_volume_delta_pivot_std = std_sell_volume_delta_pivot.std(axis = 1)
-                std_sell_volume_delta_pivot_zscore = (std_sell_volume_delta_pivot - std_sell_volume_delta_pivot_mean) / std_sell_volume_delta_pivot_std
+                std_sell_volume_delta_pivot_zscore = std_sell_volume_delta_pivot.sub(std_sell_volume_delta_pivot_mean, axis = 0).div(std_sell_volume_delta_pivot_std, axis = 0)
                 std_sell_volume_delta_pivot_zscore.columns = [col + f'cs_std_sell_volume_delta_{window}d_zscore' for col in std_sell_volume_delta_pivot_zscore.columns]
 
                 # 4 moments of standard deviation delta (sell)
@@ -3071,8 +2536,6 @@ class SpotFuturesInteractionFeatures(BaseEstimator, TransformerMixin):
                 std_sell_volume_delta_pivot[f'cs_skewness_std_sell_volume_delta_{window}d'] = std_sell_volume_delta_pivot.skew(axis = 1)
                 std_sell_volume_delta_pivot[f'cs_kurtosis_std_sell_volume_delta_{window}d'] = std_sell_volume_delta_pivot.kurtosis(axis = 1)
                 std_sell_volume_delta_pivot[f'cs_median_std_sell_volume_delta_{window}d'] = std_sell_volume_delta_pivot.median(axis = 1)
-                std_sell_volume_delta_pivot[f'cs_10th_percentile_std_sell_volume_delta_{window}d'] = std_sell_volume_delta_pivot.quantile(0.1, axis = 1)
-                std_sell_volume_delta_pivot[f'cs_90th_percentile_std_sell_volume_delta_{window}d'] = std_sell_volume_delta_pivot.quantile(0.9, axis = 1)
 
                 # Append standard deviation delta percentile features to the basis features (sell)
                 basis_features.append(cs_std_sell_volume_delta_percentile)
@@ -3106,7 +2569,7 @@ class SpotFuturesInteractionFeatures(BaseEstimator, TransformerMixin):
                 # Cross-sectional z-scores of skewness delta (buy)
                 skew_buy_volume_delta_pivot_mean = skew_buy_volume_delta_pivot.mean(axis = 1)
                 skew_buy_volume_delta_pivot_std = skew_buy_volume_delta_pivot.std(axis = 1)
-                skew_buy_volume_delta_pivot_zscore = (skew_buy_volume_delta_pivot - skew_buy_volume_delta_pivot_mean) / skew_buy_volume_delta_pivot_std
+                skew_buy_volume_delta_pivot_zscore = skew_buy_volume_delta_pivot.sub(skew_buy_volume_delta_pivot_mean, axis = 0).div(skew_buy_volume_delta_pivot_std, axis = 0)
                 skew_buy_volume_delta_pivot_zscore.columns = [col + f'cs_skew_buy_volume_delta_{window}d_zscore' for col in skew_buy_volume_delta_pivot_zscore.columns]
 
                 # 4 moments of skewness delta (buy)
@@ -3115,8 +2578,6 @@ class SpotFuturesInteractionFeatures(BaseEstimator, TransformerMixin):
                 skew_buy_volume_delta_pivot[f'cs_skewness_skew_buy_volume_delta_{window}d'] = skew_buy_volume_delta_pivot.skew(axis = 1)
                 skew_buy_volume_delta_pivot[f'cs_kurtosis_skew_buy_volume_delta_{window}d'] = skew_buy_volume_delta_pivot.kurtosis(axis = 1)
                 skew_buy_volume_delta_pivot[f'cs_median_skew_buy_volume_delta_{window}d'] = skew_buy_volume_delta_pivot.median(axis = 1)
-                skew_buy_volume_delta_pivot[f'cs_10th_percentile_skew_buy_volume_delta_{window}d'] = skew_buy_volume_delta_pivot.quantile(0.1, axis = 1)
-                skew_buy_volume_delta_pivot[f'cs_90th_percentile_skew_buy_volume_delta_{window}d'] = skew_buy_volume_delta_pivot.quantile(0.9, axis = 1)
 
                 # Append skewness delta percentile features to the basis features (buy)
                 basis_features.append(cs_skew_buy_volume_delta_percentile)
@@ -3146,7 +2607,7 @@ class SpotFuturesInteractionFeatures(BaseEstimator, TransformerMixin):
                 # Cross-sectional z-scores of skewness delta (sell)
                 skew_sell_volume_delta_pivot_mean = skew_sell_volume_delta_pivot.mean(axis = 1)
                 skew_sell_volume_delta_pivot_std = skew_sell_volume_delta_pivot.std(axis = 1)
-                skew_sell_volume_delta_pivot_zscore = (skew_sell_volume_delta_pivot - skew_sell_volume_delta_pivot_mean) / skew_sell_volume_delta_pivot_std
+                skew_sell_volume_delta_pivot_zscore = skew_sell_volume_delta_pivot.sub(skew_sell_volume_delta_pivot_mean, axis = 0).div(skew_sell_volume_delta_pivot_std, axis = 0)
                 skew_sell_volume_delta_pivot_zscore.columns = [col + f'cs_skew_sell_volume_delta_{window}d_zscore' for col in skew_sell_volume_delta_pivot_zscore.columns]
 
                 # 4 moments of skewness delta (sell)
@@ -3155,8 +2616,6 @@ class SpotFuturesInteractionFeatures(BaseEstimator, TransformerMixin):
                 skew_sell_volume_delta_pivot[f'cs_skewness_skew_sell_volume_delta_{window}d'] = skew_sell_volume_delta_pivot.skew(axis = 1)
                 skew_sell_volume_delta_pivot[f'cs_kurtosis_skew_sell_volume_delta_{window}d'] = skew_sell_volume_delta_pivot.kurtosis(axis = 1)
                 skew_sell_volume_delta_pivot[f'cs_median_skew_sell_volume_delta_{window}d'] = skew_sell_volume_delta_pivot.median(axis = 1)
-                skew_sell_volume_delta_pivot[f'cs_10th_percentile_skew_sell_volume_delta_{window}d'] = skew_sell_volume_delta_pivot.quantile(0.1, axis = 1)
-                skew_sell_volume_delta_pivot[f'cs_90th_percentile_skew_sell_volume_delta_{window}d'] = skew_sell_volume_delta_pivot.quantile(0.9, axis = 1)
 
                 # Append skewness delta percentile features to the basis features (sell)
                 basis_features.append(cs_skew_sell_volume_delta_percentile)
@@ -3190,7 +2649,7 @@ class SpotFuturesInteractionFeatures(BaseEstimator, TransformerMixin):
                 # Cross-sectional z-scores of kurtosis delta (buy)
                 kurtosis_buy_volume_delta_pivot_mean = kurtosis_buy_volume_delta_pivot.mean(axis = 1)
                 kurtosis_buy_volume_delta_pivot_std = kurtosis_buy_volume_delta_pivot.std(axis = 1)
-                kurtosis_buy_volume_delta_pivot_zscore = (kurtosis_buy_volume_delta_pivot - kurtosis_buy_volume_delta_pivot_mean) / kurtosis_buy_volume_delta_pivot_std
+                kurtosis_buy_volume_delta_pivot_zscore = kurtosis_buy_volume_delta_pivot.sub(kurtosis_buy_volume_delta_pivot_mean, axis = 0).div(kurtosis_buy_volume_delta_pivot_std, axis = 0)
                 kurtosis_buy_volume_delta_pivot_zscore.columns = [col + f'cs_kurtosis_buy_volume_delta_{window}d_zscore' for col in kurtosis_buy_volume_delta_pivot_zscore.columns]
 
                 # 4 moments of kurtosis delta (buy)
@@ -3199,8 +2658,6 @@ class SpotFuturesInteractionFeatures(BaseEstimator, TransformerMixin):
                 kurtosis_buy_volume_delta_pivot[f'cs_skewness_kurtosis_buy_volume_delta_{window}d'] = kurtosis_buy_volume_delta_pivot.skew(axis = 1)
                 kurtosis_buy_volume_delta_pivot[f'cs_kurtosis_kurtosis_buy_volume_delta_{window}d'] = kurtosis_buy_volume_delta_pivot.kurtosis(axis = 1)
                 kurtosis_buy_volume_delta_pivot[f'cs_median_kurtosis_buy_volume_delta_{window}d'] = kurtosis_buy_volume_delta_pivot.median(axis = 1)
-                kurtosis_buy_volume_delta_pivot[f'cs_10th_percentile_kurtosis_buy_volume_delta_{window}d'] = kurtosis_buy_volume_delta_pivot.quantile(0.1, axis = 1)
-                kurtosis_buy_volume_delta_pivot[f'cs_90th_percentile_kurtosis_buy_volume_delta_{window}d'] = kurtosis_buy_volume_delta_pivot.quantile(0.9, axis = 1)
 
                 # Append kurtosis delta percentile features to the basis features (buy)
                 basis_features.append(cs_kurtosis_buy_volume_delta_percentile)
@@ -3217,166 +2674,82 @@ class SpotFuturesInteractionFeatures(BaseEstimator, TransformerMixin):
                     moments_feature = moments_feature[valid_cols]
                     basis_features.append(moments_feature)
 
-                # 10th percentile delta features
-                trade_data[f'spot_futures_10th_percentile_buy_dollar_volume_delta_{window}d'] = trade_data[f'10th_percentile_buy_dollar_volume_{window}d_futures'] - trade_data[f'10th_percentile_buy_dollar_volume_{window}d_spot']
-                trade_data[f'spot_futures_10th_percentile_sell_dollar_volume_delta_{window}d'] = trade_data[f'10th_percentile_sell_dollar_volume_{window}d_futures'] - trade_data[f'10th_percentile_sell_dollar_volume_{window}d_spot']
+                # Median delta features
+                trade_data[f'spot_futures_median_buy_dollar_volume_delta_{window}d'] = trade_data[f'median_buy_dollar_volume_{window}d_futures'] - trade_data[f'median_buy_dollar_volume_{window}d_spot']
+                trade_data[f'spot_futures_median_sell_dollar_volume_delta_{window}d'] = trade_data[f'median_sell_dollar_volume_{window}d_futures'] - trade_data[f'median_sell_dollar_volume_{window}d_spot']
 
-                # Cross-sectional percentiles of 10th percentile delta (buy)
-                tenth_buy_volume_delta_pivot = trade_data.pivot_table(
+                # Cross-sectional percentiles of median delta (buy)
+                median_buy_volume_delta_pivot = trade_data.pivot_table(
                     index = 'time_period_end',
                     columns = 'symbol_id',
-                    values = f'spot_futures_10th_percentile_buy_dollar_volume_delta_{window}d',
+                    values = f'spot_futures_median_buy_dollar_volume_delta_{window}d',
                     dropna = False
                 )
-                cs_tenth_buy_volume_delta_percentile = tenth_buy_volume_delta_pivot.rank(axis = 1, pct = True)
-                cs_tenth_buy_volume_delta_percentile.columns = [col + f'cs_10th_percentile_buy_volume_delta_{window}d_percentile' for col in cs_tenth_buy_volume_delta_percentile.columns]
+                cs_median_buy_volume_delta_percentile = median_buy_volume_delta_pivot.rank(axis = 1, pct = True)
+                cs_median_buy_volume_delta_percentile.columns = [col + f'cs_median_buy_volume_delta_{window}d_percentile' for col in cs_median_buy_volume_delta_percentile.columns]
 
-                # Cross-sectional z-scores of 10th percentile delta (buy)
-                tenth_buy_volume_delta_pivot_mean = tenth_buy_volume_delta_pivot.mean(axis = 1)
-                tenth_buy_volume_delta_pivot_std = tenth_buy_volume_delta_pivot.std(axis = 1)
-                tenth_buy_volume_delta_pivot_zscore = (tenth_buy_volume_delta_pivot - tenth_buy_volume_delta_pivot_mean) / tenth_buy_volume_delta_pivot_std
-                tenth_buy_volume_delta_pivot_zscore.columns = [col + f'cs_10th_percentile_buy_volume_delta_{window}d_zscore' for col in tenth_buy_volume_delta_pivot_zscore.columns]
+                # Cross-sectional z-scores of median delta (buy)
+                median_buy_volume_delta_pivot_mean = median_buy_volume_delta_pivot.mean(axis = 1)
+                median_buy_volume_delta_pivot_std = median_buy_volume_delta_pivot.std(axis = 1)
+                median_buy_volume_delta_pivot_zscore = median_buy_volume_delta_pivot.sub(median_buy_volume_delta_pivot_mean, axis = 0).div(median_buy_volume_delta_pivot_std, axis = 0)
+                median_buy_volume_delta_pivot_zscore.columns = [col + f'cs_median_buy_volume_delta_{window}d_zscore' for col in median_buy_volume_delta_pivot_zscore.columns]
 
-                # 4 moments of 10th percentile delta (buy)
-                tenth_buy_volume_delta_pivot[f'cs_avg_10th_percentile_buy_volume_delta_{window}d'] = tenth_buy_volume_delta_pivot.mean(axis = 1)
-                tenth_buy_volume_delta_pivot[f'cs_std_10th_percentile_buy_volume_delta_{window}d'] = tenth_buy_volume_delta_pivot.std(axis = 1)
-                tenth_buy_volume_delta_pivot[f'cs_skewness_10th_percentile_buy_volume_delta_{window}d'] = tenth_buy_volume_delta_pivot.skew(axis = 1)
-                tenth_buy_volume_delta_pivot[f'cs_kurtosis_10th_percentile_buy_volume_delta_{window}d'] = tenth_buy_volume_delta_pivot.kurtosis(axis = 1)
-                tenth_buy_volume_delta_pivot[f'cs_median_10th_percentile_buy_volume_delta_{window}d'] = tenth_buy_volume_delta_pivot.median(axis = 1)
-                tenth_buy_volume_delta_pivot[f'cs_10th_percentile_10th_percentile_buy_volume_delta_{window}d'] = tenth_buy_volume_delta_pivot.quantile(0.1, axis = 1)
-                tenth_buy_volume_delta_pivot[f'cs_90th_percentile_10th_percentile_buy_volume_delta_{window}d'] = tenth_buy_volume_delta_pivot.quantile(0.9, axis = 1)
+                # 4 moments of median delta (buy)
+                median_buy_volume_delta_pivot[f'cs_avg_median_buy_volume_delta_{window}d'] = median_buy_volume_delta_pivot.mean(axis = 1)
+                median_buy_volume_delta_pivot[f'cs_std_median_buy_volume_delta_{window}d'] = median_buy_volume_delta_pivot.std(axis = 1)
+                median_buy_volume_delta_pivot[f'cs_skewness_median_buy_volume_delta_{window}d'] = median_buy_volume_delta_pivot.skew(axis = 1)
+                median_buy_volume_delta_pivot[f'cs_kurtosis_median_buy_volume_delta_{window}d'] = median_buy_volume_delta_pivot.kurtosis(axis = 1)
+                median_buy_volume_delta_pivot[f'cs_median_median_buy_volume_delta_{window}d'] = median_buy_volume_delta_pivot.median(axis = 1)
 
-                # Append 10th percentile delta percentile features to the basis features (buy)
-                basis_features.append(cs_tenth_buy_volume_delta_percentile)
-                
-                # Append 10th percentile delta z-score features to the basis features (buy)
-                basis_features.append(tenth_buy_volume_delta_pivot_zscore)
+                # Append median delta percentile features to the basis features (buy)
+                basis_features.append(cs_median_buy_volume_delta_percentile)
 
-                # Append 10th percentile delta moments features to the basis features (buy)
-                tenth_buy_volume_delta_moments_features = [
-                    tenth_buy_volume_delta_pivot
+                # Append median delta z-score features to the basis features (buy)
+                basis_features.append(median_buy_volume_delta_pivot_zscore)
+
+                # Append median delta moments features to the basis features (buy)
+                median_buy_volume_delta_moments_features = [
+                    median_buy_volume_delta_pivot
                 ]
-                for i, moments_feature in enumerate(tenth_buy_volume_delta_moments_features):
+                for i, moments_feature in enumerate(median_buy_volume_delta_moments_features):
                     valid_cols = [col for col in moments_feature.columns if col.startswith('cs_')]
                     moments_feature = moments_feature[valid_cols]
                     basis_features.append(moments_feature)
 
-                # Cross-sectional percentiles of 10th percentile delta (sell)
-                tenth_sell_volume_delta_pivot = trade_data.pivot_table(
+                # Cross-sectional percentiles of median delta (sell)
+                median_sell_volume_delta_pivot = trade_data.pivot_table(
                     index = 'time_period_end',
                     columns = 'symbol_id',
-                    values = f'spot_futures_10th_percentile_sell_dollar_volume_delta_{window}d',
+                    values = f'spot_futures_median_sell_dollar_volume_delta_{window}d',
                     dropna = False
                 )
-                cs_tenth_sell_volume_delta_percentile = tenth_sell_volume_delta_pivot.rank(axis = 1, pct = True)
-                cs_tenth_sell_volume_delta_percentile.columns = [col + f'cs_10th_percentile_sell_volume_delta_{window}d_percentile' for col in cs_tenth_sell_volume_delta_percentile.columns]
+                cs_median_sell_volume_delta_percentile = median_sell_volume_delta_pivot.rank(axis = 1, pct = True)
+                cs_median_sell_volume_delta_percentile.columns = [col + f'cs_median_sell_volume_delta_{window}d_percentile' for col in cs_median_sell_volume_delta_percentile.columns]
 
-                # Cross-sectional z-scores of 10th percentile delta (sell)
-                tenth_sell_volume_delta_pivot_mean = tenth_sell_volume_delta_pivot.mean(axis = 1)
-                tenth_sell_volume_delta_pivot_std = tenth_sell_volume_delta_pivot.std(axis = 1)
-                tenth_sell_volume_delta_pivot_zscore = (tenth_sell_volume_delta_pivot - tenth_sell_volume_delta_pivot_mean) / tenth_sell_volume_delta_pivot_std
-                tenth_sell_volume_delta_pivot_zscore.columns = [col + f'cs_10th_percentile_sell_volume_delta_{window}d_zscore' for col in tenth_sell_volume_delta_pivot_zscore.columns]
+                # Cross-sectional z-scores of median delta (sell)
+                median_sell_volume_delta_pivot_mean = median_sell_volume_delta_pivot.mean(axis = 1)
+                median_sell_volume_delta_pivot_std = median_sell_volume_delta_pivot.std(axis = 1)
+                median_sell_volume_delta_pivot_zscore = median_sell_volume_delta_pivot.sub(median_sell_volume_delta_pivot_mean, axis = 0).div(median_sell_volume_delta_pivot_std, axis = 0)
+                median_sell_volume_delta_pivot_zscore.columns = [col + f'cs_median_sell_volume_delta_{window}d_zscore' for col in median_sell_volume_delta_pivot_zscore.columns]
 
-                # 4 moments of 10th percentile delta (sell)
-                tenth_sell_volume_delta_pivot[f'cs_avg_10th_percentile_sell_volume_delta_{window}d'] = tenth_sell_volume_delta_pivot.mean(axis = 1)
-                tenth_sell_volume_delta_pivot[f'cs_std_10th_percentile_sell_volume_delta_{window}d'] = tenth_sell_volume_delta_pivot.std(axis = 1)
-                tenth_sell_volume_delta_pivot[f'cs_skewness_10th_percentile_sell_volume_delta_{window}d'] = tenth_sell_volume_delta_pivot.skew(axis = 1)
-                tenth_sell_volume_delta_pivot[f'cs_kurtosis_10th_percentile_sell_volume_delta_{window}d'] = tenth_sell_volume_delta_pivot.kurtosis(axis = 1)
-                tenth_sell_volume_delta_pivot[f'cs_median_10th_percentile_sell_volume_delta_{window}d'] = tenth_sell_volume_delta_pivot.median(axis = 1)
-                tenth_sell_volume_delta_pivot[f'cs_10th_percentile_10th_percentile_sell_volume_delta_{window}d'] = tenth_sell_volume_delta_pivot.quantile(0.1, axis = 1)
-                tenth_sell_volume_delta_pivot[f'cs_90th_percentile_10th_percentile_sell_volume_delta_{window}d'] = tenth_sell_volume_delta_pivot.quantile(0.9, axis = 1)
+                # 4 moments of median delta (sell)
+                median_sell_volume_delta_pivot[f'cs_avg_median_sell_volume_delta_{window}d'] = median_sell_volume_delta_pivot.mean(axis = 1)
+                median_sell_volume_delta_pivot[f'cs_std_median_sell_volume_delta_{window}d'] = median_sell_volume_delta_pivot.std(axis = 1)
+                median_sell_volume_delta_pivot[f'cs_skewness_median_sell_volume_delta_{window}d'] = median_sell_volume_delta_pivot.skew(axis = 1)
+                median_sell_volume_delta_pivot[f'cs_kurtosis_median_sell_volume_delta_{window}d'] = median_sell_volume_delta_pivot.kurtosis(axis = 1)
+                median_sell_volume_delta_pivot[f'cs_median_median_sell_volume_delta_{window}d'] = median_sell_volume_delta_pivot.median(axis = 1)
 
-                # Append 10th percentile delta percentile features to the basis features (sell)
-                basis_features.append(cs_tenth_sell_volume_delta_percentile)
+                # Append median delta percentile features to the basis features (sell)
+                basis_features.append(cs_median_sell_volume_delta_percentile)
 
-                # Append 10th percentile delta z-score features to the basis features (sell)
-                basis_features.append(tenth_sell_volume_delta_pivot_zscore)
+                # Append median delta z-score features to the basis features (sell)
+                basis_features.append(median_sell_volume_delta_pivot_zscore)
 
-                # Append 10th percentile delta moments features to the basis features (sell)
-                tenth_sell_volume_delta_moments_features = [
-                    tenth_sell_volume_delta_pivot
+                # Append median delta moments features to the basis features (sell)
+                median_sell_volume_delta_moments_features = [
+                    median_sell_volume_delta_pivot
                 ]
-                for i, moments_feature in enumerate(tenth_sell_volume_delta_moments_features):
-                    valid_cols = [col for col in moments_feature.columns if col.startswith('cs_')]
-                    moments_feature = moments_feature[valid_cols]
-                    basis_features.append(moments_feature)
-
-                # 90th percentile delta features
-                trade_data[f'spot_futures_90th_percentile_buy_dollar_volume_delta_{window}d'] = trade_data[f'90th_percentile_buy_dollar_volume_{window}d_futures'] - trade_data[f'90th_percentile_buy_dollar_volume_{window}d_spot']
-                trade_data[f'spot_futures_90th_percentile_sell_dollar_volume_delta_{window}d'] = trade_data[f'90th_percentile_sell_dollar_volume_{window}d_futures'] - trade_data[f'90th_percentile_sell_dollar_volume_{window}d_spot']
-
-                # Cross-sectional percentiles of 90th percentile delta (buy)
-                nintyth_buy_volume_delta_pivot = trade_data.pivot_table(
-                    index = 'time_period_end',
-                    columns = 'symbol_id',
-                    values = f'spot_futures_90th_percentile_buy_dollar_volume_delta_{window}d',
-                    dropna = False
-                )
-                cs_nintyth_buy_volume_delta_percentile = nintyth_buy_volume_delta_pivot.rank(axis = 1, pct = True)
-                cs_nintyth_buy_volume_delta_percentile.columns = [col + f'cs_90th_percentile_buy_volume_delta_{window}d_percentile' for col in cs_nintyth_buy_volume_delta_percentile.columns]
-
-                # Cross-sectional z-scores of 90th percentile delta (buy)
-                nintyth_buy_volume_delta_pivot_mean = nintyth_buy_volume_delta_pivot.mean(axis = 1)
-                nintyth_buy_volume_delta_pivot_std = nintyth_buy_volume_delta_pivot.std(axis = 1)
-                nintyth_buy_volume_delta_pivot_zscore = (nintyth_buy_volume_delta_pivot - nintyth_buy_volume_delta_pivot_mean) / nintyth_buy_volume_delta_pivot_std
-                nintyth_buy_volume_delta_pivot_zscore.columns = [col + f'cs_90th_percentile_buy_volume_delta_{window}d_zscore' for col in nintyth_buy_volume_delta_pivot_zscore.columns]
-
-                # 4 moments of 90th percentile delta (buy)
-                nintyth_buy_volume_delta_pivot[f'cs_avg_90th_percentile_buy_volume_delta_{window}d'] = nintyth_buy_volume_delta_pivot.mean(axis = 1)
-                nintyth_buy_volume_delta_pivot[f'cs_std_90th_percentile_buy_volume_delta_{window}d'] = nintyth_buy_volume_delta_pivot.std(axis = 1)
-                nintyth_buy_volume_delta_pivot[f'cs_skewness_90th_percentile_buy_volume_delta_{window}d'] = nintyth_buy_volume_delta_pivot.skew(axis = 1)
-                nintyth_buy_volume_delta_pivot[f'cs_kurtosis_90th_percentile_buy_volume_delta_{window}d'] = nintyth_buy_volume_delta_pivot.kurtosis(axis = 1)
-                nintyth_buy_volume_delta_pivot[f'cs_median_90th_percentile_buy_volume_delta_{window}d'] = nintyth_buy_volume_delta_pivot.median(axis = 1)
-                nintyth_buy_volume_delta_pivot[f'cs_10th_percentile_90th_percentile_buy_volume_delta_{window}d'] = nintyth_buy_volume_delta_pivot.quantile(0.1, axis = 1)
-                nintyth_buy_volume_delta_pivot[f'cs_90th_percentile_90th_percentile_buy_volume_delta_{window}d'] = nintyth_buy_volume_delta_pivot.quantile(0.9, axis = 1)
-
-                # Append 90th percentile delta percentile features to the basis features (buy)
-                basis_features.append(cs_nintyth_buy_volume_delta_percentile)
-
-                # Append 90th percentile delta z-score features to the basis features (buy)
-                basis_features.append(nintyth_buy_volume_delta_pivot_zscore)
-
-                # Append 90th percentile delta moments features to the basis features (buy)
-                nintyth_buy_volume_delta_moments_features = [
-                    nintyth_buy_volume_delta_pivot
-                ]
-
-                # Cross-sectional percentiles of 90th percentile delta (sell)
-                nintyth_sell_volume_delta_pivot = trade_data.pivot_table(
-                    index = 'time_period_end',
-                    columns = 'symbol_id',
-                    values = f'spot_futures_90th_percentile_sell_dollar_volume_delta_{window}d',
-                    dropna = False
-                )
-                cs_nintyth_sell_volume_delta_percentile = nintyth_sell_volume_delta_pivot.rank(axis = 1, pct = True)
-                cs_nintyth_sell_volume_delta_percentile.columns = [col + f'cs_90th_percentile_sell_volume_delta_{window}d_percentile' for col in cs_nintyth_sell_volume_delta_percentile.columns]
-
-                # Cross-sectional z-scores of 90th percentile delta (sell)
-                nintyth_sell_volume_delta_pivot_mean = nintyth_sell_volume_delta_pivot.mean(axis = 1)
-                nintyth_sell_volume_delta_pivot_std = nintyth_sell_volume_delta_pivot.std(axis = 1)
-                nintyth_sell_volume_delta_pivot_zscore = (nintyth_sell_volume_delta_pivot - nintyth_sell_volume_delta_pivot_mean) / nintyth_sell_volume_delta_pivot_std
-                nintyth_sell_volume_delta_pivot_zscore.columns = [col + f'cs_90th_percentile_sell_volume_delta_{window}d_zscore' for col in nintyth_sell_volume_delta_pivot_zscore.columns]
-
-                # 4 moments of 90th percentile delta (sell)
-                nintyth_sell_volume_delta_pivot[f'cs_avg_90th_percentile_sell_volume_delta_{window}d'] = nintyth_sell_volume_delta_pivot.mean(axis = 1)
-                nintyth_sell_volume_delta_pivot[f'cs_std_90th_percentile_sell_volume_delta_{window}d'] = nintyth_sell_volume_delta_pivot.std(axis = 1)
-                nintyth_sell_volume_delta_pivot[f'cs_skewness_90th_percentile_sell_volume_delta_{window}d'] = nintyth_sell_volume_delta_pivot.skew(axis = 1)
-                nintyth_sell_volume_delta_pivot[f'cs_kurtosis_90th_percentile_sell_volume_delta_{window}d'] = nintyth_sell_volume_delta_pivot.kurtosis(axis = 1)
-                nintyth_sell_volume_delta_pivot[f'cs_median_90th_percentile_sell_volume_delta_{window}d'] = nintyth_sell_volume_delta_pivot.median(axis = 1)
-                nintyth_sell_volume_delta_pivot[f'cs_10th_percentile_90th_percentile_sell_volume_delta_{window}d'] = nintyth_sell_volume_delta_pivot.quantile(0.1, axis = 1)
-                nintyth_sell_volume_delta_pivot[f'cs_90th_percentile_90th_percentile_sell_volume_delta_{window}d'] = nintyth_sell_volume_delta_pivot.quantile(0.9, axis = 1)
-
-                # Append 90th percentile delta percentile features to the basis features (sell)
-                basis_features.append(cs_nintyth_sell_volume_delta_percentile)
-
-                # Append 90th percentile delta z-score features to the basis features (sell)
-                basis_features.append(nintyth_sell_volume_delta_pivot_zscore)
-
-                # Append 90th percentile delta moments features to the basis features (sell)
-                nintyth_sell_volume_delta_moments_features = [
-                    nintyth_sell_volume_delta_pivot
-                ]
-                for i, moments_feature in enumerate(nintyth_sell_volume_delta_moments_features):
+                for i, moments_feature in enumerate(median_sell_volume_delta_moments_features):
                     valid_cols = [col for col in moments_feature.columns if col.startswith('cs_')]
                     moments_feature = moments_feature[valid_cols]
                     basis_features.append(moments_feature)
@@ -3394,210 +2767,137 @@ class SpotFuturesInteractionFeatures(BaseEstimator, TransformerMixin):
         symbol_id = f'{asset_id_base}_{asset_id_quote}_{exchange_id}'
 
         # Get the basis features for the current token
-        curr_token_basis_features = self.price_data[self.price_data['symbol_id'] == symbol_id].sort_values(by = 'time_period_end')
-        
+        X = pd.merge(
+            X,
+            self.price_data,
+            how='left',
+            left_on=['time_period_end', 'symbol_id'],
+            right_on=['time_period_end', 'symbol_id'],
+            suffixes=('', '__remove')
+        )
+        X = X.drop([col for col in X.columns if col.endswith('__remove')], axis=1)
+
         # Get the trade features for the current token
-        curr_token_trade_features = self.trade_data[self.trade_data['symbol_id'] == symbol_id].sort_values(by = 'time_period_end')
+        X = pd.merge(
+            X,
+            self.trade_data,
+            how='left',
+            left_on=['time_period_end', 'symbol_id'],
+            right_on=['time_period_end', 'symbol_id'],
+            suffixes=('', '__remove')
+        )
+        X = X.drop([col for col in X.columns if col.endswith('__remove')], axis=1)
 
-        for lookback in self.lookbacks:
+        for lookback in self.lookback_windows:
             # Rolling 4 moments of the basis features
-            curr_token_basis_features[f'avg_basis_{lookback}d'] = curr_token_basis_features['basis'].rolling(window = lookback).mean()
-            curr_token_basis_features[f'std_basis_{lookback}d'] = curr_token_basis_features['basis'].rolling(window = lookback).std()
-            curr_token_basis_features[f'skewness_basis_{lookback}d'] = curr_token_basis_features['basis'].rolling(window = lookback).skew()
-            curr_token_basis_features[f'kurtosis_basis_{lookback}d'] = curr_token_basis_features['basis'].rolling(window = lookback).kurtosis()
-            curr_token_basis_features[f'median_basis_{lookback}d'] = curr_token_basis_features['basis'].rolling(window = lookback).median()
-            curr_token_basis_features[f'10th_percentile_basis_{lookback}d'] = curr_token_basis_features['basis'].rolling(window = lookback).quantile(0.1)
-            curr_token_basis_features[f'90th_percentile_basis_{lookback}d'] = curr_token_basis_features['basis'].rolling(window = lookback).quantile(0.9)
-
+            X[f'avg_basis_{lookback}d'] = X['basis'].rolling(window = lookback).mean()
+            X[f'std_basis_{lookback}d'] = X['basis'].rolling(window = lookback).std()
+            X[f'skewness_basis_{lookback}d'] = X['basis'].rolling(window = lookback).skew()
+            X[f'kurtosis_basis_{lookback}d'] = X['basis'].rolling(window = lookback).kurt()
+            X[f'median_basis_{lookback}d'] = X['basis'].rolling(window = lookback).median()
             # Rolling 4 moments of the basis pct features
-            curr_token_basis_features[f'avg_basis_pct_{lookback}d'] = curr_token_basis_features['basis_pct'].rolling(window = lookback).mean()
-            curr_token_basis_features[f'std_basis_pct_{lookback}d'] = curr_token_basis_features['basis_pct'].rolling(window = lookback).std()
-            curr_token_basis_features[f'skewness_basis_pct_{lookback}d'] = curr_token_basis_features['basis_pct'].rolling(window = lookback).skew()
-            curr_token_basis_features[f'kurtosis_basis_pct_{lookback}d'] = curr_token_basis_features['basis_pct'].rolling(window = lookback).kurtosis()
-            curr_token_basis_features[f'median_basis_pct_{lookback}d'] = curr_token_basis_features['basis_pct'].rolling(window = lookback).median()
-            curr_token_basis_features[f'10th_percentile_basis_pct_{lookback}d'] = curr_token_basis_features['basis_pct'].rolling(window = lookback).quantile(0.1)
-            curr_token_basis_features[f'90th_percentile_basis_pct_{lookback}d'] = curr_token_basis_features['basis_pct'].rolling(window = lookback).quantile(0.9)
-
+            X[f'avg_basis_pct_{lookback}d'] = X['basis_pct'].rolling(window = lookback).mean()
+            X[f'std_basis_pct_{lookback}d'] = X['basis_pct'].rolling(window = lookback).std()
+            X[f'skewness_basis_pct_{lookback}d'] = X['basis_pct'].rolling(window = lookback).skew()
+            X[f'kurtosis_basis_pct_{lookback}d'] = X['basis_pct'].rolling(window = lookback).kurt()
+            X[f'median_basis_pct_{lookback}d'] = X['basis_pct'].rolling(window = lookback).median()
         for window in self.windows:
-            for lookback in self.lookbacks:
+            for lookback in self.lookback_windows:
                 # Rolling 4 moments of the volume delta features (buy)
-                curr_token_trade_features[f'avg_spot_futures_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).mean()
-                curr_token_trade_features[f'std_spot_futures_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).std()
-                curr_token_trade_features[f'skewness_spot_futures_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).skew()
-                curr_token_trade_features[f'kurtosis_spot_futures_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).kurtosis()
-                curr_token_trade_features[f'median_spot_futures_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).median()
-                curr_token_trade_features[f'10th_percentile_spot_futures_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).quantile(0.1)
-                curr_token_trade_features[f'90th_percentile_spot_futures_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).quantile(0.9)
+                X[f'avg_spot_futures_buy_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).mean()
+                X[f'std_spot_futures_buy_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).std()
+                X[f'skewness_spot_futures_buy_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).skew()
+                X[f'kurtosis_spot_futures_buy_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).kurt()
+                X[f'median_spot_futures_buy_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).median()
 
                 # Rolling 4 moments of the volume delta features (sell)
-                curr_token_trade_features[f'avg_spot_futures_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).mean()
-                curr_token_trade_features[f'std_spot_futures_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).std()
-                curr_token_trade_features[f'skewness_spot_futures_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).skew()
-                curr_token_trade_features[f'kurtosis_spot_futures_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).kurtosis()
-                curr_token_trade_features[f'median_spot_futures_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).median()
-                curr_token_trade_features[f'10th_percentile_spot_futures_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).quantile(0.1)
-                curr_token_trade_features[f'90th_percentile_spot_futures_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).quantile(0.9)
+                X[f'avg_spot_futures_sell_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).mean()
+                X[f'std_spot_futures_sell_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).std()
+                X[f'skewness_spot_futures_sell_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).skew()
+                X[f'kurtosis_spot_futures_sell_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).kurt()
+                X[f'median_spot_futures_sell_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).median()
 
                 # Rolling 4 moments of the trade imbalance features
-                curr_token_trade_features[f'avg_spot_futures_trade_imbalance_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_trade_imbalance_delta_{window}d'].rolling(window = lookback).mean()
-                curr_token_trade_features[f'std_spot_futures_trade_imbalance_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_trade_imbalance_delta_{window}d'].rolling(window = lookback).std()
-                curr_token_trade_features[f'skewness_spot_futures_trade_imbalance_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_trade_imbalance_delta_{window}d'].rolling(window = lookback).skew()
-                curr_token_trade_features[f'kurtosis_spot_futures_trade_imbalance_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_trade_imbalance_delta_{window}d'].rolling(window = lookback).kurtosis()
-                curr_token_trade_features[f'median_spot_futures_trade_imbalance_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_trade_imbalance_delta_{window}d'].rolling(window = lookback).median()
-                curr_token_trade_features[f'10th_percentile_spot_futures_trade_imbalance_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_trade_imbalance_delta_{window}d'].rolling(window = lookback).quantile(0.1)
-                curr_token_trade_features[f'90th_percentile_spot_futures_trade_imbalance_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_trade_imbalance_delta_{window}d'].rolling(window = lookback).quantile(0.9)
+                X[f'avg_spot_futures_trade_imbalance_delta_{window}d_{lookback}d'] = X[f'spot_futures_trade_imbalance_delta_{window}d'].rolling(window = lookback).mean()
+                X[f'std_spot_futures_trade_imbalance_delta_{window}d_{lookback}d'] = X[f'spot_futures_trade_imbalance_delta_{window}d'].rolling(window = lookback).std()
+                X[f'skewness_spot_futures_trade_imbalance_delta_{window}d_{lookback}d'] = X[f'spot_futures_trade_imbalance_delta_{window}d'].rolling(window = lookback).skew()
+                X[f'kurtosis_spot_futures_trade_imbalance_delta_{window}d_{lookback}d'] = X[f'spot_futures_trade_imbalance_delta_{window}d'].rolling(window = lookback).kurt()
+                X[f'median_spot_futures_trade_imbalance_delta_{window}d_{lookback}d'] = X[f'spot_futures_trade_imbalance_delta_{window}d'].rolling(window = lookback).median()
 
                 # Rolling 4 moments of the avg dollar volume delta feature (buy)
-                curr_token_trade_features[f'avg_spot_futures_avg_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_avg_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).mean()
-                curr_token_trade_features[f'std_spot_futures_avg_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_avg_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).std()
-                curr_token_trade_features[f'skewness_spot_futures_avg_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_avg_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).skew()
-                curr_token_trade_features[f'kurtosis_spot_futures_avg_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_avg_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).kurtosis()
-                curr_token_trade_features[f'median_spot_futures_avg_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_avg_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).median()
-                curr_token_trade_features[f'10th_percentile_spot_futures_avg_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_avg_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).quantile(0.1)
-                curr_token_trade_features[f'90th_percentile_spot_futures_avg_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_avg_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).quantile(0.9)
+                X[f'avg_spot_futures_avg_buy_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_avg_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).mean()
+                X[f'std_spot_futures_avg_buy_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_avg_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).std()
+                X[f'skewness_spot_futures_avg_buy_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_avg_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).skew()
+                X[f'kurtosis_spot_futures_avg_buy_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_avg_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).kurt()
+                X[f'median_spot_futures_avg_buy_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_avg_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).median()
 
                 # Rolling 4 moments of the avg dollar volume delta feature (sell)
-                curr_token_trade_features[f'avg_spot_futures_avg_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_avg_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).mean()
-                curr_token_trade_features[f'std_spot_futures_avg_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_avg_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).std()
-                curr_token_trade_features[f'skewness_spot_futures_avg_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_avg_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).skew()
-                curr_token_trade_features[f'kurtosis_spot_futures_avg_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_avg_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).kurtosis()
-                curr_token_trade_features[f'median_spot_futures_avg_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_avg_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).median()
-                curr_token_trade_features[f'10th_percentile_spot_futures_avg_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_avg_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).quantile(0.1)
-                curr_token_trade_features[f'90th_percentile_spot_futures_avg_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_avg_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).quantile(0.9)
+                X[f'avg_spot_futures_avg_sell_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_avg_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).mean()
+                X[f'std_spot_futures_avg_sell_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_avg_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).std()
+                X[f'skewness_spot_futures_avg_sell_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_avg_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).skew()
+                X[f'kurtosis_spot_futures_avg_sell_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_avg_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).kurt()
+                X[f'median_spot_futures_avg_sell_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_avg_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).median()
 
                 if window == 1:
                     # Rolling 4 moments of the std dollar volume delta feature (buy)
-                    curr_token_trade_features[f'avg_spot_futures_std_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_std_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).mean()
-                    curr_token_trade_features[f'std_spot_futures_std_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_std_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).std()
-                    curr_token_trade_features[f'skewness_spot_futures_std_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_std_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).skew()
-                    curr_token_trade_features[f'kurtosis_spot_futures_std_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_std_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).kurtosis()
-                    curr_token_trade_features[f'median_spot_futures_std_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_std_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).median()
-                    curr_token_trade_features[f'10th_percentile_spot_futures_std_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_std_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).quantile(0.1)
-                    curr_token_trade_features[f'90th_percentile_spot_futures_std_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_std_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).quantile(0.9)
+                    X[f'avg_spot_futures_std_buy_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_std_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).mean()
+                    X[f'std_spot_futures_std_buy_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_std_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).std()
+                    X[f'skewness_spot_futures_std_buy_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_std_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).skew()
+                    X[f'kurtosis_spot_futures_std_buy_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_std_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).kurt()
+                    X[f'median_spot_futures_std_buy_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_std_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).median()
 
                     # Rolling 4 moments of the std dollar volume delta feature (sell)
-                    curr_token_trade_features[f'avg_spot_futures_std_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_std_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).mean()
-                    curr_token_trade_features[f'std_spot_futures_std_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_std_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).std()
-                    curr_token_trade_features[f'skewness_spot_futures_std_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_std_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).skew()
-                    curr_token_trade_features[f'kurtosis_spot_futures_std_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_std_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).kurtosis()
-                    curr_token_trade_features[f'median_spot_futures_std_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_std_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).median()
-                    curr_token_trade_features[f'10th_percentile_spot_futures_std_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_std_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).quantile(0.1)
-                    curr_token_trade_features[f'90th_percentile_spot_futures_std_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_std_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).quantile(0.9)
+                    X[f'avg_spot_futures_std_sell_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_std_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).mean()
+                    X[f'std_spot_futures_std_sell_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_std_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).std()
+                    X[f'skewness_spot_futures_std_sell_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_std_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).skew()
+                    X[f'kurtosis_spot_futures_std_sell_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_std_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).kurt()
+                    X[f'median_spot_futures_std_sell_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_std_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).median()
 
                     # Rolling 4 moments of the skew dollar volume delta feature (buy)
-                    curr_token_trade_features[f'avg_spot_futures_skew_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_skew_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).mean()
-                    curr_token_trade_features[f'std_spot_futures_skew_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_skew_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).std()
-                    curr_token_trade_features[f'skewness_spot_futures_skew_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_skew_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).skew()
-                    curr_token_trade_features[f'kurtosis_spot_futures_skew_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_skew_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).kurtosis()
-                    curr_token_trade_features[f'median_spot_futures_skew_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_skew_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).median()
-                    curr_token_trade_features[f'10th_percentile_spot_futures_skew_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_skew_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).quantile(0.1)
-                    curr_token_trade_features[f'90th_percentile_spot_futures_skew_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_skew_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).quantile(0.9)
+                    X[f'avg_spot_futures_skew_buy_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_skew_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).mean()
+                    X[f'std_spot_futures_skew_buy_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_skew_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).std()
+                    X[f'skewness_spot_futures_skew_buy_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_skew_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).skew()
+                    X[f'kurtosis_spot_futures_skew_buy_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_skew_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).kurt()
+                    X[f'median_spot_futures_skew_buy_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_skew_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).median()
 
                     # Rolling 4 moments of the skew dollar volume delta feature (sell)
-                    curr_token_trade_features[f'avg_spot_futures_skew_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_skew_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).mean()
-                    curr_token_trade_features[f'std_spot_futures_skew_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_skew_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).std()
-                    curr_token_trade_features[f'skewness_spot_futures_skew_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_skew_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).skew()
-                    curr_token_trade_features[f'kurtosis_spot_futures_skew_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_skew_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).kurtosis()
-                    curr_token_trade_features[f'median_spot_futures_skew_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_skew_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).median()
-                    curr_token_trade_features[f'10th_percentile_spot_futures_skew_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_skew_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).quantile(0.1)
-                    curr_token_trade_features[f'90th_percentile_spot_futures_skew_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_skew_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).quantile(0.9)
+                    X[f'avg_spot_futures_skew_sell_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_skew_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).mean()
+                    X[f'std_spot_futures_skew_sell_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_skew_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).std()
+                    X[f'skewness_spot_futures_skew_sell_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_skew_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).skew()
+                    X[f'kurtosis_spot_futures_skew_sell_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_skew_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).kurt()
+                    X[f'median_spot_futures_skew_sell_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_skew_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).median()
 
                     # Rolling 4 moments of the kurtosis dollar volume delta feature (buy)
-                    curr_token_trade_features[f'avg_spot_futures_kurtosis_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_kurtosis_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).mean()
-                    curr_token_trade_features[f'std_spot_futures_kurtosis_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_kurtosis_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).std()
-                    curr_token_trade_features[f'skewness_spot_futures_kurtosis_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_kurtosis_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).skew()
-                    curr_token_trade_features[f'kurtosis_spot_futures_kurtosis_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_kurtosis_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).kurtosis()
-                    curr_token_trade_features[f'median_spot_futures_kurtosis_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_kurtosis_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).median()
-                    curr_token_trade_features[f'10th_percentile_spot_futures_kurtosis_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_kurtosis_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).quantile(0.1)
-                    curr_token_trade_features[f'90th_percentile_spot_futures_kurtosis_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_kurtosis_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).quantile(0.9)
+                    X[f'avg_spot_futures_kurtosis_buy_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_kurtosis_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).mean()
+                    X[f'std_spot_futures_kurtosis_buy_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_kurtosis_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).std()
+                    X[f'skewness_spot_futures_kurtosis_buy_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_kurtosis_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).skew()
+                    X[f'kurtosis_spot_futures_kurtosis_buy_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_kurtosis_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).kurt()
+                    X[f'median_spot_futures_kurtosis_buy_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_kurtosis_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).median()
 
                     # Rolling 4 moments of the kurtosis dollar volume delta feature (sell)
-                    curr_token_trade_features[f'avg_spot_futures_kurtosis_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_kurtosis_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).mean()
-                    curr_token_trade_features[f'std_spot_futures_kurtosis_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_kurtosis_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).std()
-                    curr_token_trade_features[f'skewness_spot_futures_kurtosis_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_kurtosis_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).skew()
-                    curr_token_trade_features[f'kurtosis_spot_futures_kurtosis_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_kurtosis_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).kurtosis()
-                    curr_token_trade_features[f'median_spot_futures_kurtosis_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_kurtosis_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).median()
-                    curr_token_trade_features[f'10th_percentile_spot_futures_kurtosis_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_kurtosis_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).quantile(0.1)
-                    curr_token_trade_features[f'90th_percentile_spot_futures_kurtosis_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_kurtosis_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).quantile(0.9)
+                    X[f'avg_spot_futures_kurtosis_sell_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_kurtosis_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).mean()
+                    X[f'std_spot_futures_kurtosis_sell_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_kurtosis_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).std()
+                    X[f'skewness_spot_futures_kurtosis_sell_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_kurtosis_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).skew()
+                    X[f'kurtosis_spot_futures_kurtosis_sell_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_kurtosis_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).kurt()
+                    X[f'median_spot_futures_kurtosis_sell_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_kurtosis_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).median()
 
                     # Rolling 4 moments of the median dollar volume delta feature (buy)
-                    curr_token_trade_features[f'avg_spot_futures_median_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_median_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).mean()
-                    curr_token_trade_features[f'std_spot_futures_median_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_median_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).std()
-                    curr_token_trade_features[f'skewness_spot_futures_median_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_median_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).skew()
-                    curr_token_trade_features[f'kurtosis_spot_futures_median_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_median_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).kurtosis()
-                    curr_token_trade_features[f'median_spot_futures_median_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_median_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).median()
-                    curr_token_trade_features[f'10th_percentile_spot_futures_median_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_median_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).quantile(0.1)
-                    curr_token_trade_features[f'90th_percentile_spot_futures_median_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_median_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).quantile(0.9)
+                    X[f'avg_spot_futures_median_buy_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_median_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).mean()
+                    X[f'std_spot_futures_median_buy_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_median_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).std()
+                    X[f'skewness_spot_futures_median_buy_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_median_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).skew()
+                    X[f'kurtosis_spot_futures_median_buy_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_median_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).kurt()
+                    X[f'median_spot_futures_median_buy_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_median_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).median()
 
                     # Rolling 4 moments of the median dollar volume delta feature (sell)
-                    curr_token_trade_features[f'avg_spot_futures_median_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_median_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).mean()
-                    curr_token_trade_features[f'std_spot_futures_median_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_median_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).std()
-                    curr_token_trade_features[f'skewness_spot_futures_median_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_median_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).skew()
-                    curr_token_trade_features[f'kurtosis_spot_futures_median_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_median_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).kurtosis()
-                    curr_token_trade_features[f'median_spot_futures_median_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_median_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).median()
-                    curr_token_trade_features[f'10th_percentile_spot_futures_median_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_median_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).quantile(0.1)
-                    curr_token_trade_features[f'90th_percentile_spot_futures_median_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_median_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).quantile(0.9)
-
-                    # Rolling 4 moments of the 10th percentile dollar volume delta feature (buy)
-                    curr_token_trade_features[f'avg_spot_futures_10th_percentile_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_10th_percentile_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).mean()
-                    curr_token_trade_features[f'std_spot_futures_10th_percentile_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_10th_percentile_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).std()
-                    curr_token_trade_features[f'skewness_spot_futures_10th_percentile_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_10th_percentile_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).skew()
-                    curr_token_trade_features[f'kurtosis_spot_futures_10th_percentile_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_10th_percentile_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).kurtosis()
-                    curr_token_trade_features[f'median_spot_futures_10th_percentile_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_10th_percentile_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).median()
-                    curr_token_trade_features[f'10th_percentile_spot_futures_10th_percentile_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_10th_percentile_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).quantile(0.1)
-                    curr_token_trade_features[f'90th_percentile_spot_futures_10th_percentile_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_10th_percentile_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).quantile(0.9)
-
-                    # Rolling 4 moments of the 10th percentile dollar volume delta feature (sell)
-                    curr_token_trade_features[f'avg_spot_futures_10th_percentile_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_10th_percentile_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).mean()
-                    curr_token_trade_features[f'std_spot_futures_10th_percentile_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_10th_percentile_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).std()
-                    curr_token_trade_features[f'skewness_spot_futures_10th_percentile_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_10th_percentile_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).skew()
-                    curr_token_trade_features[f'kurtosis_spot_futures_10th_percentile_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_10th_percentile_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).kurtosis()
-                    curr_token_trade_features[f'median_spot_futures_10th_percentile_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_10th_percentile_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).median()
-                    curr_token_trade_features[f'10th_percentile_spot_futures_10th_percentile_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_10th_percentile_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).quantile(0.1)
-                    curr_token_trade_features[f'90th_percentile_spot_futures_10th_percentile_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_10th_percentile_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).quantile(0.9)
-
-                    # Rolling 4 moments of the 90th percentile dollar volume delta feature (buy)
-                    curr_token_trade_features[f'avg_spot_futures_90th_percentile_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_90th_percentile_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).mean()
-                    curr_token_trade_features[f'std_spot_futures_90th_percentile_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_90th_percentile_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).std()
-                    curr_token_trade_features[f'skewness_spot_futures_90th_percentile_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_90th_percentile_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).skew()
-                    curr_token_trade_features[f'kurtosis_spot_futures_90th_percentile_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_90th_percentile_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).kurtosis()
-                    curr_token_trade_features[f'median_spot_futures_90th_percentile_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_90th_percentile_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).median()
-                    curr_token_trade_features[f'10th_percentile_spot_futures_90th_percentile_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_90th_percentile_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).quantile(0.1)
-                    curr_token_trade_features[f'90th_percentile_spot_futures_90th_percentile_buy_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_90th_percentile_buy_dollar_volume_delta_{window}d'].rolling(window = lookback).quantile(0.9)
-
-                    # Rolling 4 moments of the 90th percentile dollar volume delta feature (sell)
-                    curr_token_trade_features[f'avg_spot_futures_90th_percentile_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_90th_percentile_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).mean()
-                    curr_token_trade_features[f'std_spot_futures_90th_percentile_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_90th_percentile_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).std()
-                    curr_token_trade_features[f'skewness_spot_futures_90th_percentile_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_90th_percentile_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).skew()
-                    curr_token_trade_features[f'kurtosis_spot_futures_90th_percentile_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_90th_percentile_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).kurtosis()
-                    curr_token_trade_features[f'median_spot_futures_90th_percentile_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_90th_percentile_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).median()
-                    curr_token_trade_features[f'10th_percentile_spot_futures_90th_percentile_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_90th_percentile_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).quantile(0.1)
-                    curr_token_trade_features[f'90th_percentile_spot_futures_90th_percentile_sell_dollar_volume_delta_{window}d_{lookback}d'] = curr_token_trade_features[f'spot_futures_90th_percentile_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).quantile(0.9)
+                    X[f'avg_spot_futures_median_sell_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_median_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).mean()
+                    X[f'std_spot_futures_median_sell_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_median_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).std()
+                    X[f'skewness_spot_futures_median_sell_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_median_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).skew()
+                    X[f'kurtosis_spot_futures_median_sell_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_median_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).kurt()
+                    X[f'median_spot_futures_median_sell_dollar_volume_delta_{window}d_{lookback}d'] = X[f'spot_futures_median_sell_dollar_volume_delta_{window}d'].rolling(window = lookback).median()
         
-        cross_sectional_percentile_cols = [col for col in self.basis_features if col.startswith(symbol_id) and 'percentile' in col]
-        cross_sectional_z_cols = [col for col in self.basis_features if col.startswith(symbol_id) and 'z_score' in col]
-        cross_sectional_moments_cols = [col for col in self.basis_features if col.startswith('cs_')]
-        valid_cols = cross_sectional_percentile_cols + cross_sectional_z_cols + cross_sectional_moments_cols
-
-        # Merge the basis features into the main DataFrame
-        X = pd.merge(
-            X, 
-            curr_token_basis_features,
-            how='left',
-            on='time_period_end',
-            suffixes=('', '__remove')
-        )
-        X = X.drop(columns=[col for col in X.columns if '__remove' in col])
-
-        # Merge the trade features into the main DataFrame
-        X = pd.merge(
-            X, 
-            curr_token_trade_features,
-            how='left',
-            on='time_period_end',
-            suffixes=('', '__remove')
-        )
-        X = X.drop(columns=[col for col in X.columns if '__remove' in col])
+        cross_sectional_ranking_cols = self.basis_features.filter(like = symbol_id).columns.to_list()
+        cross_sectional_moments_cols = [col for col in self.basis_features.columns if col.startswith('cs_')]
+        valid_cols = cross_sectional_ranking_cols + cross_sectional_moments_cols
 
         # Merge the cross-sectional features into the main DataFrame
         X = pd.merge(
@@ -3609,14 +2909,10 @@ class SpotFuturesInteractionFeatures(BaseEstimator, TransformerMixin):
         )
         X = X.drop(columns=[col for col in X.columns if '__remove' in col])
 
-        # Rename the cross-sectional percentile columns to remove symbol_id
-        for col in cross_sectional_percentile_cols:
+        # Rename the cross-sectional ranking columns to remove symbol_id
+        for col in cross_sectional_ranking_cols:
             new_col_name = col.replace(symbol_id, '')
-            X.rename(columns={col: new_col_name}, inplace=True)
-
-        # Rename the cross-sectional z-score columns to remove symbol_id
-        for col in cross_sectional_z_cols:
-            new_col_name = col.replace(symbol_id, '')
-            X.rename(columns={col: new_col_name}, inplace=True)
+            X.rename({col: new_col_name}, inplace=True, axis=1)
 
         return X
+

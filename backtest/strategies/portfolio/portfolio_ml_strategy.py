@@ -4,11 +4,13 @@ from backtest.strategies.portfolio.base_strategy import BasePortfolioStrategy
 from utils.db_utils import QUERY
 from vectorbtpro import *
 from numba import njit
+from sklearn.preprocessing import OneHotEncoder
 
 import pandas as pd
 import joblib
 import numpy as np
 import vectorbtpro as vbt
+
 
 @njit
 def post_segment_func_nb(c):
@@ -17,13 +19,12 @@ def post_segment_func_nb(c):
     max_value[g] = max(c.last_value[g], np.nan_to_num(max_value[g], nan = 0))
 
 @njit
-def signal_func_nb(c, long_entry_signals, short_entry_signals, max_loss, max_gain):
+def signal_func_nb(c, long_entry_signals, max_loss, max_gain):
     i = c.i
     g = c.group
     col = c.col
 
     long_entry_signal = long_entry_signals[i, col]
-    short_entry_signal = short_entry_signals[i, col]
     max_loss_ = max_loss[i, col]
     max_gain_ = max_gain[i, col]
 
@@ -35,29 +36,18 @@ def signal_func_nb(c, long_entry_signals, short_entry_signals, max_loss, max_gai
     sl_predicate = curr_dd <= -max_loss_
 
     if tp_predicate or sl_predicate:
-        return False, True, False, True
-
-    # If both long and short entry signals are present, we ignore them
-    # as we can't be long and short at the same time
-    if long_entry_signal and short_entry_signal:
-        return False, False, False, False
+        return False, True, False, False
 
     # If long entry signal is present, we enter a long position
     if long_entry_signal:
         return long_entry_signal, False, False, False
-
-    # If short entry signal is present, we enter a short position
-    elif short_entry_signal:
-        return False, False, short_entry_signal, False
-
-    # If neither long nor short entry signals are present, we do nothing
     else:
         return False, False, False, False
 
 class PortfolioMLStrategy(BasePortfolioStrategy):
     
     indicator_factory_dict = {
-        'class_name':'PortfolioMLStrategy'
+        'class_name':'PortfolioMLStrategy (vt)',
     }
 
     optimize_dict = {
@@ -75,7 +65,7 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
 
         # Prediction threshold for entering a position
         'prediction_threshold': vbt.Param(np.array([
-            0.5
+            0.7
         ]))
     }
 
@@ -91,72 +81,100 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-
-        self.model = None
-
+        
+        # Load the ML features from the database
         ml_features = QUERY(
             """
             SELECT * FROM market_data.ml_features
             """
         )
         ml_features['symbol_id'] = ml_features['symbol_id'].astype('category')
-        ml_features['time_period_end'] = pd.to_datetime(ml_features['time_period_end'], unit = 'ns')
+        ml_features['day_of_week'] = ml_features['day_of_week'].astype('category')
+        ml_features['month'] = ml_features['month'].astype('category')
+        ml_features.replace([np.inf, -np.inf], np.nan, inplace=True)
+        ml_features = ml_features.dropna(subset=['forward_returns_7'])
+        ml_features.set_index('time_period_end', inplace=True)
+        ml_features.sort_index(inplace=True)
+
+        futures_ml_features = ml_features[~ml_features['close_futures'].isna()]
 
         # Columns we need to drop before training the model
-        triple_barrier_label_cols = [
-            col for col in ml_features if 'triple_barrier_label' in col
-        ]
-
-        trade_returns_cols = [
-            col for col in ml_features if 'trade_returns' in col
-        ]
+        forward_returns_cols = [col for col in ml_features if 'forward_returns' in col]
 
         non_numeric_cols = [
-            'asset_id_base', 'asset_id_quote', 'exchange_id', 'Unnamed: 0', 'sample_weight', 'y_true', 'y_pred'
+            'asset_id_base','asset_id_base_x','asset_id_base_y', 
+            'asset_id_quote','asset_id_quote_x', 'asset_id_quote_y', 
+            'exchange_id','exchange_id_x','exchange_id_y', 
+            'day_of_week', 'month', 'symbol_id'
         ]
 
-        forward_returns_cols = [
-            'open', 'high', 'low', 'close', 'start_date_triple_barrier_label_h7', 'start_date_triple_barrier_label_h1',
-            'end_date_triple_barrier_label_h1'
-            'end_date_triple_barrier_label_h7', 'avg_uniqueness', 'time_period_end', 'forward_returns_1',
-            'forward_returns_7'
+        other_cols = [
+            'open_spot', 'high_spot', 'low_spot', 'close_spot', 'volume_spot', 'trades_spot',
+            'open_futures', 'high_futures', 'low_futures', 'close_futures', 'volume_futures', 'trades_futures',
+            'time_period_end', 'y_pred'
         ]
 
-        self.cols_to_drop = (
-                triple_barrier_label_cols +
-                trade_returns_cols +
-                non_numeric_cols +
-                forward_returns_cols
+        num_cols = [col for col in ml_features if 'num' in col and 'rz' not in col and 'zscore' not in col and 'percentile' not in col]
+
+        dollar_cols = [col for col in ml_features if 'dollar' in col and 'rz' not in col and 'zscore' not in col and 'percentile' not in col]
+
+        delta_cols = [col for col in ml_features if 'delta' in col and 'rz' not in col and 'zscore' not in col and 'percentile' not in col]
+
+        other = [col for col in ml_features if '10th_percentile' in col or '90th_percentile' in col]
+
+        cols_to_drop = (
+            forward_returns_cols +
+            non_numeric_cols +
+            other_cols +
+            num_cols +
+            dollar_cols +
+            delta_cols +
+            other
         )
 
-        ml_features = ml_features.set_index('time_period_end').sort_index()
+        # Columns to include in the model
+        returns_cols = [col for col in ml_features if ('spot_returns' in col or 'futures_returns' in col) and 'cs_' not in col]
+        returns_cs_cols = [col for col in ml_features if ('spot_returns' in col or 'futures_returns' in col) and 'cs_' in col and 'kurtosis' not in col]
 
+        alpha_beta_cols = [col for col in ml_features if ('alpha' in col or 'beta' in col) and 'cs_' not in col]
+        alpha_beta_cs_cols = [col for col in ml_features if ('alpha' in col or 'beta' in col) and 'cs_' in col and 'kurtosis' not in col]
+
+        basis_pct_cols = [col for col in ml_features if 'basis_pct' in col and 'cs_' not in col]
+        basis_pct_cs_cols = [col for col in ml_features if 'basis_pct' in col and 'cs_' in col and 'kurtosis' not in col]
+
+        trade_imbalance_cols = [col for col in ml_features if 'trade_imbalance' in col and 'cs_' not in col]
+        trade_imbalance_cs_cols = [col for col in ml_features if 'trade_imbalance' in col and 'cs_' in col and 'kurtosis' not in col]
+
+        valid_cols = (
+            returns_cols +
+            returns_cs_cols +
+            alpha_beta_cols +
+            alpha_beta_cs_cols +
+            basis_pct_cols +
+            basis_pct_cs_cols +
+            trade_imbalance_cols +
+            trade_imbalance_cs_cols
+        )
+        rz_cols = [col for col in ml_features if ('rz' in col or 'zscore' in col or ('percentile' in col and '10th_percentile' not in col and '90th_percentile' not in col) or col in valid_cols) and 'forward_returns' not in col]        
+        
+        self.cols_to_include = rz_cols
+        self.cols_to_drop = cols_to_drop
         self.ml_features = ml_features
-        self.is_train = True
-        self.long_model = None
-        self.short_model = None
+        self.futures_ml_features = futures_ml_features
 
     def __get_model(self, min_date: pd.Timestamp):
-        max_year = min_date.year
-        max_month = min_date.month
-
-        prev_month = max_month - 1
-        if prev_month == 0:
-            prev_month = 12
-            max_year -= 1
-
-        long_model_path = f'/Users/louisspencer/Desktop/Trading-Bot/data/pretrained_models/classification/xgboost_model_{max_year}_{prev_month}_p.pkl'
-        short_model_path = f'/Users/louisspencer/Desktop/Trading-Bot/data/pretrained_models/classification/xgboost_short_model_{max_year}_{prev_month}.pkl'
-
+        year = min_date.year
+        month = min_date.month
+        long_model_path = f'/Users/louisspencer/Desktop/Trading-Bot/data/pretrained_models/classification/xgb_model_{year}_{month}.pkl'
+        short_model_path = f'/Users/louisspencer/Desktop/Trading-Bot/data/pretrained_models/classification/xgb_short_model_{year}_{month}_short.pkl'
         long_model = joblib.load(long_model_path)
-        short_model = joblib.load(short_model_path)
-
-        self.long_model = long_model
-        self.short_model = short_model
-
+        try:
+            short_model = joblib.load(short_model_path)
+        except FileNotFoundError:
+            short_model = None
         return long_model, short_model
 
-    def calculate_size(self, volatilities, betas):
+    def calculate_size(self, volatilities):
         """
         Calculate position sizes from the tokens' volatilities and betas
 
@@ -168,15 +186,13 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
         token_ann_vol = np.sqrt(365) * volatilities
 
         # Position size is volatility weighted
-        ann_vol_target = 0.2  # Target annualized volatility of the portfolio
-        size = ann_vol_target / token_ann_vol
+        ann_vol_target = 0.3  # Target annualized volatility of the portfolio
+        max_positions = 20  # Maximum number of positions in the portfolio
+        size = ann_vol_target / token_ann_vol / max_positions
 
         # Replace NaNs or infinite values with 0
         size = size.replace([np.inf, -np.inf, np.nan], 0)
-
-        # Ensure that the position sizes are between 0 and 0.1
-        size = size.clip(0, 0.05)
-
+        size = size.clip(lower = 0, upper = 0.05)
         return size
 
     def run_strategy_with_parameter_combination(
@@ -190,77 +206,110 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
         min_date = universe.index.min()
         max_date = universe.index.max()
 
-        self.ml_features['y_pred_long'] = 0
-        self.ml_features['y_pred_short'] = 0
+        self.ml_features['y_pred'] = 0
 
-        # Get model
+        # Get models
         long_model, short_model = self.__get_model(min_date)
 
         # Get features for this month
         feature_filter = (
-                (self.ml_features.index >= min_date) &
-                (self.ml_features.index <= max_date)
+            (self.ml_features.index >= min_date) &
+            (self.ml_features.index <= max_date)
         )
-        X = self.ml_features.loc[feature_filter].drop(self.cols_to_drop, axis=1, errors='ignore')
+        feature_filter_futures = (
+            (self.futures_ml_features.index >= min_date) &
+            (self.futures_ml_features.index <= max_date)
+        )
+        spot_data = self.ml_features.loc[feature_filter]
+        futures_data = self.futures_ml_features.loc[feature_filter_futures]
+        if futures_data.empty:
+            futures_data = pd.DataFrame(index=spot_data.index, columns=[f'{col}_futures' for col in spot_data.columns])
+
+        print(f"Running strategy from {min_date} to {max_date}...")
+        print()
+
+        # Combine encoded features with the rest of the features
+        X = spot_data.drop(columns=self.cols_to_drop, errors='ignore', axis=1)
+        X_futures = futures_data.drop(columns=self.cols_to_drop, errors='ignore', axis=1)
 
         # Predictions on this month
-        y_pred_long = long_model.predict_proba(X.drop(['y_pred_long', 'y_pred_short'], axis=1))[:, 1]
-        y_pred_short = short_model.predict_proba(X.drop(['y_pred_long', 'y_pred_short'], axis=1))[:, 1]
-
+        y_pred_long = (long_model.predict_proba(X)[:, 1] >= prediction_threshold).astype(int)
+        if short_model is None:
+            y_pred_short = np.zeros_like(y_pred_long)
+        else:
+            y_pred_short = (short_model.predict_proba(X_futures)[:, 1] >= prediction_threshold).astype(int)
+        
         self.ml_features.loc[feature_filter, 'y_pred_long'] = y_pred_long
-        self.ml_features.loc[feature_filter, 'y_pred_short'] = y_pred_short
-        self.ml_features['dollar_volume'] = self.ml_features['close'] * self.ml_features['volume']
+        self.futures_ml_features.loc[feature_filter_futures, 'y_pred_short'] = y_pred_short
 
         # Pivot model's predictions for ranking the models' signals by date
-        model_probs = (
+        long_model_probs = (
             self.ml_features
-            .reset_index()[['time_period_end', 'symbol_id', 'y_pred_long', 'y_pred_short', 'dollar_volume']]
-            .pivot_table(index='time_period_end', columns='symbol_id', values=['y_pred_long', 'y_pred_short', 'dollar_volume'], dropna=False)
+            .reset_index()[['time_period_end', 'symbol_id', 'y_pred_long']]
+            .pivot_table(index='time_period_end', columns='symbol_id', values=['y_pred_long'], dropna=False)
         )
-        model_probs = model_probs.sort_index().fillna(0)
-        model_probs = model_probs[model_probs.index.isin(universe.index)]
+        long_model_probs = long_model_probs.fillna(0)
+        long_model_probs = long_model_probs[long_model_probs.index.isin(universe.index)]
+
+        # Pivot futures model's predictions for ranking the models' signals by date
+        short_model_probs = (
+            self.futures_ml_features
+            .reset_index()[['time_period_end', 'symbol_id', 'y_pred_short']]
+            .pivot_table(index='time_period_end', columns='symbol_id', values=['y_pred_short'], dropna=False)
+        )
+        short_model_probs = short_model_probs.fillna(0)
+        short_model_probs = short_model_probs[short_model_probs.index.isin(universe.index)]
+        short_model_probs.columns = [f'{col}_futures' for col in short_model_probs.columns]
+
+        # Merge the long and short model probabilities
+        empty_long = pd.DataFrame(
+            np.zeros((long_model_probs.shape[0], long_model_probs.shape[1])),
+            index=long_model_probs.index,
+            columns=[col for col in long_model_probs.columns]
+        )   
+        empty_short = pd.DataFrame(
+            np.zeros((short_model_probs.shape[0], short_model_probs.shape[1])),
+            index=short_model_probs.index,
+            columns=[col for col in short_model_probs.columns]
+        )
+        long_model_probs = pd.merge(
+            long_model_probs,
+            empty_short,
+            left_index=True,
+            right_index=True,
+            how='outer'
+        ).fillna(0)
+        short_model_probs = pd.merge(
+            empty_long,
+            short_model_probs,
+            left_index=True,
+            right_index=True,
+            how='outer'
+        ).fillna(0)         
 
         # Long entries
-        long_entries = (
-            (model_probs['y_pred_long'] > prediction_threshold) &
-            (model_probs['dollar_volume'] >= 2000000)
-        ).astype(int)
+        long_entries = long_model_probs == 1
+        long_entries = long_entries[long_entries.index.isin(universe.index)]    
 
         # Short entries
-        short_entries = (
-            (model_probs['y_pred_short'] > prediction_threshold) &
-            (model_probs['dollar_volume'] >= 2000000)
-        ).astype(int)
+        short_entries = short_model_probs == 1
+        short_entries = short_entries[short_entries.index.isin(universe.index)]
 
-        # Drop dollar_volume from ml_features as we don't need it anymore
-        self.ml_features = self.ml_features.drop(columns=['dollar_volume'])
-
-        # Pivot volatilities and betas for calculating position sizes
+        # Pivot volatilities for calculating position sizes
         volatilities = (
             self.ml_features
-            .reset_index()[['time_period_end', 'symbol_id', 'volatility_1_180']]
-            .pivot_table(index='time_period_end', columns='symbol_id', values='volatility_1_180', dropna=False)
+            .reset_index()[['time_period_end', 'symbol_id', 'std_spot_returns_1_30']]
+            .pivot_table(index='time_period_end', columns='symbol_id', values='std_spot_returns_1_30', dropna=False)
         )
         volatilities = volatilities.sort_index()
 
-        betas = (
-            self.ml_features
-            .reset_index()[['time_period_end', 'symbol_id', 'beta_1d_180d']]
-            .pivot_table(index='time_period_end', columns='symbol_id', values='beta_1d_180d', dropna=False)
-        )
-        betas = betas.sort_index()
-
         # Position sizes
-        size = self.calculate_size(volatilities, betas)
+        # size = self.calculate_size(volatilities)
 
         # Ensure that the signals are aligned with the universe
-        size = size[size.index.isin(universe.index)]
+        # size = size[size.index.isin(universe.index)]
 
         # Save these parameters temporarily
-        sl_stop = self.calculate_sl(universe=universe, backtest_params=self.backtest_params, window=7)
-        tp_stop = self.calculate_tp(universe=universe, backtest_params=self.backtest_params, window=7)
-
-        default_size = self.backtest_params['size']
         temp_sl_stop = self.backtest_params['sl_stop']
         temp_tp_stop = self.backtest_params['tp_stop']
         temp_size = self.backtest_params['size']
@@ -271,53 +320,73 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
         del self.backtest_params['size']
 
         # Intersection of columns between the universe and the signals
-        common_cols = universe.close.columns.intersection(long_entries.columns)
-        open = universe.open[common_cols]
-        high = universe.high[common_cols]
-        low = universe.low[common_cols]
-        close = universe.close[common_cols]
-        long_entries = long_entries[common_cols]
-        short_entries = short_entries[common_cols]
-        size = size[common_cols]
-        sl_stop = sl_stop[common_cols]
-        tp_stop = tp_stop[common_cols]
+        open_spot = universe.open
+        open_futures = universe.open_futures
+        open_futures.columns = [f'{col}_futures' for col in open_futures.columns]
+        open = pd.merge(
+            open_spot,
+            open_futures,
+            left_index=True,
+            right_index=True,
+            how='outer'
+        )
 
-        # Make indices all the same datatype
-        open.index = pd.to_datetime(open.index)
-        high.index = pd.to_datetime(high.index)
-        low.index = pd.to_datetime(low.index)
-        close.index = pd.to_datetime(close.index)
-        long_entries.index = long_entries.index.astype('datetime64[ns]')
-        short_entries.index = short_entries.index.astype('datetime64[ns]')
-        size.index = size.index.astype('datetime64[ns]')
-        sl_stop.index = pd.to_datetime(sl_stop.index)
-        tp_stop.index = pd.to_datetime(tp_stop.index)
+        high_spot = universe.high
+        high_futures = universe.high_futures
+        high_futures.columns = [f'{col}_futures' for col in high_futures.columns]
+        high = pd.merge(
+            high_spot,
+            high_futures,
+            left_index=True,
+            right_index=True,
+            how='outer'
+        )
+
+        low_spot = universe.low
+        low_futures = universe.low_futures
+        low_futures.columns = [f'{col}_futures' for col in low_futures.columns]
+        low = pd.merge(
+            low_spot,
+            low_futures,
+            left_index=True,
+            right_index=True,
+            how='outer'
+        )
+        
+        close = universe.close
+        close_futures = universe.close_futures
+        close_futures.columns = [f'{col}_futures' for col in close_futures.columns]
+        close = pd.merge(
+            close,
+            close_futures,
+            left_index=True,
+            right_index=True,
+            how='outer'
+        )
 
         # Simulate Portfolio
         portfolio = vbt.Portfolio.from_signals(
-            signal_func_nb=signal_func_nb,
-            signal_args=(
-                long_entries.values,
-                short_entries.values,
-                np.full(long_entries.shape, max_loss),
-                np.full(long_entries.shape, max_gain)
-            ),
-            post_segment_func_nb=post_segment_func_nb,
-            in_outputs=dict(
-                total_return=vbt.RepEval(
-                    "np.full(len(cs_group_lens), np.nan)"
-                ),
-                max_value=vbt.RepEval(
-                    "np.full(len(cs_group_lens), np.nan)"
-                )
-            ),
+            # signal_func_nb=signal_func_nb,
+            # signal_args=(
+            #     long_entries.values,
+            #     np.full(long_entries.shape, max_loss),
+            #     np.full(long_entries.shape, max_gain)
+            # ),
+            # post_segment_func_nb=post_segment_func_nb,
+            # in_outputs=dict(
+            #     total_return=vbt.RepEval(
+            #         "np.full(len(cs_group_lens), np.nan)"
+            #     ),
+            #     max_value=vbt.RepEval(
+            #         "np.full(len(cs_group_lens), np.nan)"
+            #     )
+            # ),
+            long_entries=long_entries,
             open=open,
             high=high,
             low=low,
             close=close,
-            size=size,
-            tp_stop=tp_stop,
-            sl_stop=sl_stop,
+            size=0.05,
             td_stop=pd.Timedelta(days=7),
             cash_sharing=True,
             accumulate=False,
@@ -331,45 +400,3 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
         self.backtest_params['size'] = temp_size
 
         return portfolio
-
-# For Debugging purposes
-
-# ML-based strategy on a portfolio
-# from backtest.strategies.portfolio.portfolio_ml_strategy import PortfolioMLStrategy
-#
-# # Backtesters for single token and portfolio strategies
-# from backtest.backtester import BackTester
-#
-# import time
-#
-#
-# if __name__ == '__main__':
-#     is_backtest = True
-#
-#     # Execute a walk-forward optimization across input strategies
-#     # and log the results to DuckDB/Redshift
-#     if is_backtest:
-#
-#         # Initialize a BackTester instance w/ the intended strategies to backtest and
-#         # a performance metric to optimize on
-#         b = BackTester(
-#             strategies = [
-#                 PortfolioMLStrategy(optimization_metric = 'Sharpe Ratio'),
-#             ],
-#             resample_period = '1d',
-#             use_dollar_bars = False,
-#             start_date = '2018-12-01',
-#             end_date = '2024-12-31',
-#         )
-#
-#         backtest_start = time.time()
-#         b.execute()
-#         backtest_end = time.time()
-#         mins_elapsed = (backtest_end - backtest_start) / 60
-#
-#         print()
-#         print(f'Backtests completed in {mins_elapsed:.2f} minutes')
-#         print()
-#     else:
-#         pass
-#

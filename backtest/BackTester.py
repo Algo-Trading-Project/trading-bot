@@ -70,31 +70,24 @@ class BackTester:
         print()
 
         # Load the price data for the universe
-        # price_data = QUERY(
-        #     """
-        #     SELECT
-        #         time_period_end,
-        #         asset_id_base || '_' || asset_id_quote || '_' || exchange_id as symbol_id,
-        #         open,
-        #         close,
-        #         high,
-        #         low
-        #     FROM market_data.ml_dataset
-        #     WHERE
-        #       asset_id_base || '_' || asset_id_quote || '_' || exchange_id IN (
-        #         SELECT DISTINCT asset_id_base || '_' || asset_id_quote || '_' || exchange_id
-        #         FROM market_data.ml_features
-        #     )
-        #     """
-        # )
-        price_data = pd.read_csv('/Users/louisspencer/Desktop/Trading-Bot/data/ml_dataset_1d.csv.gz')
-        price_data[['asset_id_base', 'asset_id_quote', 'exchange_id']] = price_data[['asset_id_base', 'asset_id_quote', 'exchange_id']].astype(str)
-        price_data['symbol_id'] = price_data['asset_id_base'] + '_' + price_data['asset_id_quote'] + '_' + price_data['exchange_id']
+        price_data = QUERY(
+            """
+            SELECT
+                time_period_end,
+                asset_id_base || '_' || asset_id_quote || '_' || exchange_id as symbol_id,
+                open_spot as open,
+                open_futures as open_futures,
+                high_spot as high,
+                high_futures as high_futures,
+                low_spot as low,
+                low_futures as low_futures,
+                close_spot as close,
+                close_futures as close_futures
+            FROM market_data.ml_features
+            """
+        )
         price_data['time_period_end'] = pd.to_datetime(price_data['time_period_end'])
         price_data = price_data.set_index('time_period_end')
-
-        # Remove LUNA_USDT_BINANCE from the dataset
-        price_data = price_data[price_data['symbol_id'] != 'LUNA_USDT_BINANCE']
 
         # Pivot the data to get the asset universe close, high, and low prices
         self.universe = (
@@ -102,7 +95,7 @@ class BackTester:
             .pivot_table(
                 index = 'time_period_end',
                 columns = 'symbol_id',
-                values = ['open', 'high', 'low', 'close'],
+                values = ['open', 'high', 'low', 'close', 'open_futures', 'high_futures', 'low_futures', 'close_futures'],
                 dropna = False
             )
         )
@@ -115,7 +108,7 @@ class BackTester:
         self.end_date = pd.to_datetime(end_date)
 
         self.conn = duckdb.connect(
-            database = '/Users/louisspencer/Desktop/Trading-Bot-Data-Pipelines/data/database.db',
+            database = '~/LocalData/database.db',
             read_only = False
         )
 
@@ -190,34 +183,7 @@ class BackTester:
             DataFrame of queried OHLCV data, indexed by timestamp.
 
         """
-        # Query to fetch data for a token & exchange of interest
-        if use_dollar_bars:
-            query = f"""
-            SELECT *
-            FROM market_data.dollar_bars
-            WHERE 
-                asset_id_base = '{base}' AND
-                asset_id_quote = '{quote}' AND
-                exchange_id = '{exchange}' AND
-                time_period_end >= (
-                    SELECT MIN(DATE_TRUNC('minute', received_time))
-                    FROM market_data.order_book_snapshot_1m
-                    WHERE
-                        asset_id_base = '{base}' AND
-                        asset_id_quote = '{quote}' AND
-                        exchange_id = '{exchange}'
-                ) AND 
-                time_period_end <= (
-                    SELECT MAX(DATE_TRUNC('minute', received_time))
-                    FROM market_data.order_book_snapshot_1m
-                    WHERE
-                        asset_id_base = '{base}' AND
-                        asset_id_quote = '{quote}' AND
-                        exchange_id = '{exchange}'
-                )
-            ORDER BY time_period_end ASC
-            """
-        elif strat.indicator_factory_dict['class_name'] == 'MLStrategy' and not use_dollar_bars:
+        if strat.indicator_factory_dict['class_name'] == 'MLStrategy':
             query = f"""
             SELECT 
                 origin_time,
@@ -253,13 +219,6 @@ class BackTester:
                 exchange_id = '{}'
             ORDER BY origin_time ASC
             """.format(base, quote, exchange)
-
-        if self.use_dollar_bars:
-            df = self.conn.sql(query).df().set_index('time_period_end')
-            df['symbol_id'] = df['asset_id_base'] + '_' + df['asset_id_quote'] + '_' + df['exchange_id']
-            df['trades'] = 0
-            df = df.drop(columns = ['asset_id_base', 'asset_id_quote', 'exchange_id'])
-            return df
 
         # Execute the query on DuckDB and return result as a DataFrame
         df = self.conn.sql(query).df().set_index('origin_time').asfreq('1min')
@@ -461,8 +420,8 @@ class BackTester:
         quote: str = None,  
         exchange: str = None,
         strat = None,     
-        in_sample_size: int = 90,
-        out_of_sample_size: int = 90
+        in_sample_size: int = 30,
+        out_of_sample_size: int = 30
     ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
 
         """
@@ -571,7 +530,7 @@ class BackTester:
             print('Progress: {} / {} days...'.format(int(start / day_normalizer), int(len(backtest_data) / day_normalizer)))
             print()
 
-            if strat.indicator_factory_dict['class_name'] == 'MLStrategy':
+            if issubclass(type(strat), BasePortfolioStrategy):
                 is_start_i = start
                 # Get date associated with is_start_i
                 is_start_date = backtest_data.index[is_start_i]
@@ -579,7 +538,6 @@ class BackTester:
                 is_end_date = pd.Timestamp(month = is_start_date.month, year = is_start_date.year, day = calendar.monthrange(is_start_date.year, is_start_date.month)[1])
                 # Get integer index of is_end_date
                 is_end_i = backtest_data.index.get_loc(is_end_date)
-
                 oos_start_i = is_end_i + 1
                 # Get date associated with oos_start_i
                 oos_start_date = backtest_data.index[oos_start_i]
@@ -595,7 +553,7 @@ class BackTester:
                 oos_start_date = oos_start_date.strftime('%Y-%m-%d')
                 oos_end_date = oos_end_date.strftime('%Y-%m-%d')
 
-                start = oos_end_i
+                start = oos_start_i
             else:
                 is_start_i = start
                 is_start_date = backtest_data.index[is_start_i].strftime('%Y-%m-%d')
@@ -660,7 +618,6 @@ class BackTester:
                 'oos_port': None,
                 'optimal_params': optimal_params
             }
-
             performance_metrics.append(performance_metrics_dict)
 
             if issubclass(type(strat), BaseStrategy):
@@ -801,7 +758,7 @@ class BackTester:
                     quote = quote,
                     exchange = exchange,
                     strat = strat,
-                    in_sample_size = 30 * 3,
+                    in_sample_size = 30,
                     out_of_sample_size = 30
                 )
 
@@ -832,8 +789,8 @@ class BackTester:
             # Execute walk-forward optimization of the strategy on the universe
             oos_equity_curves, oos_trades, oos_price_data, performance_metrics = self.__execute_wfo(
                 strat = strat,
-                in_sample_size = 180,
-                out_of_sample_size = 90
+                in_sample_size = 30,
+                out_of_sample_size = 30
             )
 
             # If the walk-forward optimization failed, raise an error
@@ -870,13 +827,10 @@ class BackTester:
         """
         # Fetch all tokens to backtest
         tokens = QUERY(
-            f"""
-            SELECT DISTINCT 
-                asset_id_base, 
-                asset_id_quote, 
-                exchange_id 
-            FROM market_data.ohlcv_1m 
-            ORDER BY asset_id_base
+            """
+            SELECT DISTINCT asset_id_base, asset_id_quote, exchange_id
+            FROM market_data.ml_dataset
+            ORDER BY asset_id_base, asset_id_quote, exchange_id
             """
         )
         tokens['symbol_id'] = tokens['asset_id_base'] + '_' + tokens['asset_id_quote'] + '_' + tokens['exchange_id']

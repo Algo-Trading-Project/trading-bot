@@ -241,6 +241,71 @@ def calmar_ratio(equity):
         return np.nan
 
 @njit
+def alpha(equity, benchmark):
+    """
+    Calculates the alpha of an equity curve relative to a benchmark.
+
+    Parameters:
+    ----------
+    equity : numpy.ndarray
+        An array representing the equity curve.
+
+    benchmark : numpy.ndarray
+        An array representing the benchmark returns.
+
+    Returns:
+    -------
+    float
+        The alpha value.
+    """
+    # Calculate daily returns
+    equity_returns = custom_diff(equity) / equity[:-1]
+    benchmark_returns = benchmark
+
+    # Calculate covariance and variance
+    covariance = np.cov(equity_returns, benchmark_returns)[0, 1]
+    variance = np.var(benchmark_returns)
+
+    if variance != 0:
+        beta_value = covariance / variance
+        alpha_value = np.mean(equity_returns) - beta_value * np.mean(benchmark_returns)
+        return alpha_value
+    else:
+        return np.nan
+
+@njit
+def beta(equity, benchmark):
+    """
+    Calculates the beta of an equity curve relative to a benchmark.
+
+    Parameters:
+    ----------
+    equity : numpy.ndarray
+        An array representing the equity curve.
+
+    benchmark : numpy.ndarray
+        An array representing the benchmark returns.
+
+    Returns:
+    -------
+    float
+        The beta value.
+    """
+    # Calculate daily returns
+    equity_returns = custom_diff(equity) / equity[:-1]
+    benchmark_returns = benchmark
+
+    # Calculate covariance and variance
+    covariance = np.cov(equity_returns, benchmark_returns)[0, 1]
+    variance = np.var(benchmark_returns)
+
+    if variance != 0:
+        beta_value = covariance / variance
+        return beta_value
+    else:
+        return np.nan
+
+@njit
 def simulate_equity_curves_with_block_bootstrap(
         returns,
         initial_equity,
@@ -298,7 +363,6 @@ def simulate_equity_curves_with_block_bootstrap(
 
     return simulated_curves
 
-
 def run_block_bootstrap(equity_curve, num_simulations=100_000):
     """
     Runs a block bootstrap on an equity curve.
@@ -330,8 +394,7 @@ def run_block_bootstrap(equity_curve, num_simulations=100_000):
     initial_equity = equity_curve['equity'].iloc[0]
 
     # Generate simulated equity curves
-    simulated_curves_np = simulate_equity_curves_with_block_bootstrap(equity_curve['returns'].values, initial_equity,
-                                                                      num_simulations, 7)
+    simulated_curves_np = simulate_equity_curves_with_block_bootstrap(equity_curve['returns'].values, initial_equity, num_simulations, 30)
 
     # Convert the numpy array of simulated curves to a pandas DataFrame
     dates = equity_curve.index
@@ -340,7 +403,7 @@ def run_block_bootstrap(equity_curve, num_simulations=100_000):
     return simulated_curves_df
 
 
-def calculate_block_bootstrap_performance_metrics(monte_carlo_equity_curves):
+def calculate_block_bootstrap_performance_metrics(monte_carlo_equity_curves, benchmark):
     """
     Calculates performance metrics for each block bootstrapped equity curve.
 
@@ -363,7 +426,7 @@ def calculate_block_bootstrap_performance_metrics(monte_carlo_equity_curves):
     metrics_dict = {'1_day_var': [], '1_week_var': [], '1_month_var': [],
                     '1_day_cvar': [], '1_week_cvar': [], '1_month_cvar': [],
                     'sharpe_ratio': [], 'sortino_ratio': [], 'calmar_ratio': [],
-                    'max_dd': [], 'avg_dd': []}
+                    'max_dd': [], 'avg_dd': [], 'alpha': [], 'beta': []}
 
     # Iterate over each simulated equity curve
     i = 1
@@ -384,12 +447,17 @@ def calculate_block_bootstrap_performance_metrics(monte_carlo_equity_curves):
         calmar = calmar_ratio(equity_curve)
         max_dd = max_drawdown(equity_curve)
         avg_dd = avg_drawdown(equity_curve)
+        # Calculate alpha and beta using the benchmark
+        alpha_value = alpha(equity_curve, benchmark)
+        beta_value = beta(equity_curve, benchmark)
 
         metrics_dict['sharpe_ratio'].append(sharpe)
         metrics_dict['sortino_ratio'].append(sortino)
         metrics_dict['calmar_ratio'].append(calmar)
         metrics_dict['max_dd'].append(max_dd)
         metrics_dict['avg_dd'].append(avg_dd)
+        metrics_dict['alpha'].append(alpha_value)
+        metrics_dict['beta'].append(beta_value)
 
         # Calculate VaR and CVaR for each holding period
         for holding_period in holding_periods:

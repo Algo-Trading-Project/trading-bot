@@ -17,12 +17,12 @@ if __name__ == '__main__':
         # a performance metric to optimize on
         b = BackTester(
             strategies = [
-                CrossSectionalAlphaRankStrategy(optimization_metric = 'Sortino Ratio'),
+                PortfolioMLStrategy(optimization_metric = 'Sortino Ratio'),
             ],
             resample_period = '1d',
             use_dollar_bars = False,
-            start_date = '2018-01-01',
-            end_date = '2024-12-31'
+            start_date = '2018-11-01',
+            end_date = '2025-05-31'
         )
 
         backtest_start = time.time()

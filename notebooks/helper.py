@@ -1,5 +1,5 @@
 import json
-import vectorbt as vbt
+import vectorbtpro as vbt
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -31,52 +31,22 @@ def plot_in_sample_vs_out_of_sample_sharpe_ratios(all_metrics, strat):
 
     plt.tight_layout();
 
-def plot_strategy_equity_curve(btc, eth, strategy_equity_curve, trades_data, strat, symbol_id):
-    # Calculate buy and hold equity curve for BTC as a benchmark
-    btc['equity'] = 10_000 * (1 + btc['close'].pct_change().fillna(0)).cumprod()
-    btc = btc.set_index('time_period_end')
-    btc = btc.loc[strategy_equity_curve['date'].min():strategy_equity_curve['date'].max()]
-
-    # Calculate buy and hold equity curve for ETH as a benchmark
-    eth['equity'] = 10_000 * (1 + eth['close'].pct_change().fillna(0)).cumprod()
-    eth = eth.set_index('time_period_end')
-    eth = eth.loc[strategy_equity_curve['date'].min():strategy_equity_curve['date'].max()]
-
-    # Calculate 50/50 portfolio equity curve of BTC and ETH
-    w1 = 0.5
-    w2 = 0.5
-    port_returns = (w1 * btc['close'].pct_change().fillna(0)) + (w2 * eth['close'].pct_change().fillna(0))
-    port_returns = (1 + port_returns).cumprod() * 10_000
-    port_returns = port_returns.loc[strategy_equity_curve['date'].min():strategy_equity_curve['date'].max()]
-
-    # Plot buy and hold equity curve for ETH, BTC, and portfolio
-    # eth['equity'].plot(figsize=(10, 5), label='ETH Buy & Hold', color='green')
-    # btc['equity'].plot(figsize=(10, 5), label='BTC Buy & Hold', color='orange')
-    port_returns.plot(figsize=(10, 5), label='50/50 Portfolio', color='blue')
-
-    plt.title(f'Equity Curve for {strat} on {symbol_id}')
+def plot_strategy_equity_curve(benchmark, strategy_equity_curve, trades_data, strat, symbol_id):
+    try:
+        benchmark = benchmark.loc[strategy_equity_curve['date'].min():strategy_equity_curve['date'].max()]
+    except:
+        benchmark = benchmark.loc[strategy_equity_curve.index.min():strategy_equity_curve.index.max()]
+        
+    # Plot strategy equity curve and benchmark
+    # Plot year-month as xticks
+    plt.figure(figsize=(13, 6))
+    plt.title(f'Equity Curve for {strat} ({symbol_id})')
     plt.xlabel('Date')
-    plt.ylabel('Equity')
-
-    # Plot strategy equity curve
-    seq = strategy_equity_curve.copy()
-    seq = seq.set_index('date')
-
-    # for i in range(len(trades_data)):
-    #     entry_date = trades_data.iloc[i]['entry_date']
-    #     exit_date = trades_data.iloc[i]['exit_date']
-    #
-    #     try:
-    #         entry_equity = seq.loc[entry_date, 'equity']
-    #         exit_equity = seq.loc[exit_date, 'equity']
-    #     except:
-    #         continue
-    #
-    #     plt.scatter(entry_date, entry_equity, color = 'green', marker = '^')
-    #     plt.scatter(exit_date, exit_equity, color = 'red', marker = 'v')
-
-    plt.plot(seq.index, seq['equity'], label=strat, color='purple')
-
+    plt.ylabel('Equity Value (USD)')
+    plt.plot(strategy_equity_curve['date'], strategy_equity_curve['equity'], label='Strategy Equity Curve', color='blue')
+    plt.plot(benchmark.index, benchmark['equity'], label='Benchmark', color='orange')
+    plt.xticks(pd.date_range(start=strategy_equity_curve['date'].min(), end=strategy_equity_curve['date'].max(), freq='M'), rotation=45)
+    
     plt.grid()
     plt.tight_layout()
     plt.legend()
@@ -120,7 +90,7 @@ def plot_monte_carlo_equity_curves(monte_carlo_equity_curves):
     plt.grid()
     plt.ylabel('Simulated Equity Value (USD)');
 
-def plot_bootstrapped_sharpe_sortino_calmar_ratios(monte_carlo_risk_metrics):
+def plot_bootstrapped_sharpe_sortino_calmar_ratios(monte_carlo_risk_metrics, N):
     fig, axs = plt.subplots(nrows=1, ncols=3, figsize=(20, 5))
 
     # Probability of Sharpe Ratio being greater than 1 and 0
@@ -159,26 +129,26 @@ def plot_bootstrapped_sharpe_sortino_calmar_ratios(monte_carlo_risk_metrics):
     print(f'99% Confidence Interval for Calmar Ratio: {calmar_ratio_ci_99}')
 
     # Histogram of Monte Carlo Sharpe Ratios
-    axs[0].set_title('Distribution of 1,000,000 Monte Carlo Sharpe Ratios')
+    axs[0].set_title(f'Distribution of {N:,} Bootstrapped Sharpe Ratios')
     axs[0].set_xlabel('Sharpe Ratio')
     axs[0].grid()
     sns.histplot(monte_carlo_risk_metrics['sharpe_ratio'], ax=axs[0], stat='probability', color='green')
 
     # Histogram of Monte Carlo Sortino Ratios
-    axs[1].set_title('Distribution of 1,000,000 Monte Carlo Sortino Ratios')
+    axs[1].set_title(f'Distribution of {N:,} Bootstrapped Sortino Ratios')
     axs[1].set_xlabel('Sortino Ratio')
     axs[1].grid()
     sns.histplot(monte_carlo_risk_metrics['sortino_ratio'], ax=axs[1], stat='probability', color='blue');
 
     # Histogram of Monte Carlo Calmar Ratios
-    axs[2].set_title('Distribution of 1,000,000 Monte Carlo Calmar Ratios')
+    axs[2].set_title(f'Distribution of {N:,} Bootstrapped Calmar Ratios')
     axs[2].set_xlabel('Calmar Ratio')
     axs[2].grid()
     sns.histplot(monte_carlo_risk_metrics['calmar_ratio'], ax=axs[2], stat='probability', color='red')
 
     plt.tight_layout();
 
-def plot_bootstrapped_drawdowns(monte_carlo_risk_metrics):
+def plot_bootstrapped_drawdowns(monte_carlo_risk_metrics, N):
     fig, axs = plt.subplots(nrows=1, ncols=2, figsize=(20, 5))
 
     # Risk of Ruin
@@ -201,7 +171,7 @@ def plot_bootstrapped_drawdowns(monte_carlo_risk_metrics):
     print(f'99% Confidence Interval for Max Drawdown: {max_dd_ci_99}')
 
     plt.subplot(121)
-    axs[0].set_title('Distribution of 1,000,000 Monte Carlo Avg. Drawdowns (%)')
+    axs[0].set_title(f'Distribution of {N:,} Bootstrapped Avg. Drawdowns (%)')
     axs[0].set_xlabel('Avg. Drawdown (%)')
     axs[0].grid()
 
@@ -210,7 +180,7 @@ def plot_bootstrapped_drawdowns(monte_carlo_risk_metrics):
     plt.grid()
 
     plt.subplot(121)
-    axs[1].set_title('Distribution of 1,000,000 Monte Carlo Max Drawdowns (%)')
+    axs[1].set_title(f'Distribution of {N:,} Bootstrapped Max Drawdowns (%)')
     axs[1].set_xlabel('Max Drawdown (%)')
     axs[1].grid()
 
@@ -255,4 +225,46 @@ def plot_boot_strapped_var_and_cvar(monte_carlo_risk_metrics):
 
     # Histogram of Monte Carlo 1-Year CVaR Pcts.
     sns.histplot(cvar_1_month, ax=axs[1], stat='probability')
+    plt.grid();
+
+def plot_bootstrapped_alpha_beta(monte_carlo_risk_metrics, N):
+    fig, axs = plt.subplots(nrows=1, ncols=2, figsize=(20, 5))
+
+    # Alpha and Beta
+    alpha = monte_carlo_risk_metrics['alpha']
+    beta = monte_carlo_risk_metrics['beta']
+
+    # Median Alpha and Beta
+    median_alpha = np.median(alpha)
+    median_beta = np.median(beta)
+
+    # 99% Confidence Interval for Alpha and Beta
+    alpha_ci_99 = np.percentile(alpha, [0.5, 99.5])
+    beta_ci_99 = np.percentile(beta, [0.5, 99.5])
+
+    print(f'Probability of Alpha > 0: {(alpha > 0).mean():.2f}')
+    print(f'Probability of Beta ∈ [-0.1, 0.1]: {((beta >= -0.1) & (beta <= 0.1)).mean():.2f}')
+    print()
+    print(f'Median Alpha: {median_alpha:.4f}')
+    print(f'Median Beta: {median_beta:.4f}')
+    print()
+    print(f'99% Confidence Interval for Alpha: {alpha_ci_99}')
+    print(f'99% Confidence Interval for Beta: {beta_ci_99}')
+
+    plt.subplot(121)
+    axs[0].set_title(f'Distribution of {N:,} Bootstrapped Alphas')
+    axs[0].set_xlabel('Alpha')
+    axs[0].grid()
+
+    # Histogram of Alphas
+    sns.histplot(alpha, ax=axs[0], stat='probability', color='purple')
+    plt.grid()
+
+    plt.subplot(121)
+    axs[1].set_title('Distribution of Bootstrapped Betas')
+    axs[1].set_xlabel('Beta')
+    axs[1].grid()
+
+    # Histogram of Betas
+    sns.histplot(beta, ax=axs[1], stat='probability', color='orange')
     plt.grid();
