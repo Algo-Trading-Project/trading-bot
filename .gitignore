@@ -19,5 +19,3 @@ trading_bot.egg-info/
 /Users/louisspencer/Desktop/Trading-Bot/analysis/ml/custom_transformers.py
 .venv/*
 .venv
-notebooks/*
-notebooks/

@@ -152,7 +152,7 @@ def plot_bootstrapped_drawdowns(monte_carlo_risk_metrics, N):
     fig, axs = plt.subplots(nrows=1, ncols=2, figsize=(20, 5))
 
     # Risk of Ruin
-    risk_of_ruin = (np.array(monte_carlo_risk_metrics['max_dd']) <= -25).mean()
+    risk_of_ruin = (np.array(monte_carlo_risk_metrics['max_dd']) <= -50).mean()
 
     # Mean Avg. Drawdown and Max Drawdown
     mean_avg_dd = np.mean(monte_carlo_risk_metrics['avg_dd'])
@@ -188,29 +188,29 @@ def plot_bootstrapped_drawdowns(monte_carlo_risk_metrics, N):
     sns.histplot(monte_carlo_risk_metrics['max_dd'], ax=axs[1], stat='probability')
     plt.grid();
 
-def plot_boot_strapped_var_and_cvar(monte_carlo_risk_metrics):
+def plot_boot_strapped_var_and_cvar(monte_carlo_risk_metrics, N):
     fig, axs = plt.subplots(nrows=1, ncols=2, figsize=(20, 5))
 
     # Value at Risk (VaR) and Conditional Value at Risk (CVaR)
     var_1_month = monte_carlo_risk_metrics['1_month_var'] * 100
     cvar_1_month = monte_carlo_risk_metrics['1_month_cvar'] * 100
 
-    # Median VaR and CVaR
-    median_var = np.median(var_1_month)
-    median_cvar = np.median(cvar_1_month)
+    # Mean VaR and CVaR
+    mean_var = np.mean(var_1_month)
+    mean_cvar = np.mean(cvar_1_month)
 
-    # 95% Confidence Interval for VaR and CVaR
-    var_ci = np.percentile(var_1_month, [2.5, 97.5])
-    cvar_ci = np.percentile(cvar_1_month, [2.5, 97.5])
+    # 99% Confidence Interval for VaR and CVaR
+    var_ci = np.percentile(var_1_month, [0.5, 99.5])
+    cvar_ci = np.percentile(cvar_1_month, [0.5, 99.5])
 
-    print(f'Median 1-Year VaR: {median_var:.2f}%')
-    print(f'Median 1-Year CVaR: {median_cvar:.2f}%')
+    print(f'Mean 1-Year VaR: {mean_var:.2f}%')
+    print(f'Mean 1-Year CVaR: {mean_cvar:.2f}%')
     print()
-    print(f'95% Confidence Interval for 1-Year VaR: {var_ci}')
-    print(f'95% Confidence Interval for 1-Year CVaR: {cvar_ci}')
+    print(f'99% Confidence Interval for 1-Year VaR: {var_ci}')
+    print(f'99% Confidence Interval for 1-Year CVaR: {cvar_ci}')
 
     plt.subplot(121)
-    axs[0].set_title('Distribution of 100,000 Monte Carlo 1-Year VaR (%)')
+    axs[0].set_title(f'Distribution of {N:,} Bootstrapped 1-Year VaR (%)')
     axs[0].set_xlabel('1-Year VaR (%)')
     axs[0].grid()
 
@@ -219,7 +219,7 @@ def plot_boot_strapped_var_and_cvar(monte_carlo_risk_metrics):
     plt.grid()
 
     plt.subplot(121)
-    axs[1].set_title('Distribution of 100,000 Monte Carlo 1-Year CVaR (%)')
+    axs[1].set_title(f'Distribution of {N:,} Bootstrapped 1-Year CVaR (%)')
     axs[1].set_xlabel('1-Year CVaR (%)')
     axs[1].grid()
 
@@ -234,9 +234,9 @@ def plot_bootstrapped_alpha_beta(monte_carlo_risk_metrics, N):
     alpha = monte_carlo_risk_metrics['alpha']
     beta = monte_carlo_risk_metrics['beta']
 
-    # Median Alpha and Beta
-    median_alpha = np.median(alpha)
-    median_beta = np.median(beta)
+    # Mean Alpha and Beta
+    mean_alpha = np.mean(alpha)
+    mean_beta = np.mean(beta)
 
     # 99% Confidence Interval for Alpha and Beta
     alpha_ci_99 = np.percentile(alpha, [0.5, 99.5])
@@ -245,8 +245,8 @@ def plot_bootstrapped_alpha_beta(monte_carlo_risk_metrics, N):
     print(f'Probability of Alpha > 0: {(alpha > 0).mean():.2f}')
     print(f'Probability of Beta ∈ [-0.1, 0.1]: {((beta >= -0.1) & (beta <= 0.1)).mean():.2f}')
     print()
-    print(f'Median Alpha: {median_alpha:.4f}')
-    print(f'Median Beta: {median_beta:.4f}')
+    print(f'Mean Alpha: {mean_alpha:.4f}')
+    print(f'Mean Beta: {mean_beta:.4f}')
     print()
     print(f'99% Confidence Interval for Alpha: {alpha_ci_99}')
     print(f'99% Confidence Interval for Beta: {beta_ci_99}')

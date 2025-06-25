@@ -1,6 +1,6 @@
 import duckdb
 
-def QUERY(query, conn = None):
+def QUERY(query, conn = None, read_only = True):
     # Check if a connection is provided
     if conn:
         # Execute the query
@@ -13,7 +13,7 @@ def QUERY(query, conn = None):
         # Connect to DuckDB
         with duckdb.connect(
             database = '~/LocalData/database.db',
-            read_only = False
+            read_only = read_only,
         ) as conn:
             # Execute the query
             result = conn.sql(query)

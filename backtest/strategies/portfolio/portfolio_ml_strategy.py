@@ -1,5 +1,3 @@
-from quantstats.stats import expected_return
-
 from backtest.strategies.portfolio.base_strategy import BasePortfolioStrategy
 from utils.db_utils import QUERY
 from vectorbtpro import *
@@ -10,7 +8,6 @@ import pandas as pd
 import joblib
 import numpy as np
 import vectorbtpro as vbt
-
 
 @njit
 def post_segment_func_nb(c):
@@ -47,7 +44,7 @@ def signal_func_nb(c, long_entry_signals, max_loss, max_gain):
 class PortfolioMLStrategy(BasePortfolioStrategy):
     
     indicator_factory_dict = {
-        'class_name':'PortfolioMLStrategy (vt)',
+        'class_name':'PortfolioMLStrategy',
     }
 
     optimize_dict = {
@@ -105,7 +102,7 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
             'asset_id_base','asset_id_base_x','asset_id_base_y', 
             'asset_id_quote','asset_id_quote_x', 'asset_id_quote_y', 
             'exchange_id','exchange_id_x','exchange_id_y', 
-            'day_of_week', 'month', 'symbol_id'
+            'day_of_week', 'month'
         ]
 
         other_cols = [
@@ -165,8 +162,8 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
     def __get_model(self, min_date: pd.Timestamp):
         year = min_date.year
         month = min_date.month
-        long_model_path = f'/Users/louisspencer/Desktop/Trading-Bot/data/pretrained_models/classification/xgb_model_{year}_{month}.pkl'
-        short_model_path = f'/Users/louisspencer/Desktop/Trading-Bot/data/pretrained_models/classification/xgb_short_model_{year}_{month}_short.pkl'
+        long_model_path = f'/Users/louisspencer/Desktop/Trading-Bot/data/pretrained_models/classification/xgb_long_model_{year}_{month}.pkl'
+        short_model_path = f'/Users/louisspencer/Desktop/Trading-Bot/data/pretrained_models/classification/xgb_short_model_{year}_{month}.pkl'
         long_model = joblib.load(long_model_path)
         try:
             short_model = joblib.load(short_model_path)
@@ -221,9 +218,11 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
             (self.futures_ml_features.index <= max_date)
         )
         spot_data = self.ml_features.loc[feature_filter]
+        # If there are no futures features for this month, create an empty DataFrame with the same index as spot_data
+        # and columns suffixed with '_futures'
         futures_data = self.futures_ml_features.loc[feature_filter_futures]
         if futures_data.empty:
-            futures_data = pd.DataFrame(index=spot_data.index, columns=[f'{col}_futures' for col in spot_data.columns])
+            futures_data = pd.DataFrame(index=spot_data.index, columns=[col for col in spot_data.columns])
 
         print(f"Running strategy from {min_date} to {max_date}...")
         print()
@@ -239,23 +238,23 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
         else:
             y_pred_short = (short_model.predict_proba(X_futures)[:, 1] >= prediction_threshold).astype(int)
         
-        self.ml_features.loc[feature_filter, 'y_pred_long'] = y_pred_long
-        self.futures_ml_features.loc[feature_filter_futures, 'y_pred_short'] = y_pred_short
+        spot_data['y_pred_long'] = y_pred_long
+        futures_data['y_pred_short'] = y_pred_short
 
         # Pivot model's predictions for ranking the models' signals by date
         long_model_probs = (
-            self.ml_features
-            .reset_index()[['time_period_end', 'symbol_id', 'y_pred_long']]
-            .pivot_table(index='time_period_end', columns='symbol_id', values=['y_pred_long'], dropna=False)
+            spot_data
+            .reset_index()[['time_period_end', 'symbol_id', 'y_pred_long', 'spot_returns_30']]
+            .pivot_table(index='time_period_end', columns='symbol_id', values=['y_pred_long', 'spot_returns_30'], dropna=False)
         )
         long_model_probs = long_model_probs.fillna(0)
         long_model_probs = long_model_probs[long_model_probs.index.isin(universe.index)]
 
         # Pivot futures model's predictions for ranking the models' signals by date
         short_model_probs = (
-            self.futures_ml_features
-            .reset_index()[['time_period_end', 'symbol_id', 'y_pred_short']]
-            .pivot_table(index='time_period_end', columns='symbol_id', values=['y_pred_short'], dropna=False)
+            futures_data
+            .reset_index()[['time_period_end', 'symbol_id', 'y_pred_short', 'futures_returns_30']]
+            .pivot_table(index='time_period_end', columns='symbol_id', values=['y_pred_short', 'futures_returns_30'], dropna=False)
         )
         short_model_probs = short_model_probs.fillna(0)
         short_model_probs = short_model_probs[short_model_probs.index.isin(universe.index)]
@@ -288,11 +287,17 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
         ).fillna(0)         
 
         # Long entries
-        long_entries = long_model_probs == 1
+        long_entries = (
+            (long_model_probs['y_pred_long'] == 1) &
+            (long_model_probs['spot_returns_30'] > 0) # Regime for going long is when the 30-day spot returns are positive
+        )
         long_entries = long_entries[long_entries.index.isin(universe.index)]    
 
         # Short entries
-        short_entries = short_model_probs == 1
+        short_entries = (
+            (short_model_probs['y_pred_short'] == 1) &
+            (short_model_probs['futures_returns_30'] < 0) # Regime for shorting is when the 30-day futures returns are negative
+            )
         short_entries = short_entries[short_entries.index.isin(universe.index)]
 
         # Pivot volatilities for calculating position sizes
