@@ -1,6 +1,6 @@
 import duckdb
 
-def QUERY(query, conn = None, read_only = True):
+def QUERY(query, conn = None, read_only = False):
     # Check if a connection is provided
     if conn:
         # Execute the query

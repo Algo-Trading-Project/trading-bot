@@ -7,32 +7,24 @@ from backtest.backtester import BackTester
 import time
 
 if __name__ == '__main__':
-    is_backtest = True
-
     # Execute a walk-forward optimization across input strategies
     # and log the results to DuckDB/Redshift
-    if is_backtest:
+    # Initialize a BackTester instance w/ the intended strategies to backtest and
+    # a performance metric to optimize on
+    b = BackTester(
+        strategies = [
+            PortfolioMLStrategy(optimization_metric = 'Sortino Ratio'),
+        ],
+        resample_period = '1d',
+        start_date = '2018-12-01',
+        end_date = '2025-05-31'
+    )
 
-        # Initialize a BackTester instance w/ the intended strategies to backtest and
-        # a performance metric to optimize on
-        b = BackTester(
-            strategies = [
-                PortfolioMLStrategy(optimization_metric = 'Sortino Ratio'),
-            ],
-            resample_period = '1d',
-            use_dollar_bars = False,
-            start_date = '2018-11-01',
-            end_date = '2025-05-31'
-        )
+    backtest_start = time.time()
+    b.execute()
+    backtest_end = time.time()
+    mins_elapsed = (backtest_end - backtest_start) / 60
 
-        backtest_start = time.time()
-        b.execute()
-        backtest_end = time.time()
-        mins_elapsed = (backtest_end - backtest_start) / 60
-
-        print()
-        print(f'Backtests completed in {mins_elapsed:.2f} minutes')
-        print()
-    else:
-        pass
-
+    print()
+    print(f'Backtests completed in {mins_elapsed:.2f} minutes')
+    print()

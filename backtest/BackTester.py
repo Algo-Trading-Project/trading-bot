@@ -39,7 +39,6 @@ class BackTester:
         self,  
         strategies: list,                  
         resample_period: str = '1min',
-        use_dollar_bars: bool = False,
         start_date: str = '2021-04-01',
         end_date: str = '2022-12-31'          
     ):
@@ -103,7 +102,7 @@ class BackTester:
 
         self.strategies = strategies
         self.resample_period = resample_period
-        self.use_dollar_bars = use_dollar_bars
+        self.use_dollar_bars = None
         self.start_date = pd.to_datetime(start_date)
         self.end_date = pd.to_datetime(end_date)
 

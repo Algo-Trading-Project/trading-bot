@@ -133,7 +133,7 @@ def custom_rolling_max(arr):
 @njit(nopython=True)
 def value_at_risk(equity_curve, holding_period, confidence_level):
     # Calculate daily returns
-    returns = custom_diff(equity_curve) / equity_curve[:-1]
+    returns = custom_diff(equity_curve)
 
     # Calculate the VaR percentage using np.percentile
     var_percent = -np.percentile(returns, (1 - confidence_level) * 100)
@@ -147,8 +147,8 @@ def value_at_risk(equity_curve, holding_period, confidence_level):
 @njit(nopython=True)
 def conditional_value_at_risk(equity_curve, holding_period, confidence_level):
     # Calculate daily returns
-    returns = custom_diff(equity_curve) / equity_curve[:-1]
-
+    returns = custom_diff(equity_curve)
+    
     # Calculate the VaR percentage using np.percentile
     var_percent = -np.percentile(returns, (1 - confidence_level) * 100)
 
@@ -221,7 +221,7 @@ def sortino_ratio(equity):
 
 @njit
 def calmar_ratio(equity):
-    num_years = len(equity) / (365)
+    num_years = len(equity) / 365
     returns = custom_diff(equity)
     cum_ret_final = np.prod(1 + returns)
 
@@ -259,11 +259,11 @@ def alpha(equity, benchmark):
         The alpha value.
     """
     # Calculate daily returns
-    equity_returns = custom_diff(equity) / equity[:-1]
+    equity_returns = custom_diff(equity)
     benchmark_returns = benchmark
 
     # Calculate covariance and variance
-    covariance = np.cov(equity_returns, benchmark_returns)[0, 1]
+    covariance = np.cov(equity_returns, benchmark_returns[1:])[0, 1]
     variance = np.var(benchmark_returns)
 
     if variance != 0:
@@ -292,11 +292,11 @@ def beta(equity, benchmark):
         The beta value.
     """
     # Calculate daily returns
-    equity_returns = custom_diff(equity) / equity[:-1]
+    equity_returns = custom_diff(equity)
     benchmark_returns = benchmark
 
     # Calculate covariance and variance
-    covariance = np.cov(equity_returns, benchmark_returns)[0, 1]
+    covariance = np.cov(equity_returns, benchmark[1:])[0, 1]
     variance = np.var(benchmark_returns)
 
     if variance != 0:
@@ -431,26 +431,17 @@ def calculate_block_bootstrap_performance_metrics(monte_carlo_equity_curves, ben
     # Iterate over each simulated equity curve
     i = 1
     for curve in monte_carlo_equity_curves.columns:
-
-        # print('\r {} / {}'.format(i, len(monte_carlo_equity_curves.columns)), end = '', flush = True)
-
         i += 1
 
         equity_curve = monte_carlo_equity_curves[curve].values
-
         sharpe = sharpe_ratio(equity_curve)
-        try:
-            sortino = sortino_ratio(equity_curve)
-        except:
-            sortino = float('-inf')
-
+        sortino = sortino_ratio(equity_curve)
         calmar = calmar_ratio(equity_curve)
         max_dd = max_drawdown(equity_curve)
         avg_dd = avg_drawdown(equity_curve)
-        # Calculate alpha and beta using the benchmark
+        
         alpha_value = alpha(equity_curve, benchmark)
         beta_value = beta(equity_curve, benchmark)
-
         metrics_dict['sharpe_ratio'].append(sharpe)
         metrics_dict['sortino_ratio'].append(sortino)
         metrics_dict['calmar_ratio'].append(calmar)
@@ -461,8 +452,14 @@ def calculate_block_bootstrap_performance_metrics(monte_carlo_equity_curves, ben
 
         # Calculate VaR and CVaR for each holding period
         for holding_period in holding_periods:
-            var = value_at_risk(equity_curve, holding_period, confidence_level)
-            cvar = conditional_value_at_risk(equity_curve, holding_period, confidence_level)
+            try:
+                var = value_at_risk(equity_curve, holding_period, confidence_level)
+            except:
+                var = float('-inf')
+            try:
+                cvar = conditional_value_at_risk(equity_curve, holding_period, confidence_level)
+            except:
+                cvar = float('-inf')
 
             # Assign to appropriate keys in the dictionary
             if holding_period == 1:  # 1 day
