@@ -69,12 +69,6 @@ def construct_dataset_for_ml(resample_period):
                 ORDER BY time_period_end
                 """
             ).df().set_index('time_period_end').asfreq('1min', method = 'ffill')
-
-            # Skip over tokens with more than 25% missing data
-            pct_missing_price_close_spot = data_spot.loc[:,'close'].isna().mean() * 100
-
-            # print(f"Percentage of missing data for {asset['asset_id_base']}/{asset['asset_id_quote']} on {asset['exchange_id']}: {pct_missing_price_close_spot:.2f}% (spot)")
-            print()
                         
             # Ffill missing values
             numeric_cols_spot = [col for col in data_spot.columns if col not in ('asset_id_base', 'asset_id_quote', 'exchange_id')]
@@ -126,12 +120,6 @@ def construct_dataset_for_ml(resample_period):
                 ORDER BY time_period_end
                 """
             ).df().set_index('time_period_end').asfreq('1min', method = 'ffill')
-
-            # Skip over tokens with more than 25% missing data
-            pct_missing_price_close_futures = data_futures.loc[:,'close'].isna().mean() * 100
-
-            print(f"Percentage of missing data for {asset['asset_id_base']}/{asset['asset_id_quote']} on {asset['exchange_id']}: {pct_missing_price_close_futures:.2f}% (futures)")
-            print()
                         
             # Ffill missing values
             numeric_cols_futures = [col for col in data_futures.columns if col not in ('asset_id_base', 'asset_id_quote', 'exchange_id')]

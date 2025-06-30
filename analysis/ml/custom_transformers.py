@@ -369,8 +369,25 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
         X['dollar_volume_futures'] = X['close_futures'] * X['volume_futures']
         for window_size in self.window_sizes:
             # Spot
+            # Clipping of returns
+            if window_size == 1:
+                clip_upper_bound = 0.57
+            elif window_size == 7:
+                clip_upper_bound = 3.55
+            elif window_size == 30:
+                clip_upper_bound = 9.44
+            elif window_size == 180:
+                clip_upper_bound = 59
             X[f'spot_returns_{window_size}'] = X['close_spot'].pct_change(window_size).clip(-1, clip_upper_bound)            
             # Futures 
+            if window_size == 1:
+                clip_upper_bound = 0.47
+            elif window_size == 7:
+                clip_upper_bound = 2.05
+            elif window_size == 30:
+                clip_upper_bound = 7.09
+            elif window_size == 180:
+                clip_upper_bound = 22.7
             X[f'futures_returns_{window_size}'] = X['close_futures'].pct_change(window_size).clip(-1, clip_upper_bound)
             
             # Forward returns for future prediction evaluation
