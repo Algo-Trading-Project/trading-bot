@@ -68,8 +68,8 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
 
     backtest_params = {
         'init_cash': 10_000,
-        'fees': 0.00, # 0.1% maker/taker fees (Binance) + 0.25% spread each way
-        'slippage': 0.00, # 0.25% slippage each way
+        'fees': 0.005, # 1% round-trip fees
+        'slippage': 0.00,
         'sl_stop': 'std',
         'tp_stop': 'std',
         'size': 0.05,
@@ -196,16 +196,6 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
         size = size.clip(lower = 0, upper = 0.05)
         return size
 
-    def select_cross_sectional_positions(self, long_entries, short_entries, N=20):
-        """
-        Select the top N long and short entries based on their predicted probabilities.
-        :param long_entries: DataFrame of long entries with predicted probabilities for each token (columns) and date (index)
-        :param short_entries: DataFrame of short entries with predicted probabilities for each token (columns) and date (index)
-        :param N: Number of positions to select
-        :return: DataFrame of selected long and short entries, with 1s for selected positions and 0s for unselected positions
-        """
-        pass
-
     def run_strategy_with_parameter_combination(
             self,
             universe: pd.DataFrame,
@@ -243,7 +233,7 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
         print(f"Running strategy from {min_date} to {max_date}...")
         print()
 
-        # Combine encoded features with the rest of the features
+        # Drop columns that are not needed for the model
         X = spot_data.drop(columns=self.cols_to_drop, errors='ignore', axis=1)
         X_futures = futures_data.drop(columns=self.cols_to_drop, errors='ignore', axis=1)
 
@@ -374,8 +364,8 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
         # Pivot volatilities for calculating position sizes
         volatilities = (
             self.ml_features
-            .reset_index()[['time_period_end', 'symbol_id', 'std_spot_returns_1_30']]
-            .pivot_table(index='time_period_end', columns='symbol_id', values='std_spot_returns_1_30', dropna=False)
+            .reset_index()[['time_period_end', 'symbol_id', 'std_spot_returns_1_180']]
+            .pivot_table(index='time_period_end', columns='symbol_id', values='std_spot_returns_1_180', dropna=False)
         )
         volatilities = volatilities.sort_index()
 

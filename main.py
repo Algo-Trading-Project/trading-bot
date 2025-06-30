@@ -1,6 +1,5 @@
 from backtest.strategies.portfolio.portfolio_ml_strategy import PortfolioMLStrategy
 from backtest.strategies.portfolio.ma_crossover_strategy import MACrossoverStrategy
-from backtest.strategies.portfolio.cross_sectional_alpha_rank_strategy import CrossSectionalAlphaRankStrategy
 
 # Backtesters for single token and portfolio strategies
 from backtest.backtester import BackTester
