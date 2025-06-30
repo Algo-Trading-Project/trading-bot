@@ -1,6 +1,5 @@
 from sklearn.base import BaseEstimator, TransformerMixin
 from utils.db_utils import QUERY
-from analysis.ml.labeling import calculate_triple_barrier_labels
 
 import pandas as pd
 import numpy as np
