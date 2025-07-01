@@ -72,7 +72,7 @@ class BackTester:
         price_data = QUERY(
             """
             SELECT
-                time_period_end,
+                time_period_open,
                 asset_id_base || '_' || asset_id_quote || '_' || exchange_id as symbol_id,
                 open_spot as open,
                 open_futures as open_futures,
@@ -85,14 +85,13 @@ class BackTester:
             FROM market_data.ml_features
             """
         )
-        price_data['time_period_end'] = pd.to_datetime(price_data['time_period_end'])
-        price_data = price_data.set_index('time_period_end')
+        price_data['time_period_open'] = pd.to_datetime(price_data['time_period_open']) - pd.Timedelta(days = 1) 
 
         # Pivot the data to get the asset universe close, high, and low prices
         self.universe = (
             price_data
             .pivot_table(
-                index = 'time_period_end',
+                index = 'time_period_open',
                 columns = 'symbol_id',
                 values = ['open', 'high', 'low', 'close', 'open_futures', 'high_futures', 'low_futures', 'close_futures'],
                 dropna = False

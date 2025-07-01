@@ -90,7 +90,7 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
         ml_features['month'] = ml_features['month'].astype('category')
         ml_features.replace([np.inf, -np.inf], np.nan, inplace=True)
         ml_features = ml_features.dropna(subset=['forward_returns_7'])
-        ml_features.set_index('time_period_end', inplace=True)
+        ml_features.set_index('time_period_open', inplace=True)
         ml_features.sort_index(inplace=True)
 
         # Columns we need to drop before training the model
@@ -106,7 +106,7 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
         other_cols = [
             'open_spot', 'high_spot', 'low_spot', 'close_spot',
             'open_futures', 'high_futures', 'low_futures', 'close_futures',
-            'time_period_end', 'y_pred'
+            'time_period_open', 'y_pred'
         ]
 
         # num_cols = [col for col in ml_features if 'num' in col and 'rz' not in col and 'zscore' not in col and 'percentile' not in col]
@@ -253,8 +253,8 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
         # Pivot futures model's predictions for ranking the models' signals by date
         short_model_probs = (
             futures_data
-            .reset_index()[['time_period_end', 'symbol_id', 'expected_value_short', 'futures_returns_30', 'y_pred_proba_short']]
-            .pivot_table(index='time_period_end', columns='symbol_id', values=['expected_value_short', 'futures_returns_30', 'y_pred_proba_short'], dropna=False)
+            .reset_index()[['time_period_open', 'symbol_id', 'expected_value_short', 'futures_returns_30', 'y_pred_proba_short']]
+            .pivot_table(index='time_period_open', columns='symbol_id', values=['expected_value_short', 'futures_returns_30', 'y_pred_proba_short'], dropna=False)
         )
         short_model_probs = short_model_probs.fillna(0)
         short_model_probs = short_model_probs[short_model_probs.index.isin(universe.index)]
@@ -286,8 +286,8 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
         # Pivot model's predictions for ranking the models' signals by date
         long_model_probs = (
             spot_data
-            .reset_index()[['time_period_end', 'symbol_id', 'y_pred_proba_long', 'spot_returns_30', 'expected_value_long']]
-            .pivot_table(index='time_period_end', columns='symbol_id', values=['y_pred_proba_long', 'spot_returns_30', 'expected_value_long'], dropna=False)
+            .reset_index()[['time_period_open', 'symbol_id', 'y_pred_proba_long', 'spot_returns_30', 'expected_value_long']]
+            .pivot_table(index='time_period_open', columns='symbol_id', values=['y_pred_proba_long', 'spot_returns_30', 'expected_value_long'], dropna=False)
         )
         long_model_probs = long_model_probs.fillna(0)
         long_model_probs = long_model_probs[long_model_probs.index.isin(universe.index)]
@@ -364,8 +364,8 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
         # Pivot volatilities for calculating position sizes
         volatilities = (
             self.ml_features
-            .reset_index()[['time_period_end', 'symbol_id', 'std_spot_returns_1_180']]
-            .pivot_table(index='time_period_end', columns='symbol_id', values='std_spot_returns_1_180', dropna=False)
+            .reset_index()[['time_period_open', 'symbol_id', 'std_spot_returns_1_180']]
+            .pivot_table(index='time_period_open', columns='symbol_id', values='std_spot_returns_1_180', dropna=False)
         )
         volatilities = volatilities.sort_index()
 
