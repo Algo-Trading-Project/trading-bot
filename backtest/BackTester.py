@@ -72,7 +72,7 @@ class BackTester:
         price_data = QUERY(
             """
             SELECT
-                time_period_open,
+                time_period_end as time_period_open,
                 asset_id_base || '_' || asset_id_quote || '_' || exchange_id as symbol_id,
                 open_spot as open,
                 open_futures as open_futures,

@@ -100,7 +100,6 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
             'asset_id_base','asset_id_base_x','asset_id_base_y', 
             'asset_id_quote','asset_id_quote_x', 'asset_id_quote_y', 
             'exchange_id','exchange_id_x','exchange_id_y', 
-            'day_of_week', 'month', 'symbol_id'
         ]
 
         other_cols = [

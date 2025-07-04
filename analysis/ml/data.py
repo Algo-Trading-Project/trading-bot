@@ -70,14 +70,14 @@ def construct_dataset_for_ml(resample_period):
                 """
             ).df().set_index('time_period_end').asfreq('1min', method = 'ffill')
                         
-            # Ffill missing values
-            numeric_cols_spot = [col for col in data_spot.columns if col not in ('asset_id_base', 'asset_id_quote', 'exchange_id')]
-            categorical_cols = ['asset_id_base', 'asset_id_quote', 'exchange_id']
-            data_spot.loc[:,numeric_cols_spot] = data_spot.loc[:,numeric_cols_spot].ffill()
+            # # Ffill missing values
+            # numeric_cols_spot = [col for col in data_spot.columns if col not in ('asset_id_base', 'asset_id_quote', 'exchange_id')]
+            # categorical_cols = ['asset_id_base', 'asset_id_quote', 'exchange_id']
+            # data_spot.loc[:,numeric_cols_spot] = data_spot.loc[:,numeric_cols_spot].ffill()
 
-            for col in categorical_cols:
-                mode_spot = data_spot.loc[:,col].mode().iloc[0]
-                data_spot.loc[:,col] = data_spot.loc[:,col].fillna(mode_spot)
+            # for col in categorical_cols:
+            #     mode_spot = data_spot.loc[:,col].mode().iloc[0]
+            #     data_spot.loc[:,col] = data_spot.loc[:,col].fillna(mode_spot)
 
             # Downsample to resample_period
             data_spot = data_spot.resample(resample_period, label = 'right', closed = 'left').agg({
@@ -121,14 +121,14 @@ def construct_dataset_for_ml(resample_period):
                 """
             ).df().set_index('time_period_end').asfreq('1min', method = 'ffill')
                         
-            # Ffill missing values
-            numeric_cols_futures = [col for col in data_futures.columns if col not in ('asset_id_base', 'asset_id_quote', 'exchange_id')]
-            categorical_cols = ['asset_id_base', 'asset_id_quote', 'exchange_id']
-            data_futures.loc[:,numeric_cols_futures] = data_futures.loc[:,numeric_cols_futures].ffill()
+            # # Ffill missing values
+            # numeric_cols_futures = [col for col in data_futures.columns if col not in ('asset_id_base', 'asset_id_quote', 'exchange_id')]
+            # categorical_cols = ['asset_id_base', 'asset_id_quote', 'exchange_id']
+            # data_futures.loc[:,numeric_cols_futures] = data_futures.loc[:,numeric_cols_futures].ffill()
 
-            for col in categorical_cols:
-                mode_futures = data_futures.loc[:,col].mode().iloc[0]
-                data_futures.loc[:,col] = data_futures.loc[:,col].fillna(mode_futures)
+            # for col in categorical_cols:
+            #     mode_futures = data_futures.loc[:,col].mode().iloc[0]
+            #     data_futures.loc[:,col] = data_futures.loc[:,col].fillna(mode_futures)
 
             # Downsample to resample_period
             data_futures = data_futures.resample(resample_period, label = 'right', closed = 'left').agg({
