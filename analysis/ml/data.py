@@ -157,20 +157,22 @@ def construct_dataset_for_ml(resample_period):
         print(f'Percentage of assets skipped: {(total_skipped_spot + total_skipped_futures) / len(assets_spot + assets_futures) * 100:.2f}%')
 
         # Save if the spot data file does not exist
-        if not os.path.exists('/Users/louisspencer/Desktop/Trading-Bot/data/ml_dataset.csv'):
-            dataset_spot.to_csv('/Users/louisspencer/Desktop/Trading-Bot/data/ml_dataset.csv', index = False)
+        path_spot = f'/Users/louisspencer/Desktop/Trading-Bot/data/ml_dataset_{resample_period}.csv'
+        if not os.path.exists(path_spot):
+            dataset_spot.to_csv(path_spot, index = False)
             QUERY(
-                """
-                CREATE OR REPLACE TABLE market_data.ml_dataset as from read_csv('/Users/louisspencer/Desktop/Trading-Bot/data/ml_dataset.csv');
+                f"""
+                CREATE OR REPLACE TABLE market_data.ml_dataset_{resample_period} as from read_csv('{path_spot}');
                 """
             )
 
         # Save if the futures data file does not exist
-        if not os.path.exists('/Users/louisspencer/Desktop/Trading-Bot/data/ml_dataset_futures.csv'):
-            dataset_futures.to_csv('/Users/louisspencer/Desktop/Trading-Bot/data/ml_dataset_futures.csv', index = False)
+        path_futures = f'/Users/louisspencer/Desktop/Trading-Bot/data/ml_dataset_futures_{resample_period}.csv'
+        if not os.path.exists(path_futures):
+            dataset_futures.to_csv(path_futures, index = False)
             QUERY(
-                """
-                CREATE OR REPLACE TABLE market_data.ml_dataset_futures as from read_csv('/Users/louisspencer/Desktop/Trading-Bot/data/ml_dataset_futures.csv');
+                f"""
+                CREATE OR REPLACE TABLE market_data.ml_dataset_futures_{resample_period} as from read_csv('{path_futures}');
                 """
             )
 

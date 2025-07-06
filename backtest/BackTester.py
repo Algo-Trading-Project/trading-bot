@@ -85,7 +85,9 @@ class BackTester:
             FROM market_data.ml_features
             """
         )
-        price_data['time_period_open'] = pd.to_datetime(price_data['time_period_open']) - pd.Timedelta(days = 1) 
+        # Interpolate symbol_id with the most common value
+        price_data['symbol_id'] = price_data['symbol_id'].fillna(price_data['symbol_id'].mode().iloc[0])
+        price_data['time_period_open'] = pd.to_datetime(price_data['time_period_open']) - pd.Timedelta(days=1) 
 
         # Pivot the data to get the asset universe close, high, and low prices
         self.universe = (
@@ -111,20 +113,6 @@ class BackTester:
         )
 
     def __serialize_json_data(obj):
-        """
-        Converts obj into a form that can be JSON serialized.
-
-        Parameters:
-        -----------
-        obj : pd.Timedelta or int or float
-            A value of a JSON dictionary that needs to be converted
-            into a serializable format.
-
-        Returns:
-        --------
-            Result of converting obj into a JSON serializable format.
-        """
-
         if isinstance(obj, pd.Timedelta):
             return obj.total_seconds()
 
@@ -154,50 +142,24 @@ class BackTester:
         strat,
         use_dollar_bars: bool = False
     ) -> pd.DataFrame:
-        """
-        Queries OHLCV data for a given crypto token stored in Project Poseidon's 
-        databases. Returns the queried data as a DataFrame indexed by timestamp.
-
-        Parameters:
-        -----------
-        base : str 
-            CoinAPI asset_id_base of the token being backtested.
-
-        quote : str
-            CoinAPI asset_id_quote of the token being backtested.
-
-        exchange : str
-            CoinAPI exchange_id of the token being backtested.
-
-        strat : Strategy class in backtest/strategies
-            Trading strategy being backtested.
-
-        use_dollar_bars : bool, default = False
-            Whether to use dollar bars instead of time bars for the backtest.
-
-        Returns:
-        --------
-        DataFrame:
-            DataFrame of queried OHLCV data, indexed by timestamp.
-
-        """
         if strat.indicator_factory_dict['class_name'] == 'MLStrategy':
             query = f"""
             SELECT 
                 origin_time,
-                open,
-                high,
-                low,
-                close,
-                volume,
-                trades,
-                asset_id_base || '_' || asset_id_quote || '_' || exchange_id AS symbol_id
-            FROM market_data.ohlcv_1m
-            WHERE 
-                asset_id_base = '{base}' AND
-                asset_id_quote = '{quote}' AND
-                exchange_id = '{exchange}'
-            ORDER BY origin_time ASC
+                s.asset_id_base || '_' || s.asset_id_quote || '_' || s.exchange_id AS symbol_id,
+                s.open AS open,
+                f.open AS open_futures,
+                s.high AS high,
+                f.high AS high_futures,
+                s.low AS low,
+                f.low AS low_futures,
+                s.close AS close,
+                f.close AS close_futures,
+            FROM market_data.ohlcv_1m s LEFT JOIN market_data.ohlcv_1m_futures f ON
+                s.origin_time = f.origin_time AND
+                s.asset_id_base = f.asset_id_base AND
+                s.asset_id_quote = f.asset_id_quote AND
+                s.exchange_id = f.exchange_id
             """
         else:
             query = """
@@ -219,19 +181,7 @@ class BackTester:
             """.format(base, quote, exchange)
 
         # Execute the query on DuckDB and return result as a DataFrame
-        df = self.conn.sql(query).df().set_index('origin_time').asfreq('1min')
-
-        # Skip over tokens with more than 25% missing data
-        # pct_missing_price_close = df['close'].isna().mean() * 100
-        #
-        # if pct_missing_price_close > 25:
-        #     symbol_id = base + '_' + quote + '_' + exchange
-        #     print(f'Skipping {symbol_id} due to {pct_missing_price_close} of the data missing')
-        #     return pd.DataFrame()
-        #
-        # # Interpolate numeric values
-        # numeric_cols = [c for c in df.columns if c not in ('symbol_id')]
-        # df[numeric_cols] = df[numeric_cols].interpolate(method = 'linear')
+        df = self.conn.sql(query).df().set_index('origin_time').asfreq('1min', method = 'ffill')
 
         # Interpolate symbol_id with the most common value
         df['symbol_id'] = df['symbol_id'].fillna(df['symbol_id'].mode().iloc[0])
@@ -241,11 +191,15 @@ class BackTester:
             # Resample the DataFrame to the specified resample_period
             df = df.resample(self.resample_period, label = 'right', closed = 'left').agg({
                 'open': 'first',
+                'open_futures': 'first',
                 'close': 'last',
+                'close_futures': 'last',
                 'high': 'max',
+                'high_futures': 'max',
                 'low': 'min',
-                'volume': 'sum',
-                'trades': 'sum',
+                'low_futures': 'min',
+                # 'volume': 'sum',
+                # 'trades': 'sum',
                 'symbol_id': 'first'
             }).ffill(method = 'ffill')
         
@@ -259,30 +213,6 @@ class BackTester:
         insert_str: str,
         df: pd.DataFrame = None
     ) -> None:
-        """
-        Performs an upsert on the specified table in the trading_bot database.
-
-        Parameters
-        ----------
-        symbol_id : str
-            token being backtested.
-
-        strat : str
-            trading strategy being backtested.
-
-        table : str
-            table in the backtest database to upsert data into.
-
-        insert_str : str
-            rows to be inserted into the table in the form of a string.
-
-        df : pd.DataFrame, default = None
-            DataFrame to be upserted into the table, if applicable.
-
-        Returns
-        -------
-        None
-        """
         strat_name = strat.indicator_factory_dict['class_name']
         
         if table == 'backtest_results':
@@ -357,46 +287,7 @@ class BackTester:
         oos_start_i: int, 
         oos_end_i: int
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
-        
-        """
-        Optimizes the parameters of a Strategy (strat) on the in-sample data and performs 
-        a backtest on the out-of-sample data w/ the optimized parameters. Returns the trades and
-        equity curve from the out-of-sample period as well as the optimal parameters and
-        performance metrics from the in-sample optimization period so that it can be logged
-        for further dashboarding/analysis.
 
-        Parameters:
-        -----------
-        strat: Strategy class in backtest/strategies
-            Trading strategy to be backtested.
-
-        backtest_data: DataFrame
-            OHLCV token data being backtested on.
-
-        is_start_i: int
-            Start index of the in-sample optimization period in backtest_data.
-
-        is_end_i: int
-            End index of the in-sample optimization period in backtest_data.
-
-        oos_start_i: int
-            Start index of the out-of-sample test period in backtest_data.
-
-        oos_end_i: int
-            End index of the out-of-sample test period in backtest_data.
-
-        Returns:
-        --------
-        DataFrame:
-            DataFrame containing the trades from the out-of-sample backtest.
-
-        DataFrame:
-            DataFrame containing the equity curve from the out-of-sample backtest.
-
-        DataFrame:
-            DataFrame containing the optimal parameters and performance metrics from the in-sample optimization period.
-        """
-                
         wfo = WalkForwardOptimization(
             strategy = strat,
             backtest_data = backtest_data,
@@ -421,47 +312,6 @@ class BackTester:
         in_sample_size: int = 30,
         out_of_sample_size: int = 30
     ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-
-        """
-        Executes a walk-forward optimization on a given (Strategy, crypto token) pair. Aggregates and returns the out-of-sample equity curves,
-        trades, and token prices to calculate the overall out-of-sample performance metrics.
-
-        Parameters:
-        -----------
-        base : str 
-            CoinAPI asset_id_base of the pair being backtested.
-
-        quote : str
-            CoinAPI asset_id_quote of the pair being backtested.
-
-        exchange : str
-            CoinAPI exchange_id of the pair being backtested.
-
-        strat: Strategy class in backtest/strategies
-            Trading strategy to be backtested.
-
-        in_sample_size : int
-            Length of the in-sample optimization period in the walk-forward
-            optimization in terms of the number of bars.
-
-        out_of_sample_size : int
-            Length of the out-of-sample test period in the walk-forward
-            optimization in terms of the number of bars.
-
-        Returns:
-        --------
-        DataFrame:
-            DataFrame containing the combined equity curves from all the
-            out-of-sample periods, sorted by date.
-
-        DataFrame:
-            DataFrame containing the trades from all the
-            out-of-sample periods.
-
-        DataFrame:
-            DataFrame containing token price data from all the
-            out-of-sample periods, sorted by date.
-        """
 
         start = 0
 
@@ -509,7 +359,7 @@ class BackTester:
             out_of_sample_size = len(backtest_data) // 2
 
         while start + in_sample_size + out_of_sample_size <= len(backtest_data):
-
+            self.resample_period = self.resample_period.lower()
             if self.resample_period == '1min':
                 day_normalizer = 60 * 24
             elif self.resample_period == '5min':
@@ -534,13 +384,16 @@ class BackTester:
                 is_start_date = backtest_data.index[is_start_i]
                 # Get end of month date
                 is_end_date = pd.Timestamp(month = is_start_date.month, year = is_start_date.year, day = calendar.monthrange(is_start_date.year, is_start_date.month)[1])
+                
                 # Get integer index of is_end_date
                 is_end_i = backtest_data.index.get_loc(is_end_date)
                 oos_start_i = is_end_i + 1
                 # Get date associated with oos_start_i
                 oos_start_date = backtest_data.index[oos_start_i]
+                
                 # Get end of month date
                 oos_end_date = pd.Timestamp(month = oos_start_date.month, year = oos_start_date.year, day = calendar.monthrange(oos_start_date.year, oos_start_date.month)[1])
+
                 # Get integer index of oos_end_date
                 oos_end_i = backtest_data.index.get_loc(oos_end_date)
 
@@ -585,7 +438,15 @@ class BackTester:
                 (oos_trades['entry_date'] >= oos_start_date) &
                 (oos_trades['exit_date'] <= oos_end_date)
             ].sort_values('entry_date')
-            print(oos_trades)
+            
+            long_trades = oos_trades[oos_trades['is_long'] == True]
+            short_trades = oos_trades[oos_trades['is_long'] == False]
+            print('Long Trades:')
+            print(long_trades)
+            print()
+            print('Short Trades:')
+            print(short_trades)
+            print()
 
             tr = (oos_trades['pnl'].sum() / starting_equity) + 1
 

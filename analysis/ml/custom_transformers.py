@@ -16,7 +16,8 @@ class TimeFeatures(BaseEstimator, TransformerMixin):
     def fit(self, X, y=None):
         return self
 
-    def transform(self, X):        
+    def transform(self, X):       
+        X['day_of_month'] = X['time_period_end'].dt.day.astype('category')
         X['day_of_week'] = X['time_period_end'].dt.dayofweek.astype('category')
         X['month'] = X['time_period_end'].dt.month.astype('category')
         return X
@@ -254,6 +255,31 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
             final_features.append(spot_returns_pivot[spot_cs_returns_moments_cols])
             final_features.append(futures_returns_pivot[futures_cs_returns_moments_cols])
 
+            for lookback in self.lookback_windows:
+                # Rolling ema of cross-sectional returns moments for regime detection
+                spot_returns_pivot[f'rolling_ema_{lookback}_cs_spot_returns_mean_{window}'] = spot_returns_pivot[f'cs_spot_returns_mean_{window}'].ewm(span = lookback, min_periods = 7).mean()
+                spot_returns_pivot[f'rolling_ema_{lookback}_cs_spot_returns_std_{window}'] = spot_returns_pivot[f'cs_spot_returns_std_{window}'].ewm(span = lookback, min_periods = 7).mean()
+                spot_returns_pivot[f'rolling_ema_{lookback}_cs_spot_returns_skew_{window}'] = spot_returns_pivot[f'cs_spot_returns_skew_{window}'].ewm(span = lookback, min_periods = 7).mean()
+                spot_returns_pivot[f'rolling_ema_{lookback}_cs_spot_returns_kurtosis_{window}'] = spot_returns_pivot[f'cs_spot_returns_kurtosis_{window}'].ewm(span = lookback, min_periods = 7).mean()
+                spot_returns_pivot[f'rolling_ema_{lookback}_cs_spot_returns_median_{window}'] = spot_returns_pivot[f'cs_spot_returns_median_{window}'].ewm(span = lookback, min_periods = 7).mean()
+
+                futures_returns_pivot[f'rolling_ema_{lookback}_cs_futures_returns_mean_{window}'] = futures_returns_pivot[f'cs_futures_returns_mean_{window}'].ewm(span = lookback, min_periods = 7).mean()
+                futures_returns_pivot[f'rolling_ema_{lookback}_cs_futures_returns_std_{window}'] = futures_returns_pivot[f'cs_futures_returns_std_{window}'].ewm(span = lookback, min_periods = 7).mean()
+                futures_returns_pivot[f'rolling_ema_{lookback}_cs_futures_returns_skew_{window}'] = futures_returns_pivot[f'cs_futures_returns_skew_{window}'].ewm(span = lookback, min_periods = 7).mean()
+                futures_returns_pivot[f'rolling_ema_{lookback}_cs_futures_returns_kurtosis_{window}'] = futures_returns_pivot[f'cs_futures_returns_kurtosis_{window}'].ewm(span = lookback, min_periods = 7).mean()
+                futures_returns_pivot[f'rolling_ema_{lookback}_cs_futures_returns_median_{window}'] = futures_returns_pivot[f'cs_futures_returns_median_{window}'].ewm(span = lookback, min_periods = 7).mean()
+                
+                # Append the rolling mean of cross-sectional features to the final features list
+                spot_cs_returns_rolling_moments = spot_returns_pivot.filter(like = f'rolling_ema_{lookback}_cs')
+                futures_cs_returns_rolling_moments = futures_returns_pivot.filter(like = f'rolling_ema_{lookback}_cs')
+                print('spot_cs_returns_rolling_moments')
+                print(spot_cs_returns_rolling_moments)
+                print('futures_cs_returns_rolling_moments')
+                print(futures_cs_returns_rolling_moments)
+                print()
+                final_features.append(spot_cs_returns_rolling_moments)
+                final_features.append(futures_cs_returns_rolling_moments)
+
         for lookback in self.lookback_windows:
             # Spot
             # Cross-sectional sharpe ratios for each symbol for each time period
@@ -356,6 +382,53 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
             final_features.append(pivot_futures_sortino[futures_cs_sortino_moments_cols])
             final_features.append(pivot_futures_sortino_decile)
             final_features.append(pivot_futures_sortino_zscore)
+
+            for lookback_2 in self.lookback_windows:
+                # Rolling ema of cross-sectional features for regime detection
+                pivot_spot_sharpe[f'rolling_ema_{looback_2}_cs_spot_sharpe_mean_{lookback}'] = pivot_spot_sharpe[f'cs_spot_sharpe_mean_{lookback}'].ewm(span = {looback_2}, min_periods = 7).mean()
+                pivot_spot_sharpe[f'rolling_ema_{looback_2}_cs_spot_sharpe_std_{lookback}'] = pivot_spot_sharpe[f'cs_spot_sharpe_std_{lookback}'].ewm(span = {looback_2}, min_periods = 7).mean()
+                pivot_spot_sharpe[f'rolling_ema_{looback_2}_cs_spot_sharpe_skew_{lookback}'] = pivot_spot_sharpe[f'cs_spot_sharpe_skew_{lookback}'].ewm(span = {looback_2}, min_periods = 7).mean()
+                pivot_spot_sharpe[f'rolling_ema_{looback_2}_cs_spot_sharpe_kurtosis_{lookback}'] = pivot_spot_sharpe[f'cs_spot_sharpe_kurtosis_{lookback}'].ewm(span = {looback_2}, min_periods = 7).mean()
+                pivot_spot_sharpe[f'rolling_ema_{looback_2}_cs_spot_sharpe_median_{lookback}'] = pivot_spot_sharpe[f'cs_spot_sharpe_median_{lookback}'].ewm(span = {looback_2}, min_periods = 7).mean()
+
+                pivot_futures_sharpe[f'rolling_ema_{looback_2}_cs_futures_sharpe_mean_{lookback}'] = pivot_futures_sharpe[f'cs_futures_sharpe_mean_{lookback}'].ewm(span = {looback_2}, min_periods = 7).mean()
+                pivot_futures_sharpe[f'rolling_ema_{looback_2}_cs_futures_sharpe_std_{lookback}'] = pivot_futures_sharpe[f'cs_futures_sharpe_std_{lookback}'].ewm(span = {looback_2}, min_periods = 7).mean()
+                pivot_futures_sharpe[f'rolling_ema_{looback_2}_cs_futures_sharpe_skew_{lookback}'] = pivot_futures_sharpe[f'cs_futures_sharpe_skew_{lookback}'].ewm(span = {looback_2}, min_periods = 7).mean()
+                pivot_futures_sharpe[f'rolling_ema_{looback_2}_cs_futures_sharpe_kurtosis_{lookback}'] = pivot_futures_sharpe[f'cs_futures_sharpe_kurtosis_{lookback}'].ewm(span = {looback_2}, min_periods = 7).mean()
+                pivot_futures_sharpe[f'rolling_ema_{looback_2}_cs_futures_sharpe_median_{lookback}'] = pivot_futures_sharpe[f'cs_futures_sharpe_median_{lookback}'].ewm(span = {looback_2}, min_periods = 7).mean()
+
+                pivot_spot_sortino[f'rolling_ema_{looback_2}_cs_spot_sortino_mean_{lookback}'] = pivot_spot_sortino[f'cs_spot_sortino_mean_{lookback}'].ewm(span = lookback, min_periods = 7).mean()
+                pivot_spot_sortino[f'rolling_ema_{looback_2}_cs_spot_sortino_std_{lookback}'] = pivot_spot_sortino[f'cs_spot_sortino_std_{lookback}'].ewm(span = lookback, min_periods = 7).mean()
+                pivot_spot_sortino[f'rolling_ema_{looback_2}_cs_spot_sortino_skew_{lookback}'] = pivot_spot_sortino[f'cs_spot_sortino_skew_{lookback}'].ewm(span = lookback, min_periods = 7).mean()
+                pivot_spot_sortino[f'rolling_ema_{looback_2}_cs_spot_sortino_kurtosis_{lookback}'] = pivot_spot_sortino[f'cs_spot_sortino_kurtosis_{lookback}'].ewm(span = lookback, min_periods = 7).mean()
+                pivot_spot_sortino[f'rolling_ema_{looback_2}_cs_spot_sortino_median_{lookback}'] = pivot_spot_sortino[f'cs_spot_sortino_median_{lookback}'].ewm(span = lookback, min_periods = 7).mean()
+                
+                pivot_futures_sortino[f'rolling_ema_{looback_2}_cs_futures_sortino_mean_{lookback}'] = pivot_futures_sortino[f'cs_futures_sortino_mean_{lookback}'].ewm(span = lookback, min_periods = 7).mean()
+                pivot_futures_sortino[f'rolling_ema_{looback_2}_cs_futures_sortino_std_{lookback}'] = pivot_futures_sortino[f'cs_futures_sortino_std_{lookback}'].ewm(span = lookback, min_periods = 7).mean()
+                pivot_futures_sortino[f'rolling_ema_{looback_2}_cs_futures_sortino_skew_{lookback}'] = pivot_futures_sortino[f'cs_futures_sortino_skew_{lookback}'].ewm(span = lookback, min_periods = 7).mean()
+                pivot_futures_sortino[f'rolling_ema_{looback_2}_cs_futures_sortino_kurtosis_{lookback}'] = pivot_futures_sortino[f'cs_futures_sortino_kurtosis_{lookback}'].ewm(span = lookback, min_periods = 7).mean()
+                pivot_futures_sortino[f'rolling_ema_{looback_2}_cs_futures_sortino_median_{lookback}'] = pivot_futures_sortino[f'cs_futures_sortino_median_{lookback}'].ewm(span = lookback, min_periods = 7).mean()
+
+                # Append the rolling mean of cross-sectional features to the final features list  
+                spot_cs_sharpe_moments = pivot_spot_sharpe.filter(like = f'rolling_ema_{looback_2}_cs_spot_sharpe')
+                futures_cs_sharpe_moments = pivot_futures_sharpe.filter(like = f'rolling_ema_{looback_2}_cs_futures_sharpe')
+                spot_cs_sortino_moments = pivot_spot_sortino.filter(like = f'rolling_ema_{looback_2}_cs_spot_sortino')
+                futures_cs_sortino_moments = pivot_futures_sortino.filter(like = f'rolling_ema_{looback_2}_cs_futures_sortino')
+
+                print('spot_cs_sharpe_moments')
+                print(spot_cs_sharpe_moments)
+                print('futures_cs_sharpe_moments')
+                print(futures_cs_sharpe_moments)
+                print('spot_cs_sortino_moments')
+                print(spot_cs_sortino_moments)
+                print('futures_cs_sortino_moments')
+                print(futures_cs_sortino_moments)
+                print()
+
+                final_features.append(spot_cs_sharpe_moments)
+                final_features.append(futures_cs_sharpe_moments)
+                final_features.append(spot_cs_sortino_moments)
+                final_features.append(futures_cs_sortino_moments)
 
         self.final_features = pd.concat(final_features, axis = 1)
         self.final_features = self.final_features.reset_index()
@@ -705,6 +778,63 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             spot_pct_sell_dollar_volume_pivot[f'cs_spot_pct_sell_dollar_volume_skew_{window}d'] = spot_pct_sell_dollar_volume_pivot.skew(axis=1)
             spot_pct_sell_dollar_volume_pivot[f'cs_spot_pct_sell_dollar_volume_kurtosis_{window}d'] = spot_pct_sell_dollar_volume_pivot.kurtosis(axis=1)
             spot_pct_sell_dollar_volume_pivot[f'cs_spot_pct_sell_dollar_volume_median_{window}d'] = spot_pct_sell_dollar_volume_pivot.median(axis=1)
+
+            for lookback_2 in self.lookback_windows:
+                # Rolling ema of cross-sectional total buy dollar volume for regime detection
+                spot_total_buy_dollar_volume_pivot[f'rolling_ema_{lookback_2}_cs_spot_total_buy_dollar_volume_mean_{window}d'] = spot_total_buy_dollar_volume_pivot[f'cs_spot_total_buy_dollar_volume_mean_{window}d'].ewm(span=lookback_2, min_periods=7).mean()
+                # Rolling ema of cross-sectional total sell dollar volume for regime detection
+                spot_total_sell_dollar_volume_pivot[f'rolling_ema_{lookback_2}_cs_spot_total_sell_dollar_volume_mean_{window}d'] = spot_total_sell_dollar_volume_pivot[f'cs_spot_total_sell_dollar_volume_mean_{window}d'].ewm(span=lookback_2, min_periods=7).mean()
+                # Rolling ema of cross-sectional total dollar volume for regime detection
+                spot_total_dollar_volume_pivot[f'rolling_ema_{lookback_2}_cs_spot_total_dollar_volume_mean_{window}d'] = spot_total_dollar_volume_pivot[f'cs_spot_total_dollar_volume_mean_{window}d'].ewm(span=lookback_2, min_periods=7).mean()
+                # Rolling ema of cross-sectional number of buys for regime detection
+                spot_num_buys_pivot[f'rolling_ema_{lookback_2}_cs_spot_num_buys_mean_{window}d'] = spot_num_buys_pivot[f'cs_spot_num_buys_mean_{window}d'].ewm(span=lookback_2, min_periods=7).mean()
+                # Rolling ema of cross-sectional number of sells for regime detection
+                spot_num_sells_pivot[f'rolling_ema_{lookback_2}_cs_spot_num_sells_mean_{window}d'] = spot_num_sells_pivot[f'cs_spot_num_sells_mean_{window}d'].ewm(span=lookback_2, min_periods=7).mean()
+                # Rolling ema of cross-sectional percentage buys for regime detection
+                spot_pct_buys_pivot[f'rolling_ema_{lookback_2}_cs_spot_pct_buys_mean_{window}d'] = spot_pct_buys_pivot[f'cs_spot_pct_buys_mean_{window}d'].ewm(span=lookback_2, min_periods=7).mean()
+                # Rolling ema of cross-sectional percentage sells for regime detection
+                spot_pct_sells_pivot[f'rolling_ema_{lookback_2}_cs_spot_pct_sells_mean_{window}d'] = spot_pct_sells_pivot[f'cs_spot_pct_sells_mean_{window}d'].ewm(span=lookback_2, min_periods=7).mean()
+                #  Rolling ema of cross-sectional trade imbalance for regime detection
+                spot_trade_dollar_volume_imbalance_pivot[f'rolling_ema_{lookback_2}_cs_spot_trade_dollar_volume_imbalance_mean_{window}d'] = spot_trade_dollar_volume_imbalance_pivot[f'cs_spot_trade_dollar_volume_imbalance_mean_{window}d'].ewm(span=lookback_2, min_periods=7).mean()            
+                # Rolling ema of cross-sectional percentage buy dollar volume for regime detection
+                spot_pct_buy_dollar_volume_pivot[f'rolling_ema_{lookback_2}_cs_spot_pct_buy_dollar_volume_mean_{window}d'] = spot_pct_buy_dollar_volume_pivot[f'cs_spot_pct_buy_dollar_volume_mean_{window}d'].ewm(span=lookback_2, min_periods=7).mean()
+                # Rolling ema of cross-sectional percentage sell dollar volume for regime detection
+                spot_pct_sell_dollar_volume_pivot[f'rolling_ema_{lookback_2}_cs_spot_pct_sell_dollar_volume_mean_{window}d'] = spot_pct_sell_dollar_volume_pivot[f'cs_spot_pct_sell_dollar_volume_mean_{window}d'].ewm(span=lookback_2, min_periods=7).mean()
+
+                spot_total_buy_dollar_volume_pivot_ema = spot_total_buy_dollar_volume_pivot.filter(like=f'rolling_ema_{lookback_2}_cs_')
+                spot_total_sell_dollar_volume_pivot_ema = spot_total_sell_dollar_volume_pivot.filter(like=f'rolling_ema_{lookback_2}_cs_')
+                spot_total_dollar_volume_pivot_ema = spot_total_dollar_volume_pivot.filter(like=f'rolling_ema_{lookback_2}_cs_')
+                spot_num_buys_pivot_ema = spot_num_buys_pivot.filter(like=f'rolling_ema_{lookback_2}_cs_')
+                spot_num_sells_pivot_ema = spot_num_sells_pivot.filter(like=f'rolling_ema_{lookback_2}_cs_')
+                spot_pct_buys_pivot_ema = spot_pct_buys_pivot.filter(like=f'rolling_ema_{lookback_2}_cs_')
+                spot_pct_sells_pivot_ema = spot_pct_sells_pivot.filter(like=f'rolling_ema_{lookback_2}_cs_')
+                spot_trade_dollar_volume_imbalance_pivot_ema = spot_trade_dollar_volume_imbalance_pivot.filter(like=f'rolling_ema_{lookback_2}_cs_')
+                spot_pct_buy_dollar_volume_pivot_ema = spot_pct_buy_dollar_volume_pivot.filter(like=f'rolling_ema_{lookback_2}_cs_')
+                spot_pct_sell_dollar_volume_pivot_ema = spot_pct_sell_dollar_volume_pivot.filter(like=f'rolling_ema_{lookback_2}_cs_')
+
+                print('spot_total_buy_dollar_volume_pivot_ema', spot_total_buy_dollar_volume_pivot_ema)
+                print('spot_total_sell_dollar_volume_pivot_ema', spot_total_sell_dollar_volume_pivot_ema)
+                print('spot_total_dollar_volume_pivot_ema', spot_total_dollar_volume_pivot_ema)
+                print('spot_num_buys_pivot_ema', spot_num_buys_pivot_ema)
+                print('spot_num_sells_pivot_ema', spot_num_sells_pivot_ema)
+                print('spot_pct_buys_pivot_ema', spot_pct_buys_pivot_ema)
+                print('spot_pct_sells_pivot_ema', spot_pct_sells_pivot_ema)
+                print('spot_trade_dollar_volume_imbalance_pivot_ema', spot_trade_dollar_volume_imbalance_pivot_ema)
+                print('spot_pct_buy_dollar_volume_pivot_ema', spot_pct_buy_dollar_volume_pivot_ema)
+                print('spot_pct_sell_dollar_volume_pivot_ema', spot_pct_sell_dollar_volume_pivot_ema)
+                print()
+                
+                # Add rolling ema columns to final features
+                final_features.append(spot_total_buy_dollar_volume_pivot_ema)
+                final_features.append(spot_total_sell_dollar_volume_pivot_ema)
+                final_features.append(spot_total_dollar_volume_pivot_ema)
+                final_features.append(spot_num_buys_pivot_ema)
+                final_features.append(spot_num_sells_pivot_ema)
+                final_features.append(spot_pct_buys_pivot_ema)
+                final_features.append(spot_pct_sells_pivot_ema)
+                final_features.append(spot_trade_dollar_volume_imbalance_pivot_ema)
+                final_features.append(spot_pct_buy_dollar_volume_pivot_ema)
+                final_features.append(spot_pct_sell_dollar_volume_pivot_ema)
 
             # Cross-sectional avg dollar volume percentile for each symbol/day
             spot_avg_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'avg_dollar_volume_{window}d_spot', dropna=False).sort_index()
@@ -1218,6 +1348,73 @@ class TradeFeatures(BaseEstimator, TransformerMixin):
             futures_pct_sell_dollar_volume_pivot[f'cs_futures_pct_sell_dollar_volume_skew_{window}d'] = futures_pct_sell_dollar_volume_pivot.skew(axis=1)
             futures_pct_sell_dollar_volume_pivot[f'cs_futures_pct_sell_dollar_volume_kurtosis_{window}d'] = futures_pct_sell_dollar_volume_pivot.kurtosis(axis=1)
             futures_pct_sell_dollar_volume_pivot[f'cs_futures_pct_sell_dollar_volume_median_{window}d'] = futures_pct_sell_dollar_volume_pivot.median(axis=1)
+
+            for lookback_2 in self.lookback_windows:
+                # Ema of cross-sectional total buy dollar volume for regime detection
+                futures_total_buy_dollar_volume_pivot[f'rolling_ema_{lookback_2}_cs_futures_total_buy_dollar_volume_mean_{window}d'] = futures_total_buy_dollar_volume_pivot[f'cs_futures_total_buy_dollar_volume_mean_{window}d'].ewm(span = {lookback_2}, min_periods = 7).mean()
+                # Ema of cross-sectional total sell dollar volume for regime detection
+                futures_total_sell_dollar_volume_pivot[f'rolling_ema_{lookback_2}_cs_futures_total_sell_dollar_volume_mean_{window}d'] = futures_total_sell_dollar_volume_pivot[f'cs_futures_total_sell_dollar_volume_mean_{window}d'].ewm(span = {lookback_2}, min_periods = 7).mean()
+                # Ema of cross-sectional total dollar volume for regime detection
+                futures_total_dollar_volume_pivot[f'rolling_ema_{lookback_2}_cs_futures_total_dollar_volume_mean_{window}d'] = futures_total_dollar_volume_pivot[f'cs_futures_total_dollar_volume_mean_{window}d'].ewm(span = {lookback_2}, min_periods = 7).mean()
+                # Ema of cross-sectional number of buys for regime detection
+                futures_num_buys_pivot[f'rolling_ema_{lookback_2}_cs_futures_num_buys_mean_{window}d'] = futures_num_buys_pivot[f'cs_futures_num_buys_mean_{window}d'].ewm(span = {lookback_2}, min_periods = 7).mean()
+                # Ema of cross-sectional number of sells for regime detection
+                futures_num_sells_pivot[f'rolling_ema_{lookback_2}_cs_futures_num_sells_mean_{window}d'] = futures_num_sells_pivot[f'cs_futures_num_sells_mean_{window}d'].ewm(span = {lookback_2}, min_periods = 7).mean()
+                # Ema of cross-sectional percentage buys for regime detection
+                futures_pct_buys_pivot[f'rolling_ema_{lookback_2}_cs_futures_pct_buys_mean_{window}d'] = futures_pct_buys_pivot[f'cs_futures_pct_buys_mean_{window}d'].ewm(span = {lookback_2}, min_periods = 7).mean()
+                # Ema of cross-sectional percentage sells for regime detection
+                futures_pct_sells_pivot[f'rolling_ema_{lookback_2}_cs_futures_pct_sells_mean_{window}d'] = futures_pct_sells_pivot[f'cs_futures_pct_sells_mean_{window}d'].ewm(span = {lookback_2}, min_periods = 7).mean()
+                # Ema of cross-sectional trade imbalance for regime detection
+                futures_trade_dollar_volume_imbalance_pivot[f'rolling_ema_{lookback_2}_cs_futures_trade_dollar_volume_imbalance_mean_{window}d'] = futures_trade_dollar_volume_imbalance_pivot[f'cs_futures_trade_dollar_volume_imbalance_mean_{window}d'].ewm(span = {lookback_2}, min_periods = 7).mean()
+                # Ema of cross-sectional percentage buy dollar volume for regime detection
+                futures_pct_buy_dollar_volume_pivot[f'rolling_ema_{lookback_2}_cs_futures_pct_buy_dollar_volume_mean_{window}d'] = futures_pct_buy_dollar_volume_pivot[f'cs_futures_pct_buy_dollar_volume_mean_{window}d'].ewm(span = {lookback_2}, min_periods = 7).mean()
+                # Ema of cross-sectional percentage sell dollar volume for regime detection
+                futures_pct_sell_dollar_volume_pivot[f'rolling_ema_{lookback_2}_cs_futures_pct_sell_dollar_volume_mean_{window}d'] = futures_pct_sell_dollar_volume_pivot[f'cs_futures_pct_sell_dollar_volume_mean_{window}d'].ewm(span = {lookback_2}, min_periods = 7).mean()
+
+                futures_total_buy_dollar_volume_pivot_ema = futures_total_buy_dollar_volume_pivot.filter(like = f'rolling_ema_{lookback_2}_cs_')
+                futures_total_sell_dollar_volume_pivot_ema = futures_total_sell_dollar_volume_pivot.filter(like = f'rolling_ema_{lookback_2}_cs_')
+                futures_total_dollar_volume_pivot_ema = futures_total_dollar_volume_pivot.filter(like = f'rolling_ema_{lookback_2}_cs_')
+                futures_num_buys_pivot_ema = futures_num_buys_pivot.filter(like = f'rolling_ema_{lookback_2}_cs_')
+                futures_num_sells_pivot_ema = futures_num_sells_pivot.filter(like = f'rolling_ema_{lookback_2}_cs_')
+                futures_pct_buys_pivot_ema = futures_pct_buys_pivot.filter(like = f'rolling_ema_{lookback_2}_cs_')
+                futures_pct_sells_pivot_ema = futures_pct_sells_pivot.filter(like = f'rolling_ema_{lookback_2}_cs_')
+                futures_trade_dollar_volume_imbalance_pivot_ema = futures_trade_dollar_volume_imbalance_pivot.filter(like = f'rolling_ema_{lookback_2}_cs_')
+                futures_pct_buy_dollar_volume_pivot_ema = futures_pct_buy_dollar_volume_pivot.filter(like = f'rolling_ema_{lookback_2}_cs_')
+                futures_pct_sell_dollar_volume_pivot_ema = futures_pct_sell_dollar_volume_pivot.filter(like = f'rolling_ema_{lookback_2}_cs_')
+
+                print('futures_total_buy_dollar_volume_pivot_ema')
+                print(futures_total_buy_dollar_volume_pivot_ema)
+                print('futures_total_sell_dollar_volume_pivot_ema')
+                print(futures_total_sell_dollar_volume_pivot_ema)
+                print('futures_total_dollar_volume_pivot_ema')
+                print(futures_total_dollar_volume_pivot_ema)
+                print('futures_num_buys_pivot_ema')
+                print(futures_num_buys_pivot_ema)
+                print('futures_num_sells_pivot_ema')
+                print(futures_num_sells_pivot_ema)
+                print('futures_pct_buys_pivot_ema')
+                print(futures_pct_buys_pivot_ema)
+                print('futures_pct_sells_pivot_ema')
+                print(futures_pct_sells_pivot_ema)
+                print('futures_trade_dollar_volume_imbalance_pivot_ema')
+                print(futures_trade_dollar_volume_imbalance_pivot_ema)
+                print('futures_pct_buy_dollar_volume_pivot_ema')
+                print(futures_pct_buy_dollar_volume_pivot_ema)
+                print('futures_pct_sell_dollar_volume_pivot_ema')
+                print(futures_pct_sell_dollar_volume_pivot_ema)
+                print()
+
+                # Add the ema features to the final features list
+                final_features.append(futures_total_buy_dollar_volume_pivot_ema)
+                final_features.append(futures_total_sell_dollar_volume_pivot_ema)
+                final_features.append(futures_total_dollar_volume_pivot_ema)
+                final_features.append(futures_num_buys_pivot_ema)
+                final_features.append(futures_num_sells_pivot_ema)
+                final_features.append(futures_pct_buys_pivot_ema)
+                final_features.append(futures_pct_sells_pivot_ema)
+                final_features.append(futures_trade_dollar_volume_imbalance_pivot_ema)
+                final_features.append(futures_pct_buy_dollar_volume_pivot_ema)
+                final_features.append(futures_pct_sell_dollar_volume_pivot_ema)
 
             # Cross-sectional avg dollar volume percentile for each symbol/day
             futures_avg_dollar_volume_pivot = trade_features.pivot_table(index='time_period_end', columns='symbol_id', values=f'avg_dollar_volume_{window}d_futures', dropna=False).sort_index()
@@ -2050,6 +2247,43 @@ class RiskFeatures(BaseEstimator, TransformerMixin):
                 # Append alpha_div_beta moments features
                 valid_cols = [col for col in alpha_div_beta_pivot.columns if col.startswith('cs_')]
                 final_features.append(alpha_div_beta_pivot[valid_cols])
+
+                for lookback_window_2 in self.lookback_windows:
+                    # Rolling ema of cross-sectional alpha, beta and alpha_div_beta moments for regime detection
+                    alpha_pivot[f'rolling_ema_{lookback_window_2_}_cs_avg_alpha_{window}d_{lookback_window}d'] = alpha_pivot[f'cs_avg_alpha_{window}d_{lookback_window}d'].ewm(span = lookback_window_2, min_periods = 7).mean()
+                    alpha_pivot[f'rolling_ema_{lookback_window_2}_cs_std_alpha_{window}d_{lookback_window}d'] = alpha_pivot[f'cs_std_alpha_{window}d_{lookback_window}d'].ewm(span = lookback_window_2, min_periods = 7).mean()
+                    alpha_pivot[f'rolling_ema_{lookback_window_2}_cs_skewness_alpha_{window}d_{lookback_window}d'] = alpha_pivot[f'cs_skewness_alpha_{window}d_{lookback_window}d'].ewm(span = lookback_window_2, min_periods = 7).mean()
+                    alpha_pivot[f'rolling_ema_{lookback_window_2}_cs_kurtosis_alpha_{window}d_{lookback_window}d'] = alpha_pivot[f'cs_kurtosis_alpha_{window}d_{lookback_window}d'].ewm(span = lookback_window_2, min_periods = 7).mean()
+                    alpha_pivot[f'rolling_ema_{lookback_window_2}_cs_median_alpha_{window}d_{lookback_window}d'] = alpha_pivot[f'cs_median_alpha_{window}d_{lookback_window}d'].ewm(span = lookback_window_2, min_periods = 7).mean()
+
+                    beta_pivot[f'rolling_ema_{lookback_window_2}_cs_avg_beta_{window}d_{lookback_window}d'] = beta_pivot[f'cs_avg_beta_{window}d_{lookback_window}d'].ewm(span = lookback_window_2, min_periods = 7).mean()
+                    beta_pivot[f'rolling_ema_{lookback_window_2}_cs_std_beta_{window}d_{lookback_window}d'] = beta_pivot[f'cs_std_beta_{window}d_{lookback_window}d'].ewm(span = lookback_window_2, min_periods = 7).mean()
+                    beta_pivot[f'rolling_ema_{lookback_window_2}_cs_skewness_beta_{window}d_{lookback_window}d'] = beta_pivot[f'cs_skewness_beta_{window}d_{lookback_window}d'].ewm(span = lookback_window_2, min_periods = 7).mean()
+                    beta_pivot[f'rolling_ema_{lookback_window_2}_cs_kurtosis_beta_{window}d_{lookback_window}d'] = beta_pivot[f'cs_kurtosis_beta_{window}d_{lookback_window}d'].ewm(span = lookback_window_2, min_periods = 7).mean()
+                    beta_pivot[f'rolling_ema_{lookback_window_2}_cs_median_beta_{window}d_{lookback_window}d'] = beta_pivot[f'cs_median_beta_{window}d_{lookback_window}d'].ewm(span = lookback_window_2, min_periods = 7).mean()
+
+                    alpha_div_beta_pivot[f'rolling_ema_{lookback_window_2}_cs_avg_alpha_div_beta_{window}d_{lookback_window}d'] = alpha_div_beta_pivot[f'cs_avg_alpha_div_beta_{window}d_{lookback_window}d'].ewm(span = lookback_window_2, min_periods = 7).mean()
+                    alpha_div_beta_pivot[f'rolling_ema_{lookback_window_2}_cs_std_alpha_div_beta_{window}d_{lookback_window}d'] = alpha_div_beta_pivot[f'cs_std_alpha_div_beta_{window}d_{lookback_window}d'].ewm(span = lookback_window_2, min_periods = 7).mean()
+                    alpha_div_beta_pivot[f'rolling_ema_{lookback_window_2}_cs_skewness_alpha_div_beta_{window}d_{lookback_window}d'] = alpha_div_beta_pivot[f'cs_skewness_alpha_div_beta_{window}d_{lookback_window}d'].ewm(span = lookback_window_2, min_periods = 7).mean()
+                    alpha_div_beta_pivot[f'rolling_ema_{lookback_window_2}_cs_kurtosis_alpha_div_beta_{window}d_{lookback_window}d'] = alpha_div_beta_pivot[f'cs_kurtosis_alpha_div_beta_{window}d_{lookback_window}d'].ewm(span = lookback_window_2, min_periods = 7).mean()
+                    alpha_div_beta_pivot[f'rolling_ema_{lookback_window_2}_cs_median_alpha_div_beta_{window}d_{lookback_window}d'] = alpha_div_beta_pivot[f'cs_median_alpha_div_beta_{window}d_{lookback_window}d'].ewm(span = lookback_window_2, min_periods = 7).mean()
+
+                    # Append rolling ema features
+                    alpha_pivot_ema = alpha_pivot.filter(like = f'rolling_ema_{lookback_window_2}_cs_')
+                    beta_pivot_ema = beta_pivot.filter(like = f'rolling_ema_{lookback_window_2}_cs_')
+                    alpha_div_beta_pivot_ema = alpha_div_beta_pivot.filter(like = f'rolling_ema_{lookback_window_2}_cs_')
+
+                    print('alpha_pivot_ema')
+                    print(alpha_pivot_ema)
+                    print('beta_pivot_ema')
+                    print(beta_pivot_ema)
+                    print('alpha_div_beta_pivot_ema')
+                    print(alpha_div_beta_pivot_ema)
+                    print()
+
+                    final_features.append(alpha_pivot_ema)
+                    final_features.append(beta_pivot_ema)
+                    final_features.append(alpha_div_beta_pivot_ema)
         
         # Concatenate all final features
         final_features = pd.concat(final_features, axis = 1)
@@ -2119,7 +2353,6 @@ class SpotFuturesInteractionFeatures(BaseEstimator, TransformerMixin):
         )
         futures_price_data['symbol_id'] = futures_price_data['asset_id_base'] + '_' + futures_price_data['asset_id_quote'] + '_' + futures_price_data['exchange_id']
         futures_price_data['time_period_end'] = pd.to_datetime(futures_price_data['time_period_end'])
-        agix = futures_price_data[futures_price_data['symbol_id'] == 'AGIX_USDT_BINANCE']
 
         tokens_spot = sorted(spot_price_data['symbol_id'].unique().tolist())
         tokens_futures = sorted(futures_price_data['symbol_id'].unique().tolist())
@@ -2243,6 +2476,33 @@ class SpotFuturesInteractionFeatures(BaseEstimator, TransformerMixin):
             valid_cols = [col for col in moments_feature.columns if col.startswith('cs_')]
             moments_feature = moments_feature[valid_cols]
             basis_features.append(moments_feature)
+
+        # Rolling ema of cross-sectional basis and basis_pct moments for regime detection
+        for lookback_window_2 in self.lookback_windows:
+            basis_pivot[f'rolling_ema_{lookback_window_2}_cs_avg_basis'] = basis_pivot['cs_avg_basis'].ewm(span = lookback_window_2, min_periods = 7).mean()
+            basis_pivot[f'rolling_ema_{lookback_window_2}_cs_std_basis'] = basis_pivot['cs_std_basis'].ewm(span = lookback_window_2, min_periods = 7).mean()
+            basis_pivot[f'rolling_ema_{lookback_window_2}_cs_skewness_basis'] = basis_pivot['cs_skewness_basis'].ewm(span = lookback_window_2, min_periods = 7).mean()
+            basis_pivot[f'rolling_ema_{lookback_window_2}_cs_kurtosis_basis'] = basis_pivot['cs_kurtosis_basis'].ewm(span = lookback_window_2, min_periods = 7).mean()
+            basis_pivot[f'rolling_ema_{lookback_window_2}_cs_median_basis'] = basis_pivot['cs_median_basis'].ewm(span = lookback_window_2, min_periods = 7).mean()
+
+            basis_pct_pivot[f'rolling_ema_{lookback_window_2}_cs_avg_basis_pct'] = basis_pct_pivot['cs_avg_basis_pct'].ewm(span = lookback_window_2, min_periods = 7).mean()
+            basis_pct_pivot[f'rolling_ema_{lookback_window_2}_cs_std_basis_pct'] = basis_pct_pivot['cs_std_basis_pct'].ewm(span = lookback_window_2, min_periods = 7).mean()
+            basis_pct_pivot[f'rolling_ema_{lookback_window_2}_cs_skewness_basis_pct'] = basis_pct_pivot['cs_skewness_basis_pct'].ewm(span = lookback_window_2, min_periods = 7).mean()
+            basis_pct_pivot[f'rolling_ema_{lookback_window_2}_cs_kurtosis_basis_pct'] = basis_pct_pivot['cs_kurtosis_basis_pct'].ewm(span = lookback_window_2, min_periods = 7).mean()
+            basis_pct_pivot[f'rolling_ema_{lookback_window_2}_cs_median_basis_pct'] = basis_pct_pivot['cs_median_basis_pct'].ewm(span = lookback_window_2, min_periods = 7).mean()
+
+            basis_pivot_ema = basis_pivot.filter(like = f'rolling_ema_{lookback_window_2}_cs_')
+            basis_pct_pivot_ema = basis_pct_pivot.filter(like = f'rolling_ema_{lookback_window_2}_cs_')
+
+            print('basis_pivot_ema')
+            print(basis_pivot_ema)
+            print('basis_pct_pivot_ema')
+            print(basis_pct_pivot_ema)
+            print()
+
+            # Append rolling ema features
+            basis_features.append(basis_pivot_ema)
+            basis_features.append(basis_pct_pivot_ema)      
 
         # Load the spot trade features
         spot_trade_features = QUERY(
@@ -2390,6 +2650,47 @@ class SpotFuturesInteractionFeatures(BaseEstimator, TransformerMixin):
             trade_imbalance_pivot[f'cs_skewness_trade_imbalance_delta_{window}d'] = trade_imbalance_pivot.skew(axis = 1)
             trade_imbalance_pivot[f'cs_kurtosis_trade_imbalance_delta_{window}d'] = trade_imbalance_pivot.kurtosis(axis = 1)
             trade_imbalance_pivot[f'cs_median_trade_imbalance_delta_{window}d'] = trade_imbalance_pivot.median(axis = 1)
+
+            for window_2 in self.lookback_windows:
+                # Rolling ema of trade imbalance delta moments for regime detection
+                trade_imbalance_pivot[f'rolling_ema_{window_2}_cs_avg_trade_imbalance_delta_{window}d'] = trade_imbalance_pivot['cs_avg_trade_imbalance_delta_{window}d'].ewm(span = window_2, min_periods = 7).mean()
+                trade_imbalance_pivot[f'rolling_ema_{window_2}_cs_std_trade_imbalance_delta_{window}d'] = trade_imbalance_pivot['cs_std_trade_imbalance_delta_{window}d'].ewm(span = window_2, min_periods = 7).mean()
+                trade_imbalance_pivot[f'rolling_ema_{window_2}_cs_skewness_trade_imbalance_delta_{window}d'] = trade_imbalance_pivot['cs_skewness_trade_imbalance_delta_{window}d'].ewm(span = window_2, min_periods = 7).mean()
+                trade_imbalance_pivot[f'rolling_ema_{window_2}_cs_kurtosis_trade_imbalance_delta_{window}d'] = trade_imbalance_pivot['cs_kurtosis_trade_imbalance_delta_{window}d'].ewm(span = window_2, min_periods = 7).mean()
+                trade_imbalance_pivot[f'rolling_ema_{window_2}_cs_median_trade_imbalance_delta_{window}d'] = trade_imbalance_pivot['cs_median_trade_imbalance_delta_{window}d'].ewm(span = window_2, min_periods = 7).mean()
+
+                # Rolling ema of buy volume delta moments for regime detection
+                buy_volume_delta_pivot[f'rolling_ema_{window_2}_cs_avg_buy_volume_delta_{window}d'] = buy_volume_delta_pivot['cs_avg_buy_volume_delta_{window}d'].ewm(span = window_2, min_periods = 7).mean()
+                buy_volume_delta_pivot[f'rolling_ema_{window_2}_cs_std_buy_volume_delta_{window}d'] = buy_volume_delta_pivot['cs_std_buy_volume_delta_{window}d'].ewm(span = window_2, min_periods = 7).mean()
+                buy_volume_delta_pivot[f'rolling_ema_{window_2}_cs_skewness_buy_volume_delta_{window}d'] = buy_volume_delta_pivot['cs_skewness_buy_volume_delta_{window}d'].ewm(span = window_2, min_periods = 7).mean()
+                buy_volume_delta_pivot[f'rolling_ema_{window_2}_cs_kurtosis_buy_volume_delta_{window}d'] = buy_volume_delta_pivot['cs_kurtosis_buy_volume_delta_{window}d'].ewm(span = window_2, min_periods = 7).mean()
+                buy_volume_delta_pivot[f'rolling_ema_{window_2}_cs_median_buy_volume_delta_{window}d'] = buy_volume_delta_pivot['cs_median_buy_volume_delta_{window}d'].ewm(span = window_2, min_periods = 7).mean()
+
+                # Rolling ema of sell volume delta moments for regime detection
+                sell_volume_delta_pivot[f'rolling_ema_{window_2}_cs_avg_sell_volume_delta_{window}d'] = sell_volume_delta_pivot['cs_avg_sell_volume_delta_{window}d'].ewm(span = window_2, min_periods = 7).mean()
+                sell_volume_delta_pivot[f'rolling_ema_{window_2}_cs_std_sell_volume_delta_{window}d'] = sell_volume_delta_pivot['cs_std_sell_volume_delta_{window}d'].ewm(span = window_2, min_periods = 7).mean()
+                sell_volume_delta_pivot[f'rolling_ema_{window_2}_cs_skewness_sell_volume_delta_{window}d'] = sell_volume_delta_pivot['cs_skewness_sell_volume_delta_{window}d'].ewm(span = window_2, min_periods = 7).mean()
+                sell_volume_delta_pivot[f'rolling_ema_{window_2}_cs_kurtosis_sell_volume_delta_{window}d'] = sell_volume_delta_pivot['cs_kurtosis_sell_volume_delta_{window}d'].ewm(span = window_2, min_periods = 7).mean()
+                sell_volume_delta_pivot[f'rolling_ema_{window_2}_cs_median_sell_volume_delta_{window}d'] = sell_volume_delta_pivot['cs_median_sell_volume_delta_{window}d'].ewm(span = window_2, min_periods = 7).mean()
+
+                trade_imbalance_pivot_ema = trade_imbalance_pivot.filter(like = f'rolling_ema_{window_2}_cs_')
+                buy_volume_delta_pivot_ema = buy_volume_delta_pivot.filter(like = f'rolling_ema_{window_2}_cs_')
+                sell_volume_delta_pivot_ema = sell_volume_delta_pivot.filter(like = f'rolling_ema_{window_2}_cs_')
+
+                print('trade_imbalance_pivot_ema')
+                print(trade_imbalance_pivot_ema)
+                print('buy_volume_delta_pivot_ema')
+                print(buy_volume_delta_pivot_ema)
+                print('sell_volume_delta_pivot_ema')
+                print(sell_volume_delta_pivot_ema)
+                print()
+
+                #  Append rolling ema features for trade imbalance delta moments
+                basis_features.append(trade_imbalance_pivot_ema)
+                #  Append rolling ema features for buy volume delta moments
+                basis_features.append(buy_volume_delta_pivot_ema)
+                #  Append rolling ema features for sell volume delta moments
+                basis_features.append(sell_volume_delta_pivot_ema)
 
             # Append trade imbalance delta percentile features to the basis features 
             basis_features.append(cs_trade_imbalance_delta_percentile)

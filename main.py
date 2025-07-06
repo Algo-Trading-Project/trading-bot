@@ -14,8 +14,8 @@ if __name__ == '__main__':
         strategies = [
             PortfolioMLStrategy(optimization_metric = 'Sortino Ratio'),
         ],
-        resample_period = '1d',
-        start_date = '2018-12-01',
+        resample_period = '1D',
+        start_date = '2018-11-01',
         end_date = '2025-05-31'
     )
 

@@ -57,3 +57,40 @@ class TimeSeriesSplitByToken(BaseCrossValidator):
 
     def get_n_splits(self, X=None, y=None, groups=None):
         return self.n_splits
+
+class GlobalTimeSeriesSplit(BaseCrossValidator):
+    def __init__(self, n_splits=5, time_col='time_period_end'):
+        self.n_splits = n_splits
+        self.time_col = time_col
+
+    def get_n_splits(self, X=None, y=None, groups=None):
+        return self.n_splits
+
+    def split(self, X, y=None, groups=None):
+        if self.time_col not in X.columns:
+            raise ValueError(f"Missing time_col '{self.time_col}' in X")
+
+        # Ensure datetime
+        X = X.copy()
+        X[self.time_col] = pd.to_datetime(X[self.time_col])
+        X = X.sort_values(self.time_col)
+
+        # Get sorted unique timestamps
+        unique_times = X[self.time_col].sort_values().unique()
+        n_timestamps = len(unique_times)
+
+        if self.n_splits >= n_timestamps:
+            raise ValueError("n_splits must be less than number of unique timestamps")
+
+        # Calculate fold sizes
+        fold_size = n_timestamps // (self.n_splits + 1)
+
+        for i in range(self.n_splits):
+            train_end_time = unique_times[fold_size * (i + 1) - 1]
+            test_start_time = unique_times[fold_size * (i + 1)]
+            test_end_time = unique_times[fold_size * (i + 2) - 1]
+
+            train_idx = X[X[self.time_col] <= train_end_time].index
+            test_idx = X[(X[self.time_col] > test_start_time) & (X[self.time_col] <= test_end_time)].index
+
+            yield train_idx, test_idx
