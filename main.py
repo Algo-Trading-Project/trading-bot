@@ -16,7 +16,7 @@ if __name__ == '__main__':
         ],
         resample_period = '1D',
         start_date = '2018-11-01',
-        end_date = '2025-05-31'
+        end_date = '2025-06-01',
     )
 
     backtest_start = time.time()
