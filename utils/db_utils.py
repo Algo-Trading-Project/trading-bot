@@ -20,8 +20,8 @@ def QUERY(query, conn = None, read_only = False):
             if result is not None:
                 result = result.df()
 
-            conn.close()
+        conn.close()
                 
-            # Return the result
-            return result
+        # Return the result
+        return result
 

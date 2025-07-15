@@ -59,7 +59,7 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
         # Maximum portfolio loss before exiting all positions and
         # preventing new positions from being entered for the rest of backtest period
         'max_loss': vbt.Param(np.array([
-            0.1,  # 10% max loss per month
+            0.1
         ])),
 
         # Prediction threshold for entering a long position
@@ -70,7 +70,7 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
 
     backtest_params = {
         'init_cash': 10_000,
-        'fees': 0.00, # 1% round-trip fees
+        'fees': 0.00,  # 0.5% fees
         'slippage': 0.00,
         'sl_stop': 'std',
         'tp_stop': 'std',
@@ -82,11 +82,8 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
         super().__init__(*args, **kwargs)
         
         # Load the ML features from the database
-        ml_features = QUERY(
-            """
-            SELECT * FROM market_data.ml_features
-            """
-        )
+        ml_features = pd.read_parquet('/Users/louisspencer/Desktop/Trading-Bot/data/ml_features.parquet')
+
         ml_features.rename(columns={'time_period_end': 'time_period_open'}, inplace=True)
         ml_features['symbol_id'] = ml_features['symbol_id'].astype('category')
         ml_features['day_of_week'] = ml_features['day_of_week'].astype('category')
@@ -162,25 +159,16 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
     def __get_model(self, min_date: pd.Timestamp):
         year = min_date.year
         month = min_date.month
-        long_model_path_cls = f'/Users/louisspencer/Desktop/Trading-Bot/data/pretrained_models/classification/nn_long_model_{year}_{month}.pkl'
-        long_model_path_reg = f'/Users/louisspencer/Desktop/Trading-Bot/data/pretrained_models/regression/nn_long_model_{year}_{month}.pkl'
-        short_model_path_cls = f'/Users/louisspencer/Desktop/Trading-Bot/data/pretrained_models/classification/nn_short_model_{year}_{month}.pkl'
-        short_model_path_reg = f'/Users/louisspencer/Desktop/Trading-Bot/data/pretrained_models/regression/nn_short_model_{year}_{month}.pkl'
-        
-        long_model_cls = joblib.load(long_model_path_cls)
-        long_model_cls.verbose = False  # Disable verbose output for the model
-        long_model_reg = joblib.load(long_model_path_reg)
-        long_model_reg.verbose = False
+        model_path_long = f'/Users/louisspencer/Desktop/Trading-Bot/data/pretrained_models/regression/lgbm_long_model_{year}_{month}_sign.pkl'
+        model_path_short = f'/Users/louisspencer/Desktop/Trading-Bot/data/pretrained_models/regression/lgbm_short_model_{year}_{month}_sign.pkl'
+        model_long = joblib.load(model_path_long)
+        model_long.set_params(verbosity=-1)
         try:
-            short_model_cls = joblib.load(short_model_path_cls)
-            short_model_cls.verbose = False  # Disable verbose output for the model
-            short_model_reg = joblib.load(short_model_path_reg)
-            short_model_reg.verbose = False
+            model_short = joblib.load(model_path_short)
+            model_short.set_params(verbosity=-1)
         except FileNotFoundError:
-            short_model_cls = None
-            short_model_reg = None
-
-        return long_model_cls, short_model_cls, long_model_reg, short_model_reg
+            model_short = None
+        return model_long, model_short
 
     def calculate_size(self, volatilities):
         """
@@ -216,7 +204,7 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
         self.ml_features['y_pred'] = 0
 
         # Get models
-        long_model_cls, short_model_cls, long_model_reg, short_model_reg = self.__get_model(min_date)
+        model_long, model_short = self.__get_model(min_date)
 
         # Get features for this month
         feature_filter = (
@@ -242,165 +230,113 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
         X = spot_data.drop(columns=self.cols_to_drop, errors='ignore', axis=1)
         X_futures = futures_data.drop(columns=self.cols_to_drop, errors='ignore', axis=1)
 
-        # OHE categorical features
-        year = min_date.year
-        month = min_date.month
-        ohe_long_path = f'/Users/louisspencer/Desktop/Trading-Bot/data/pretrained_models/classification/ohe_{year}_{month}_long.pkl'
-        ohe_long = joblib.load(ohe_long_path)
-        encoded_data = ohe_long.transform(X[['symbol_id', 'day_of_week', 'month']])
-        encoded_cols = ohe_long.get_feature_names_out(['symbol_id', 'day_of_week', 'month'])
-        encdoded_df = pd.DataFrame(encoded_data, index=X.index, columns=encoded_cols)
-        X = pd.concat([X[self.cols_to_include], encdoded_df], axis=1)
-
-        # OHE categorical features for futures
-        if short_model_cls is not None:
-            ohe_short_path = f'/Users/louisspencer/Desktop/Trading-Bot/data/pretrained_models/classification/ohe_{year}_{month}_short.pkl'
-            ohe_short = joblib.load(ohe_short_path)
-            encoded_data_futures = ohe_short.transform(X_futures[['symbol_id', 'day_of_week', 'month']])
-            encoded_cols_futures = ohe_short.get_feature_names_out(['symbol_id', 'day_of_week', 'month'])
-            encdoded_df_futures = pd.DataFrame(encoded_data_futures, index=X_futures.index, columns=encoded_cols_futures)
-            X_futures = pd.concat([X_futures[self.cols_to_include], encdoded_df_futures], axis=1)            
-
-        # Winsorize features using preloaded quantiles and fill NaNs with 0
-        p_001_long_path = f'/Users/louisspencer/Desktop/Trading-Bot/data/pretrained_models/classification/p001_{year}_{month}_long.json'
-        p_999_long_path = f'/Users/louisspencer/Desktop/Trading-Bot/data/pretrained_models/classification/p999_{year}_{month}_long.json'
-        p_001_long = pd.read_json(p_001_long_path, typ='series')
-        p_999_long = pd.read_json(p_999_long_path, typ='series')
-        X = X.clip(lower=p_001_long, upper=p_999_long, axis=1)
-        X = X.fillna(0)
-
-        if short_model_cls is not None:
-            p_001_short_path = f'/Users/louisspencer/Desktop/Trading-Bot/data/pretrained_models/classification/p001_{year}_{month}_short.json'
-            p_999_short_path = f'/Users/louisspencer/Desktop/Trading-Bot/data/pretrained_models/classification/p999_{year}_{month}_short.json'
-            p_001_short = pd.read_json(p_001_short_path, typ='series')
-            p_999_short = pd.read_json(p_999_short_path, typ='series')
-            X_futures = X_futures.clip(lower=p_001_short, upper=p_999_short, axis=1)
-            X_futures = X_futures.fillna(0)
+        # Get LightGBM model features from each model
+        features_long = model_long.feature_names_in_
+        if model_short is not None:
+            features_short = model_short.feature_names_in_
 
         # Predictions on this month
-        if short_model_cls is None:
-            y_pred_proba_short = np.zeros_like(len(X_futures), dtype=int)
-            y_pred_reg_short = np.zeros_like(len(X_futures), dtype=int)
-            pred_expected_value = np.zeros_like(len(X_futures), dtype=int)
+        y_pred_long = model_long.predict(X[features_long])
+        if model_short is None:
+            y_pred_short = np.zeros_like(len(X_futures), dtype=int)
         else:
-            y_pred_proba_short = short_model_cls.predict_proba(X_futures)[:, 1]
-            y_pred_reg_short = short_model_reg.predict(X_futures)
-            pred_expected_value = y_pred_proba_short * y_pred_reg_short
+            y_pred_short = model_short.predict(X_futures[features_short])
         
-        futures_data['expected_value_short'] = pred_expected_value
-        futures_data['y_pred_proba_short'] = y_pred_proba_short
+        # Add the predictions to the DataFrame
+        spot_data['expected_value_long'] = y_pred_long
+        futures_data['expected_value_short'] = y_pred_short
 
         # Pivot futures model's predictions for ranking the models' signals by date
-        short_model_probs = (
-            futures_data
-            .reset_index()[['time_period_open', 'symbol_id', 'expected_value_short', 'cs_futures_returns_mean_30', 'y_pred_proba_short']]
-            .pivot_table(index='time_period_open', columns='symbol_id', values=['expected_value_short', 'cs_futures_returns_mean_30', 'y_pred_proba_short'], dropna=False)
-        )
-        short_model_probs = short_model_probs.fillna(0)
-        short_model_probs = short_model_probs[short_model_probs.index.isin(universe.index)]
-
-        # Get the top 10 symbols by expected value to enter short positions
-        short_entry_symbols = pd.Series(index = short_model_probs.index, dtype=object)
-        for date in short_model_probs.index:
-            top_symbols = short_model_probs['expected_value_short'].loc[date].nlargest(10).index.to_list()                
-            short_entry_symbols.loc[date] = list(top_symbols)
-
-        short_entries = short_model_probs['y_pred_proba_short'].copy() * 0
-        short_entries = short_entries.astype(bool)
-
-        for date in short_entry_symbols.index:
-            symbols = short_entry_symbols.loc[date]
-            if np.nan in symbols:
-                continue
-            short_entries.loc[date, symbols] = True
-
-        short_entries = short_entries & (short_model_probs['y_pred_proba_short'] >= prediction_threshold)
-
-        y_pred_proba_long = long_model_cls.predict_proba(X)[:, 1] 
-        y_pred_reg_long = long_model_reg.predict(X)
-        pred_expected_value = y_pred_proba_long * y_pred_reg_long
-        
-        spot_data['expected_value_long'] = pred_expected_value
-        spot_data['y_pred_proba_long'] = y_pred_proba_long
-
-        # Pivot model's predictions for ranking the models' signals by date
         long_model_probs = (
             spot_data
-            .reset_index()[['time_period_open', 'symbol_id', 'y_pred_proba_long', 'cs_futures_returns_mean_30', 'expected_value_long']]
-            .pivot_table(index='time_period_open', columns='symbol_id', values=['y_pred_proba_long', 'cs_futures_returns_mean_30', 'expected_value_long'], dropna=False)
+            .reset_index()[['time_period_open', 'symbol_id', 'expected_value_long', 'rolling_ema_30_cs_spot_returns_mean_7', 'rolling_ema_30_cs_futures_returns_mean_7']]
+            .pivot_table(index='time_period_open', columns='symbol_id', values=['expected_value_long', 'rolling_ema_30_cs_spot_returns_mean_7', 'rolling_ema_30_cs_futures_returns_mean_7'], dropna=False)
         )
-        long_model_probs = long_model_probs.fillna(0)
         long_model_probs = long_model_probs[long_model_probs.index.isin(universe.index)]
+        short_model_probs = (
+            futures_data
+            .reset_index()[['time_period_open', 'symbol_id', 'expected_value_short', 'rolling_ema_30_cs_spot_returns_mean_7']]
+            .pivot_table(index='time_period_open', columns='symbol_id', values=['expected_value_short', 'rolling_ema_30_cs_spot_returns_mean_7'], dropna=False)
+        )
+        short_model_probs = short_model_probs[short_model_probs.index.isin(universe.index)]
 
-        # Merge the long and short model entries with empty DataFrames to ensure that they have the same columns as the universe
+        # Get the bottom 5 symbols by expected value in the futures market to enter short positions
+        short_entry_symbols = pd.Series(index = short_model_probs.index, dtype=object)
+        long_entry_symbols = pd.Series(index = long_model_probs.index, dtype=object)
+        for date in long_model_probs.index:
+            long_universe = long_model_probs.loc[date, 'expected_value_long']
+            regime = long_model_probs.loc[date, 'rolling_ema_30_cs_spot_returns_mean_7'].mean()
+            is_futures_available = not np.isnan(long_model_probs.loc[date, 'rolling_ema_30_cs_futures_returns_mean_7'].mean())
+            # If the regime is NaN (no futures data), only take the top 10 symbols from the spot universe
+            if not is_futures_available:
+                top_symbols = long_universe.nlargest(10).index.to_list()
+                bottom_symbols = []
+            # If the regime is positive, only take the top 10 symbols from the spot universe
+            elif regime > 0:
+                top_symbols = long_universe.nlargest(10).index.to_list()
+                bottom_symbols = []
+            # If the regime is negative, take the top 5 symbols from the spot universe and
+            # the bottom 5 symbols from the futures universe
+            elif regime < 0:
+                try:
+                    short_universe = short_model_probs.loc[date, 'expected_value_short']
+                    bottom_symbols = short_universe.nsmallest(5).index.to_list()
+                    top_symbols = long_universe.nlargest(5).index.to_list()
+                except KeyError:
+                    bottom_symbols = []
+                    top_symbols = long_universe.nlargest(10).index.to_list()
+
+            long_entry_symbols.loc[date] = list(top_symbols)
+            short_entry_symbols.loc[date] = list(bottom_symbols)
+
+        short_entries = short_model_probs['expected_value_short'].copy() * 0
+        short_entries = short_entries.astype(bool)
+        long_entries = long_model_probs['expected_value_long'].copy() * 0
+        long_entries = long_entries.astype(bool)
+
+        for date in long_entry_symbols.index:
+            long_symbols = long_entry_symbols.loc[date]
+            long_entries.loc[date, long_symbols] = True
+            try:
+                short_symbols = short_entry_symbols.loc[date]
+            except:
+                short_symbols = []
+            short_entries.loc[date, short_symbols] = True
+
+        long_entries = long_entries & (long_model_probs['expected_value_long'] > 0) 
+        short_entries = short_entries & (short_model_probs['expected_value_short'] < 0)
+
         empty_long = pd.DataFrame(
-            np.zeros((long_model_probs['y_pred_proba_long'].shape[0], long_model_probs['y_pred_proba_long'].shape[1])),
+            np.zeros((long_model_probs['expected_value_long'].shape[0], long_model_probs['expected_value_long'].shape[1])),
             index=long_model_probs.index,
-            columns=[col for col in long_model_probs['y_pred_proba_long'].columns]
-        )   
+            columns=[col for col in long_model_probs['expected_value_long'].columns]
+        )
         empty_short = pd.DataFrame(
-            np.zeros((short_model_probs['y_pred_proba_short'].shape[0], short_model_probs['y_pred_proba_short'].shape[1])),
+            np.zeros((short_model_probs['expected_value_short'].shape[0], short_model_probs['expected_value_short'].shape[1])),
             index=short_model_probs.index,
-            columns=[col for col in short_model_probs['y_pred_proba_short'].columns]
+            columns=[col for col in short_model_probs['expected_value_short'].columns]
         )
 
-        # If futures data exists
-        if len(short_model_probs['y_pred_proba_short'].columns) != 1:
-            # Get the top 10 symbols by expected value to enter long positions
-            long_entry_symbols = pd.Series(index = long_model_probs.index, dtype=object)
-            for date in long_model_probs.index:
-                top_symbols = long_model_probs['expected_value_long'].loc[date].nlargest(10).index.to_list()
-                long_entry_symbols.loc[date] = list(top_symbols)
-
-            long_entries = long_model_probs['y_pred_proba_long'].copy() * 0
-            long_entries = long_entries.astype(bool)
-
-            for date in long_entry_symbols.index:
-                symbols = long_entry_symbols.loc[date]
-                if np.nan in symbols:
-                    continue
-                long_entries.loc[date, symbols] = True
-
-            long_entries = long_entries & (long_model_probs['y_pred_proba_long'] >= prediction_threshold)
-            long_entries = pd.merge(
-                long_entries,
-                empty_short,
-                left_index=True,
-                right_index=True,
-                how='outer',
-                suffixes=('', '_futures')
-            ).fillna(False)
-            # Ensure that the long model probabilities are aligned with the universe
-            long_entries = long_entries[long_entries.index.isin(universe.index)]
-
-            short_entries = pd.merge(
-                empty_long,
-                short_entries,
-                left_index=True,
-                right_index=True,
-                how='outer',
-                suffixes=('', '_futures')
-            ).fillna(False)
-            # Ensure that the short model probabilities are aligned with the universe
-            short_entries = short_entries[short_entries.index.isin(universe.index)]   
-        else:
-            long_entry_symbols = pd.Series(index = long_model_probs.index, dtype=object)
-            for date in long_model_probs.index:
-                top_symbols = long_model_probs['expected_value_long'].loc[date].nlargest(20).index.to_list()
-                long_entry_symbols.loc[date] = list(top_symbols)
-
-            long_entries = long_model_probs['y_pred_proba_long'].copy() * 0
-            long_entries = long_entries.astype(bool)
-
-            for date in long_entry_symbols.index:
-                symbols = long_entry_symbols.loc[date]
-                if np.nan in symbols:
-                    continue
-                long_entries.loc[date, symbols] = True
-
-            long_entries = long_entries & (long_model_probs['y_pred_proba_long'] >= prediction_threshold)
-            # Ensure that the long model probabilities are aligned with the universe
-            long_entries = long_entries[long_entries.index.isin(universe.index)]
+        # Merge the long and short entries w/ the empty DataFrames 
+        # to have a consistent universe structure for VBT
+        long_entries = pd.merge(
+            long_entries,
+            empty_short,
+            left_index=True,
+            right_index=True,
+            how='outer',
+            suffixes=('', '_futures')
+        ).fillna(False)
+        long_entries = long_entries[long_entries.index.isin(universe.index)]
+        short_entries = pd.merge(
+            empty_long,
+            short_entries,
+            left_index=True,
+            right_index=True,
+            how='outer',
+            suffixes=('', '_futures')
+        ).fillna(False)
+        short_entries = short_entries[short_entries.index.isin(universe.index)]
 
         # Intersection of columns between the universe and the signals
         open_spot = universe.open
@@ -419,20 +355,13 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
         close_futures = universe.close_futures
         close_futures.columns = [f'{col}_futures' for col in close_futures.columns]
 
-        # Align the long and short entries (daily) with the universe (hourly)
-        long_entries = long_entries.reindex(universe.index, method=None).fillna(False)
-        long_entries = long_entries.astype(bool)
-        
-        short_entries = short_entries.reindex(universe.index, method=None).fillna(False)
-        short_entries = short_entries.astype(bool)
-
-        # Pivot volatilities for calculating position sizes
-        volatilities = (
-            self.ml_features
-            .reset_index()[['time_period_open', 'symbol_id', 'std_spot_returns_1_180']]
-            .pivot_table(index='time_period_open', columns='symbol_id', values='std_spot_returns_1_180', dropna=False)
-        )
-        volatilities = volatilities.sort_index()
+        # # Pivot volatilities for calculating position sizes
+        # volatilities = (
+        #     self.ml_features
+        #     .reset_index()[['time_period_open', 'symbol_id', 'std_spot_returns_1_180']]
+        #     .pivot_table(index='time_period_open', columns='symbol_id', values='std_spot_returns_1_180', dropna=False)
+        # )
+        # volatilities = volatilities.sort_index()
 
         # Position sizes
         # size = self.calculate_size(volatilities)
@@ -450,74 +379,62 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
         del self.backtest_params['tp_stop']
         del self.backtest_params['size']
 
-        if len(short_model_probs['y_pred_proba_short'].columns) != 1:
-            open = pd.merge(
-                open_spot,
-                open_futures,
-                left_index=True,
-                right_index=True,
-                how='outer',
-            )
-            high = pd.merge(
-                high_spot,
-                high_futures,
-                left_index=True,
-                right_index=True,
-                how='outer',
-            )
-            low = pd.merge(
-                low_spot,
-                low_futures,
-                left_index=True,
-                right_index=True,
-                how='outer',
-            )
-            close = pd.merge(
-                close_spot,
-                close_futures,
-                left_index=True,
-                right_index=True,
-                how='outer',
-            )
-        else:
-            open = open_spot
-            high = high_spot
-            low = low_spot
-            close = close_spot
-
-        # long_entries = long_entries.reindex(columns=open.columns, fill_value=False)
-        long_entries.index = long_entries.index.astype('datetime64[ns]')
-        long_entries = long_entries.astype(bool)
-
-        if len(short_model_probs['y_pred_proba_short'].columns) != 1:
-            # short_entries = short_entries.reindex(columns=open.columns, fill_value=False)
-            short_entries.index = short_entries.index.astype('datetime64[ns]')
-            short_entries = short_entries.astype(bool)
+        open = pd.merge(
+            open_spot,
+            open_futures,
+            left_index=True,
+            right_index=True,
+            how='outer',
+        )
+        high = pd.merge(
+            high_spot,
+            high_futures,
+            left_index=True,
+            right_index=True,
+            how='outer',
+        )
+        low = pd.merge(
+            low_spot,
+            low_futures,
+            left_index=True,
+            right_index=True,
+            how='outer',
+        )
+        close = pd.merge(
+            close_spot,
+            close_futures,
+            left_index=True,
+            right_index=True,
+            how='outer',
+        )
+        
+        # long_entries.index = long_entries.index.astype('datetime64[ns]')
+        # short_entries.index = short_entries.index.astype('datetime64[ns]')
+        long_entries = long_entries.astype('bool')
+        short_entries = short_entries.astype('bool')
 
         # Simulate Portfolio
         portfolio = vbt.Portfolio.from_signals(
-            # signal_func_nb=signal_func_nb,
-            # signal_args=(
-            #     long_entries.values,
-            #     short_entries.values if len(short_entries.columns) != 1 else np.full(long_entries.shape, False),
-            # ),
-            # post_segment_func_nb=post_segment_func_nb,
-            # in_outputs=dict(
-            #     is_trading=vbt.RepEval(
-            #         "np.full(len(cs_group_lens), True)"
-            #     ),
-            # ),
-            long_entries=long_entries,
-            short_entries=short_entries if len(short_entries.columns) != 1 else False,
+            signal_func_nb=signal_func_nb,
+            signal_args=(
+                long_entries.values,
+                short_entries.values, 
+            ),
+            post_segment_func_nb=post_segment_func_nb,
+            in_outputs=dict(
+                is_trading=vbt.RepEval(
+                    "np.full(len(cs_group_lens), True)"
+                ),
+            ),
             open=open,
             high=high,
             low=low,
             close=close,
-            size=0.05,
+            size=0.1,
             sl_stop=1, 
             td_stop=pd.Timedelta(days=7),
             cash_sharing=True,
-            accumulate=True,
+            accumulate=False,
             freq='D',
             **self.backtest_params
         )

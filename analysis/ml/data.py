@@ -20,6 +20,8 @@ def construct_dataset_for_ml(resample_period):
             asset_id_quote, 
             exchange_id 
         FROM market_data.ohlcv_1m 
+        WHERE
+            asset_id_quote = 'USDT'
         ORDER BY asset_id_base, asset_id_quote, exchange_id
         """).df()
 
@@ -30,6 +32,8 @@ def construct_dataset_for_ml(resample_period):
             asset_id_quote, 
             exchange_id 
         FROM market_data.futures_ohlcv_1m 
+        WHERE
+            asset_id_quote = 'USDT'
         ORDER BY asset_id_base, asset_id_quote, exchange_id
         """).df()
 
@@ -68,16 +72,13 @@ def construct_dataset_for_ml(resample_period):
                     exchange_id = '{asset['exchange_id']}'
                 ORDER BY time_period_end
                 """
-            ).df().set_index('time_period_end').asfreq('1min', method = 'ffill')
+            ).df().set_index('time_period_end').asfreq('1min')
                         
-            # # Ffill missing values
-            # numeric_cols_spot = [col for col in data_spot.columns if col not in ('asset_id_base', 'asset_id_quote', 'exchange_id')]
-            # categorical_cols = ['asset_id_base', 'asset_id_quote', 'exchange_id']
-            # data_spot.loc[:,numeric_cols_spot] = data_spot.loc[:,numeric_cols_spot].ffill()
-
-            # for col in categorical_cols:
-            #     mode_spot = data_spot.loc[:,col].mode().iloc[0]
-            #     data_spot.loc[:,col] = data_spot.loc[:,col].fillna(mode_spot)
+            # Ffill missing values
+            categorical_cols = ['asset_id_base', 'asset_id_quote', 'exchange_id']
+            for col in categorical_cols:
+                mode_spot = data_spot.loc[:,col].mode().iloc[0]
+                data_spot.loc[:,col] = data_spot.loc[:,col].fillna(mode_spot)
 
             # Downsample to resample_period
             data_spot = data_spot.resample(resample_period, label = 'right', closed = 'left').agg({
@@ -119,16 +120,13 @@ def construct_dataset_for_ml(resample_period):
                     exchange_id = '{asset['exchange_id']}'
                 ORDER BY time_period_end
                 """
-            ).df().set_index('time_period_end').asfreq('1min', method = 'ffill')
+            ).df().set_index('time_period_end').asfreq('1min')
                         
-            # # Ffill missing values
-            # numeric_cols_futures = [col for col in data_futures.columns if col not in ('asset_id_base', 'asset_id_quote', 'exchange_id')]
-            # categorical_cols = ['asset_id_base', 'asset_id_quote', 'exchange_id']
-            # data_futures.loc[:,numeric_cols_futures] = data_futures.loc[:,numeric_cols_futures].ffill()
-
-            # for col in categorical_cols:
-            #     mode_futures = data_futures.loc[:,col].mode().iloc[0]
-            #     data_futures.loc[:,col] = data_futures.loc[:,col].fillna(mode_futures)
+            # Ffill missing values
+            categorical_cols = ['asset_id_base', 'asset_id_quote', 'exchange_id']
+            for col in categorical_cols:
+                mode_futures = data_futures.loc[:,col].mode().iloc[0]
+                data_futures.loc[:,col] = data_futures.loc[:,col].fillna(mode_futures)
 
             # Downsample to resample_period
             data_futures = data_futures.resample(resample_period, label = 'right', closed = 'left').agg({
@@ -158,28 +156,25 @@ def construct_dataset_for_ml(resample_period):
 
         # Save if the spot data file does not exist
         path_spot = f'/Users/louisspencer/Desktop/Trading-Bot/data/ml_dataset_{resample_period}.csv'
-        if not os.path.exists(path_spot):
-            dataset_spot.to_csv(path_spot, index = False)
-            QUERY(
-                f"""
-                CREATE OR REPLACE TABLE market_data.ml_dataset_{resample_period} as from read_csv('{path_spot}');
-                """
-            )
+        dataset_spot.to_csv(path_spot, index = False)
+        QUERY(
+            f"""
+            CREATE OR REPLACE TABLE market_data.ml_dataset_{resample_period} as from read_csv('{path_spot}');
+            """
+        )
 
         # Save if the futures data file does not exist
         path_futures = f'/Users/louisspencer/Desktop/Trading-Bot/data/ml_dataset_futures_{resample_period}.csv'
-        if not os.path.exists(path_futures):
-            dataset_futures.to_csv(path_futures, index = False)
-            QUERY(
-                f"""
-                CREATE OR REPLACE TABLE market_data.ml_dataset_futures_{resample_period} as from read_csv('{path_futures}');
-                """
-            )
+        dataset_futures.to_csv(path_futures, index = False)
+        QUERY(
+            f"""
+            CREATE OR REPLACE TABLE market_data.ml_dataset_futures_{resample_period} as from read_csv('{path_futures}');
+            """
+        )
 
 def get_ml_dataset(resample_period = '1d'):
     # Construct the dataset for machine learning
-    if not os.path.exists('/Users/louisspencer/Desktop/Trading-Bot/data/ml_dataset.csv.gz'):
-        construct_dataset_for_ml(resample_period = resample_period)
+    construct_dataset_for_ml(resample_period = resample_period)
 
 def get_ml_features(feature_engineering_pipeline):
     tokens = QUERY(
@@ -195,15 +190,6 @@ def get_ml_features(feature_engineering_pipeline):
     )
 
     if not os.path.exists('/Users/louisspencer/Desktop/Trading-Bot/data/ml_features.csv.gz'):
-        # try:
-        #     QUERY(
-        #         """
-        #         DROP TABLE market_data.ml_features
-        #         """
-        #     )
-        # except:
-        #     pass
-
         n = len(tokens[['asset_id_base', 'asset_id_quote', 'exchange_id']])
         prev_data = None
         canonical_cols = None 

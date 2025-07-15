@@ -310,7 +310,7 @@ def simulate_equity_curves_with_block_bootstrap(
         returns,
         initial_equity,
         n,
-        block_size
+        block_size = 30
 ):
     """
     Simulates multiple equity curves by block bootstrapping historical returns.

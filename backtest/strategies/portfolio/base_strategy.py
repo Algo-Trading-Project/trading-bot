@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 import vectorbtpro as vbt
 
 # Suppress all warnings
@@ -39,20 +40,17 @@ class BasePortfolioStrategy:
         'output_names':['entries', 'exits', 'tp', 'sl', 'size']
     }
 
-    metric_map = {
-        'Total Return':'total_return',
-        'Max Drawdown':'drawdowns.max_drawdown',
-        'Win Rate':'trades.win_rate',
-        'Sharpe Ratio':'sharpe_ratio',
-        'Calmar Ratio':'calmar_ratio',
-        'Omega Ratio':'omega_ratio',
-        'Sortino Ratio':'sortino_ratio'
-    }
-
     def __init__(self, *args, **kwargs):
-        if kwargs.get('optimization_metric') is not None:
-            self.optimization_metric = self.metric_map[kwargs.get('optimization_metric')]
-
+        metric_map = {
+            'Total Return':'total_return',
+            'Max Drawdown':'drawdowns.max_drawdown',
+            'Win Rate':'trades.win_rate',
+            'Sharpe Ratio':'sharpe_ratio',
+            'Calmar Ratio':'calmar_ratio',
+            'Omega Ratio':'omega_ratio',
+            'Sortino Ratio':'sortino_ratio'
+        }
+        self.optimization_metric = metric_map.get(kwargs.get('optimization_metric'), 'sortino_ratio')
         self.start_date = None
 
     @staticmethod
@@ -123,6 +121,13 @@ class BasePortfolioStrategy:
             **params
         )
         optimization_metric = getattr(portfolio, self.optimization_metric)
+
+        # If the optimization metric is a pandas Series, return 0
+        if isinstance(optimization_metric, pd.Series):
+            optimization_metric = 0.0
+            print(f'Optimization Metric: {optimization_metric}')
+            print()
+            return optimization_metric
 
         rename_dict = {
             'Entry Index':'entry_date', 'Exit Index':'exit_date',
