@@ -1,6 +1,7 @@
 import pandas as pd
 import duckdb
 import os
+import pathlib
 
 from numba import njit
 from utils.db_utils import QUERY
@@ -189,143 +190,80 @@ def get_ml_features(feature_engineering_pipeline):
         """
     )
 
-    if not os.path.exists('/Users/louisspencer/Desktop/Trading-Bot/data/ml_features.csv.gz'):
-        n = len(tokens[['asset_id_base', 'asset_id_quote', 'exchange_id']])
-        prev_data = None
-        canonical_cols = None 
-        for idx, row in tokens[['asset_id_base', 'asset_id_quote', 'exchange_id']].iterrows():
-            asset_id_base = row['asset_id_base']
-            asset_id_quote = row['asset_id_quote']
-            exchange_id = row['exchange_id']
+    n = len(tokens[['asset_id_base', 'asset_id_quote', 'exchange_id']])
+    prev_data = None
+    canonical_cols = None 
+    for idx, row in tokens[['asset_id_base', 'asset_id_quote', 'exchange_id']].iterrows():
+        asset_id_base = row['asset_id_base']
+        asset_id_quote = row['asset_id_quote']
+        exchange_id = row['exchange_id']
 
-            symbol_id = f'{asset_id_base}_{asset_id_quote}_{exchange_id}'
+        symbol_id = f'{asset_id_base}_{asset_id_quote}_{exchange_id}'
+        print(f'Processing symbol_id: {symbol_id} ({idx + 1}/{n})')
 
-            if exchange_id != 'BINANCE':
-                continue
+        token_spot = QUERY(
+            f"""
+            SELECT 
+                asset_id_base || '_' || asset_id_quote || '_' || exchange_id AS symbol_id,
+                *
+            FROM market_data.ml_dataset_1d
+            WHERE
+                asset_id_base = '{asset_id_base}' AND
+                asset_id_quote = '{asset_id_quote}' AND
+                exchange_id = '{exchange_id}'
+            ORDER BY time_period_end
+            """
+        )
+        token_futures = QUERY(
+            f"""
+            SELECT 
+                asset_id_base || '_' || asset_id_quote || '_' || exchange_id AS symbol_id,
+                *
+            FROM market_data.ml_dataset_futures_1d
+            WHERE
+                asset_id_base = '{asset_id_base}' AND
+                asset_id_quote = '{asset_id_quote}' AND
+                exchange_id = '{exchange_id}'
+            ORDER BY time_period_end
+            """
+        )
+        merged = pd.merge(token_spot, token_futures, on = 'time_period_end', how = 'left', suffixes = ('_spot', '_futures'))
 
-            print(f'Processing symbol_id: {symbol_id} ({idx + 1}/{n})')
+        merged.rename(columns = {
+            'asset_id_base_spot': 'asset_id_base',
+            'asset_id_quote_spot': 'asset_id_quote',
+            'exchange_id_spot': 'exchange_id',
+            'symbol_id_spot': 'symbol_id',
+            'time_period_end_spot': 'time_period_end',
+        }, inplace = True)
+        merged.drop(columns = ['asset_id_base_futures', 'asset_id_quote_futures', 'exchange_id_futures', 'symbol_id_futures', 'time_period_end_futures'], inplace = True, errors = 'ignore')
 
-            token_spot = QUERY(
-                f"""
-                SELECT 
-                    asset_id_base || '_' || asset_id_quote || '_' || exchange_id AS symbol_id,
-                    *
-                FROM market_data.ml_dataset
-                WHERE
-                    asset_id_base = '{asset_id_base}' AND
-                    asset_id_quote = '{asset_id_quote}' AND
-                    exchange_id = '{exchange_id}'
-                ORDER BY time_period_end
-                """
-            )
-            token_futures = QUERY(
-                f"""
-                SELECT 
-                    asset_id_base || '_' || asset_id_quote || '_' || exchange_id AS symbol_id,
-                    *
-                FROM market_data.ml_dataset_futures
-                WHERE
-                    asset_id_base = '{asset_id_base}' AND
-                    asset_id_quote = '{asset_id_quote}' AND
-                    exchange_id = '{exchange_id}'
-                ORDER BY time_period_end
-                """
-            )
-            merged = pd.merge(token_spot, token_futures, on = 'time_period_end', how = 'left', suffixes = ('_spot', '_futures'))
+        # Ensure that the input data is sorted by time_period_end
+        assert merged['time_period_end'].is_monotonic_increasing, 'Input data is not sorted by time_period_end'
 
-            merged.rename(columns = {
-                'asset_id_base_spot': 'asset_id_base',
-                'asset_id_quote_spot': 'asset_id_quote',
-                'exchange_id_spot': 'exchange_id',
-                'symbol_id_spot': 'symbol_id',
-                'time_period_end_spot': 'time_period_end',
-            }, inplace = True)
-            merged.drop(columns = ['asset_id_base_futures', 'asset_id_quote_futures', 'exchange_id_futures', 'symbol_id_futures', 'time_period_end_futures'], inplace = True, errors = 'ignore')
+        features = feature_engineering_pipeline.fit_transform(merged)
+        if canonical_cols is None:
+            canonical_cols = features.columns.tolist()
+        else:
+            # Ensure that the features have the same columns as the canonical columns
+            # features = features[canonical_cols]
+            assert set(features.columns) == set(canonical_cols), 'Features do not have the same columns as the canonical columns'
 
-            # Ensure that the input data is sorted by time_period_end
-            assert merged['time_period_end'].is_monotonic_increasing, 'Input data is not sorted by time_period_end'
+        # Ensure that the output data is sorted by time_period_end
+        assert features['time_period_end'].is_monotonic_increasing, 'Output data is not sorted by time_period_end'
 
-            features = feature_engineering_pipeline.fit_transform(merged)
-            if canonical_cols is None:
-                canonical_cols = features.columns.tolist()
-            else:
-                # Ensure that the features have the same columns as the canonical columns
-                features = features[canonical_cols]
-                assert set(features.columns) == set(canonical_cols), 'Features do not have the same columns as the canonical columns'
-
-            # Ensure that the output data is sorted by time_period_end
-            assert features['time_period_end'].is_monotonic_increasing, 'Output data is not sorted by time_period_end'
-
-            if prev_data is None:
-                prev_data = features
-            else:
-                col_set_difference = (set(features.columns) - set(prev_data.columns)) | (set(prev_data.columns) - set(features.columns))
+        if prev_data is None:
+            prev_data = features
+        else:
+            col_set_difference = (set(features.columns) - set(prev_data.columns)) | (set(prev_data.columns) - set(features.columns))
+            print(f'Column set difference: {col_set_difference}')
+            print()
+            if len(col_set_difference) > 0:
                 print(f'Column set difference: {col_set_difference}')
-                print()
-                if len(col_set_difference) > 0:
-                    print(f'Column set difference: {col_set_difference}')
-                    continue
-                else:
-                    prev_data = features
+                continue
+            else:
+                prev_data = features
 
-            # Save the features for this token to a file
-            file = f'~/LocalData/data/ml_features/{symbol_id}.parquet'
-            features.to_parquet(file, index = False, compression = 'gzip')
-
-            # conn = duckdb.connect(
-            #     database = '~/LocalData/database.db',
-            #     read_only = False
-            # )
-            # conn.register('features', features)
-
-            # try:
-            #     # Upload the file to the database
-            #     q = f"""
-            #         INSERT INTO market_data.ml_features
-            #         SELECT * FROM features
-            #     """
-            #     QUERY(
-            #         q,
-            #         conn = conn
-            #     )
-            
-            # # If the table does not exist or the schema has changed, recreate the table
-            # # Binder Error:
-            # except duckdb.BinderException as e:
-            #     print(f'Error uploading data to the database: {e}')
-            #     QUERY(
-            #         """
-            #         CREATE OR REPLACE TABLE market_data.ml_features AS
-            #         SELECT * FROM features
-            #         """,
-            #         conn = conn
-            #     )
-            # # Conversion Error:
-            # except duckdb.ConversionException as e:
-            #     print(f'Error uploading data to the database: {e}')
-            #     QUERY(
-            #         """
-            #         INSERT INTO market_data.ml_features 
-            #         SELECT * FROM features
-            #         """,
-            #         conn = conn
-            #     )
-            # except Exception as e:
-            #     print(f'Error uploading data to the database: {e}')
-            #     QUERY(
-            #         """
-            #         CREATE OR REPLACE TABLE market_data.ml_features AS
-            #         SELECT * FROM features
-            #         """,
-            #         conn = conn
-            #     )
-
-            # finally:
-            #     conn.unregister('features')
-            #     conn.close()
-        
-    else:
-        X = pd.read_parquet('/Users/louisspencer/Desktop/Trading-Bot/data/ml_features.parquet') 
-        X['time_period_end'] = pd.to_datetime(X['time_period_end'])
-        X.sort_values(['asset_id_base', 'asset_id_quote', 'exchange_id', 'time_period_end'], inplace=True)
-        return X
+        # Save the features for this token to a file
+        file = f'~/LocalData/data/ml_features/{symbol_id}.parquet'
+        features.to_parquet(file, index = False, compression = 'snappy')        

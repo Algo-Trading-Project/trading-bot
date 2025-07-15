@@ -69,25 +69,10 @@ class BackTester:
         print()
 
         # Load the price data for the universe
-        price_data = QUERY(
-            """
-            SELECT
-                time_period_end as time_period_open,
-                asset_id_base || '_' || asset_id_quote || '_' || exchange_id as symbol_id,
-                open_spot as open,
-                open_futures as open_futures,
-                high_spot as high,
-                high_futures as high_futures,
-                low_spot as low,
-                low_futures as low_futures,
-                close_spot as close,
-                close_futures as close_futures
-            FROM market_data.ml_features
-            """
-        )
-        # Interpolate symbol_id with the most common value
-        price_data['symbol_id'] = price_data['symbol_id'].fillna(price_data['symbol_id'].mode().iloc[0])
+        price_data = pd.read_parquet('/Users/louisspencer/Desktop/Trading-Bot/data/ml_features.parquet')[['open_spot', 'high_spot', 'low_spot', 'close_spot', 'open_futures', 'high_futures', 'low_futures', 'close_futures', 'time_period_end', 'symbol_id']]
+        price_data.columns = ['open', 'high', 'low', 'close', 'open_futures', 'high_futures', 'low_futures', 'close_futures', 'time_period_open', 'symbol_id']
         price_data['time_period_open'] = pd.to_datetime(price_data['time_period_open']) - pd.Timedelta(days=1) 
+        price_data = price_data[price_data['symbol_id'].str.contains('USDT')]
 
         # Pivot the data to get the asset universe close, high, and low prices
         self.universe = (
@@ -443,6 +428,8 @@ class BackTester:
             short_trades = oos_trades[oos_trades['is_long'] == False]
             print('Long Trades:')
             print(long_trades)
+            # for trade in long_trades.itertuples():
+            #     print(f"Entry: {trade.entry_date}, Exit: {trade.exit_date}, PnL: {trade.pnl}, Symbol: {trade.symbol_id}, Pnl %: {trade.pnl_pct}")
             print()
             print('Short Trades:')
             print(short_trades)

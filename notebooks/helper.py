@@ -39,13 +39,25 @@ def plot_strategy_equity_curve(benchmark, strategy_equity_curve, trades_data, st
         benchmark = benchmark.loc[strategy_equity_curve['date'].min():strategy_equity_curve['date'].max()]
     except:
         benchmark = benchmark.loc[strategy_equity_curve.index.min():strategy_equity_curve.index.max()]
+
+    cagr = (strategy_equity_curve['equity'].iloc[-1] / strategy_equity_curve['equity'].iloc[0]) ** (365 / len(strategy_equity_curve)) - 1
+    sharpe_ratio = strategy_equity_curve['equity'].pct_change().mean() / strategy_equity_curve['equity'].pct_change().std() * np.sqrt(365)
+    sortino_ratio = strategy_equity_curve['equity'].pct_change().mean() / strategy_equity_curve['equity'].pct_change()[strategy_equity_curve['equity'].pct_change() < 0].std() * np.sqrt(365)
+    total_return = (strategy_equity_curve['equity'].iloc[-1] / strategy_equity_curve['equity'].iloc[0]) - 1
+
+    cagr_benchmark = (benchmark['equity'].iloc[-1] / benchmark['equity'].iloc[0]) ** (365 / len(benchmark)) - 1
+    sharpe_ratio_benchmark = benchmark['equity'].pct_change().mean() / benchmark['equity'].pct_change().std() * np.sqrt(365)
+    sortino_ratio_benchmark = benchmark['equity'].pct_change().mean() / benchmark['equity'].pct_change()[benchmark['equity'].pct_change() < 0].std() * np.sqrt(365)
+    total_return_benchmark = (benchmark['equity'].iloc[-1] / benchmark['equity'].iloc[0]) - 1
+
+    title = f'{strat} (CAGR: {cagr:.2%}, Sharpe Ratio: {sharpe_ratio:.2f}, Sortino Ratio: {sortino_ratio:.2f}, Total Return: {total_return:.2%}) vs. <br>Benchmark (CAGR: {cagr_benchmark:.2%}, Sharpe Ratio: {sharpe_ratio_benchmark:.2f}, Sortino Ratio: {sortino_ratio_benchmark:.2f}, Total Return: {total_return_benchmark:.2%})'
         
     # Plot strategy equity curve and benchmark
     # Plot year-month as xticks using Plotly
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=strategy_equity_curve['date'], y=strategy_equity_curve['equity'], mode='lines', name='Strategy Equity Curve', line=dict(color='blue', width=2)))
     fig.add_trace(go.Scatter(x=benchmark.index, y=benchmark['equity'], mode='lines', name='Benchmark (50/50 BTC/ETH)', line=dict(color='orange')))
-    fig.update_layout(title=f'Equity Curve for {strat}', xaxis_title='Date', yaxis_title='Equity Value (USD)', xaxis=dict(tickformat='%Y-%m', tickangle=90))
+    fig.update_layout(title=title, xaxis_title='Date', yaxis_title='Equity Value (USD)', xaxis=dict(tickformat='%Y-%m', tickangle=90))
     fig.show()
 
     # Alternative using Matplotlib
@@ -176,7 +188,7 @@ def plot_bootstrapped_sharpe_sortino_calmar_ratios(monte_carlo_risk_metrics, N):
 
 def plot_bootstrapped_drawdowns(monte_carlo_risk_metrics, N):
     # Risk of Ruin
-    risk_of_ruin = (np.array(monte_carlo_risk_metrics['max_dd']) <= -50).mean()
+    risk_of_ruin = (np.array(monte_carlo_risk_metrics['max_dd']) >= -70).mean()
 
     # Mean Avg. Drawdown and Max Drawdown
     mean_avg_dd = np.mean(monte_carlo_risk_metrics['avg_dd'])

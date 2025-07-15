@@ -116,7 +116,7 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
         self.spot_data = QUERY(
             """
             SELECT *
-            FROM market_data.ml_dataset
+            FROM market_data.ml_dataset_1d
             ORDER BY asset_id_base, asset_id_quote, exchange_id, time_period_end
             """
         )
@@ -126,7 +126,7 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
         self.futures_data = QUERY(
             """
             SELECT *
-            FROM market_data.ml_dataset_futures
+            FROM market_data.ml_dataset_futures_1d
             ORDER BY asset_id_base, asset_id_quote, exchange_id, time_period_end
             """
         )
@@ -2038,7 +2038,7 @@ class RiskFeatures(BaseEstimator, TransformerMixin):
         self.ml_dataset = QUERY(
             """
             SELECT *
-            FROM market_data.ml_dataset
+            FROM market_data.ml_dataset_1d
             ORDER BY asset_id_base, asset_id_quote, exchange_id, time_period_end
             """
         )
@@ -2306,7 +2306,7 @@ class SpotFuturesInteractionFeatures(BaseEstimator, TransformerMixin):
         spot_price_data = QUERY(
             """
             SELECT *
-            FROM market_data.ml_dataset
+            FROM market_data.ml_dataset_1d
             ORDER BY asset_id_base, asset_id_quote, exchange_id, time_period_end
             """
         )
@@ -2317,7 +2317,7 @@ class SpotFuturesInteractionFeatures(BaseEstimator, TransformerMixin):
         futures_price_data = QUERY(
             """
             SELECT *
-            FROM market_data.ml_dataset_futures
+            FROM market_data.ml_dataset_futures_1d
             ORDER BY asset_id_base, asset_id_quote, exchange_id, time_period_end
             """
         )
