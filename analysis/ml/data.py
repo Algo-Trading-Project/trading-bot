@@ -180,7 +180,7 @@ def get_ml_features(feature_engineering_pipeline):
     tokens = QUERY(
         """
         SELECT DISTINCT asset_id_base, asset_id_quote, exchange_id
-        FROM market_data.ml_dataset
+        FROM market_data.ml_dataset_1d
         WHERE asset_id_base || '_' || asset_id_quote || '_' || exchange_id IN (        
         SELECT DISTINCT asset_id_base || '_' || asset_id_quote || '_' || exchange_id AS symbol_id
         FROM market_data.spot_trade_features_rolling
