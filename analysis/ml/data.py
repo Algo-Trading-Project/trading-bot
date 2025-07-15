@@ -246,7 +246,7 @@ def get_ml_features(feature_engineering_pipeline):
             canonical_cols = features.columns.tolist()
         else:
             # Ensure that the features have the same columns as the canonical columns
-            # features = features[canonical_cols]
+            features = features[canonical_cols]
             assert set(features.columns) == set(canonical_cols), 'Features do not have the same columns as the canonical columns'
 
         # Ensure that the output data is sorted by time_period_end
