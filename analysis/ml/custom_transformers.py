@@ -421,13 +421,13 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
         for window_size in self.window_sizes:
             # Spot
             # Clipping of returns
-            if window == 1:
+            if window_size == 1:
                 clip_upper_bound = 1
-            elif window == 7:
+            elif window_size == 7:
                 clip_upper_bound = 10
-            elif window == 30:
+            elif window_size == 30:
                 clip_upper_bound = 20
-            elif window == 180:
+            elif window_size == 180:
                 clip_upper_bound = 50
             X[f'spot_returns_{window_size}'] = X['close_spot'].pct_change(window_size).clip(-1, clip_upper_bound)     
             X[f'futures_returns_{window_size}'] = X['close_futures'].pct_change(window_size).clip(-1, clip_upper_bound)

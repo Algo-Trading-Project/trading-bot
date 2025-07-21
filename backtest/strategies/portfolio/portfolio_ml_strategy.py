@@ -90,12 +90,12 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
 
     backtest_params = {
         'init_cash': 10_000,
-        'fees': 0.0075,  # 0.5% fees
+        'fees': 0.0075,  # 0.75% fees
         'slippage': 0.00,
         'sl_stop': 'std',
         'tp_stop': 'std',
         'size': 0.05,
-        'size_type': "valuepercent", # for example, 2 if 'size' is 'Fixed Percent' and 0 otherwise,
+        'size_type': "valuepercent",,
     }
 
     def __init__(self, *args, **kwargs):
