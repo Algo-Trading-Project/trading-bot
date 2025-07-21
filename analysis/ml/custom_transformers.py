@@ -172,8 +172,7 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
                     clip_upper_bound = 9.44
                 elif window == 180:
                     clip_upper_bound = 59
-                self.ml_dataset.loc[filter, f'spot_returns_{window}'] = self.ml_dataset.loc[filter, 'close_spot'].pct_change(window).clip(-1, clip_upper_bound)
-                
+                self.ml_dataset.loc[filter, f'spot_returns_{window}'] = self.ml_dataset.loc[filter, 'close_spot'].pct_change(window)
                 # Futures clipping of returns
                 if window == 1:
                     clip_upper_bound = 0.47
@@ -183,7 +182,7 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
                     clip_upper_bound = 7.09
                 elif window == 180:
                     clip_upper_bound = 22.7
-                self.ml_dataset.loc[filter, f'futures_returns_{window}'] = self.ml_dataset.loc[filter, 'close_futures'].pct_change(window).clip(-1, clip_upper_bound)
+                self.ml_dataset.loc[filter, f'futures_returns_{window}'] = self.ml_dataset.loc[filter, 'close_futures'].pct_change(window)
 
                 for lookback in self.lookback_windows:
                     # Spot metrics
@@ -439,7 +438,7 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
                 clip_upper_bound = 9.44
             elif window_size == 180:
                 clip_upper_bound = 59
-            X[f'spot_returns_{window_size}'] = X['close_spot'].pct_change(window_size).clip(-1, clip_upper_bound)            
+            X[f'spot_returns_{window_size}'] = X['close_spot'].pct_change(window_size)          
             # Futures 
             if window_size == 1:
                 clip_upper_bound = 0.47
@@ -449,7 +448,7 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
                 clip_upper_bound = 7.09
             elif window_size == 180:
                 clip_upper_bound = 22.7
-            X[f'futures_returns_{window_size}'] = X['close_futures'].pct_change(window_size).clip(-1, clip_upper_bound)
+            X[f'futures_returns_{window_size}'] = X['close_futures'].pct_change(window_size)
             
             # Forward returns for future prediction evaluation
             X[f'forward_returns_{window_size}'] = X[f'spot_returns_{window_size}'].shift(-window_size)
@@ -2069,7 +2068,7 @@ class RiskFeatures(BaseEstimator, TransformerMixin):
                     clip_upper_bound = 59
                     
                 # Calculate returns
-                self.ml_dataset.loc[filter, f'returns_{window}'] = self.ml_dataset.loc[filter, 'close'].pct_change(window).clip(-1, clip_upper_bound)
+                self.ml_dataset.loc[filter, f'returns_{window}'] = self.ml_dataset.loc[filter, 'close'].pct_change(window)
 
         btc = self.ml_dataset[self.ml_dataset['symbol_id'] == 'BTC_USDT_BINANCE'][[f'returns_{window}' for window in self.windows]]
         eth = self.ml_dataset[self.ml_dataset['symbol_id'] == 'ETH_USDT_BINANCE'][[f'returns_{window}' for window in self.windows]]
@@ -2342,7 +2341,7 @@ class SpotFuturesInteractionFeatures(BaseEstimator, TransformerMixin):
                     clip_upper_bound = 59
                 
                 # Calculate returns
-                spot_price_data.loc[filter_spot, f'returns_{window}d'] = spot_price_data.loc[filter_spot, 'close'].pct_change(window).clip(-1, clip_upper_bound)
+                spot_price_data.loc[filter_spot, f'returns_{window}d'] = spot_price_data.loc[filter_spot, 'close'].pct_change(window)
         
         for token in tokens_futures:
             for window in self.windows:
@@ -2357,7 +2356,7 @@ class SpotFuturesInteractionFeatures(BaseEstimator, TransformerMixin):
                 elif window == 180:
                     clip_upper_bound = 22.7
                     
-                futures_price_data.loc[filter_futures, f'returns_{window}d'] = futures_price_data.loc[filter_futures, 'close'].pct_change(window).clip(-1, clip_upper_bound)
+                futures_price_data.loc[filter_futures, f'returns_{window}d'] = futures_price_data.loc[filter_futures, 'close'].pct_change(window)
 
         # Basis (futures - spot) related features
         price_data = pd.merge(

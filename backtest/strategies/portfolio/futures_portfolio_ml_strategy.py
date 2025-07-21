@@ -162,7 +162,7 @@ class FuturesPortfolioMLStrategy(BasePortfolioStrategy):
         try:
             year = min_date.year
             month = min_date.month
-            model_path = f'/Users/louisspencer/Desktop/Trading-Bot/data/pretrained_models/regression/lgbm_short_model_{year}_{month}_sign.pkl'
+            model_path = f'/Users/louisspencer/Desktop/Trading-Bot/data/pretrained_models/regression/lgbm_short_model_{year}_{month}_7d.pkl'
             model = joblib.load(model_path)
             model.set_params(verbosity=-1)  # Suppress LightGBM warnings
             return model

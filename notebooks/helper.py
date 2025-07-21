@@ -35,11 +35,6 @@ def plot_in_sample_vs_out_of_sample_sharpe_ratios(all_metrics, strat):
     plt.tight_layout();
 
 def plot_strategy_equity_curve(benchmark, strategy_equity_curve, trades_data, strat, symbol_id):
-    try:
-        benchmark = benchmark.loc[strategy_equity_curve['date'].min():strategy_equity_curve['date'].max()]
-    except:
-        benchmark = benchmark.loc[strategy_equity_curve.index.min():strategy_equity_curve.index.max()]
-
     cagr = (strategy_equity_curve['equity'].iloc[-1] / strategy_equity_curve['equity'].iloc[0]) ** (365 / len(strategy_equity_curve)) - 1
     sharpe_ratio = strategy_equity_curve['equity'].pct_change().mean() / strategy_equity_curve['equity'].pct_change().std() * np.sqrt(365)
     sortino_ratio = strategy_equity_curve['equity'].pct_change().mean() / strategy_equity_curve['equity'].pct_change()[strategy_equity_curve['equity'].pct_change() < 0].std() * np.sqrt(365)
@@ -56,8 +51,8 @@ def plot_strategy_equity_curve(benchmark, strategy_equity_curve, trades_data, st
     # Plot year-month as xticks using Plotly
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=strategy_equity_curve['date'], y=strategy_equity_curve['equity'], mode='lines', name='Strategy Equity Curve', line=dict(color='blue', width=2)))
-    fig.add_trace(go.Scatter(x=benchmark.index, y=benchmark['equity'], mode='lines', name='Benchmark (50/50 BTC/ETH)', line=dict(color='orange')))
-    fig.update_layout(title=title, xaxis_title='Date', yaxis_title='Equity Value (USD)', xaxis=dict(tickformat='%Y-%m', tickangle=90))
+    fig.add_trace(go.Scatter(x=benchmark['time_period_end'], y=benchmark['equity'], mode='lines', name='Benchmark (50/50 BTC/ETH)', line=dict(color='orange')))
+    fig.update_layout(title=title, xaxis_title='Date', yaxis_title='Equity Value (USD)', xaxis=dict(tickformat='%Y-%m', tickangle=90), template='plotly_dark')
     fig.show()
 
     # Alternative using Matplotlib
@@ -155,7 +150,7 @@ def plot_bootstrapped_sharpe_sortino_calmar_ratios(monte_carlo_risk_metrics, N):
     fig.add_trace(go.Histogram(x=monte_carlo_risk_metrics['sortino_ratio'], nbinsx=100, name='Sortino Ratio', marker_color='blue', histnorm='probability'), row=1, col=2)
     fig.add_trace(go.Histogram(x=monte_carlo_risk_metrics['calmar_ratio'], nbinsx=100, name='Calmar Ratio', marker_color='red', histnorm='probability'), row=1, col=3)
     fig.update_traces(marker_line_width=1, marker_line_color='black')
-    fig.update_layout(title_text=f'Distribution of {N:,} Bootstrapped Risk Metrics', showlegend=False, height=500, width=1500)
+    fig.update_layout(title_text=f'Distribution of {N:,} Bootstrapped Risk Metrics', showlegend=False, height=500, width=1500, template='plotly_dark')
     fig.update_xaxes(title_text='Sharpe Ratio', row=1, col=1)
     fig.update_xaxes(title_text='Sortino Ratio', row=1, col=2)
     fig.update_xaxes(title_text='Calmar Ratio', row=1, col=3)
@@ -188,7 +183,7 @@ def plot_bootstrapped_sharpe_sortino_calmar_ratios(monte_carlo_risk_metrics, N):
 
 def plot_bootstrapped_drawdowns(monte_carlo_risk_metrics, N):
     # Risk of Ruin
-    risk_of_ruin = (np.array(monte_carlo_risk_metrics['max_dd']) >= -70).mean()
+    risk_of_ruin = (np.array(monte_carlo_risk_metrics['max_dd']) <= -70).mean()
 
     # Mean Avg. Drawdown and Max Drawdown
     mean_avg_dd = np.mean(monte_carlo_risk_metrics['avg_dd'])
@@ -211,7 +206,7 @@ def plot_bootstrapped_drawdowns(monte_carlo_risk_metrics, N):
     fig.add_trace(go.Histogram(x=monte_carlo_risk_metrics['avg_dd'], nbinsx=100, name='Avg. Drawdown (%)', marker_color='blue', histnorm='probability'), row=1, col=1)
     fig.add_trace(go.Histogram(x=monte_carlo_risk_metrics['max_dd'], nbinsx=100, name='Max Drawdown (%)', marker_color='red', histnorm='probability'), row=1, col=2)
     fig.update_traces(marker_line_width=1, marker_line_color='black')
-    fig.update_layout(title_text=f'Distribution of {N:,} Bootstrapped Drawdowns', showlegend=False, height=500, width=1300)
+    fig.update_layout(title_text=f'Distribution of {N:,} Bootstrapped Drawdowns', showlegend=False, height=500, width=1300, template='plotly_dark')
     fig.update_xaxes(title_text='Avg. Drawdown (%)', row=1, col=1)
     fig.update_xaxes(title_text='Max Drawdown (%)', row=1, col=2)
     fig.update_yaxes(title_text='Probability', row=1, col=1)
@@ -265,7 +260,7 @@ def plot_bootstrapped_alpha_beta(monte_carlo_risk_metrics, N):
     fig.add_trace(go.Histogram(x=alpha, nbinsx=100, name='Alpha', marker_color='purple', histnorm='probability'), row=1, col=1)
     fig.add_trace(go.Histogram(x=beta, nbinsx=100, name='Beta', marker_color='orange', histnorm='probability'), row=1, col=2)
     fig.update_traces(marker_line_width=1, marker_line_color='black')
-    fig.update_layout(title_text=f'Distribution of {N:,} Bootstrapped Alpha and Beta', showlegend=False, height=500, width=1300)
+    fig.update_layout(title_text=f'Distribution of {N:,} Bootstrapped Alpha and Beta', showlegend=False, height=500, width=1300, template='plotly_dark')
     fig.update_xaxes(title_text='Alpha', row=1, col=1)
     fig.update_xaxes(title_text='Beta', row=1, col=2)
     fig.update_yaxes(title_text='Probability', row=1, col=1)

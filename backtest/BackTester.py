@@ -84,7 +84,7 @@ class BackTester:
                 dropna = False
             )
         )
-        self.universe = self.universe.sort_index()
+        self.universe = self.universe.sort_index().ffill()
 
         self.strategies = strategies
         self.resample_period = resample_period
@@ -675,7 +675,7 @@ class BackTester:
         tokens = QUERY(
             """
             SELECT DISTINCT asset_id_base, asset_id_quote, exchange_id
-            FROM market_data.ml_dataset
+            FROM market_data.ml_dataset_1d
             ORDER BY asset_id_base, asset_id_quote, exchange_id
             """
         )
