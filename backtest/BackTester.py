@@ -42,37 +42,19 @@ class BackTester:
         start_date: str = '2021-04-01',
         end_date: str = '2022-12-31'          
     ):
-        """
-        Coordinates the walk-forward optimization of a set of strategies over a set of tokens, 
-        utilizing the vectorbt package for efficient parameter optimization. The results of the walk-forward
-        optimizations are logged for further dashboarding/analysis.
-
-        Parameters:
-        -----------
-        strategies : list
-            List of Strategy classes from backtest/strategies to backtest.
-
-        resample_period : str, default = '1min'
-            Period to resample the OHLCV data to before backtesting.
-
-        use_dollar_bars : bool, default = False
-            Whether to use dollar bars instead of time bars for the backtest.
-
-        start_date : str, default = '2021-04-01'
-            Start date of the backtest.
-
-        end_date : str, default = '2022-12-31'
-             End date of the backtest.
-        """
         print()
         print('Initializing BackTester...')
         print()
 
         # Load the price data for the universe
-        price_data = pd.read_parquet('/Users/louisspencer/Desktop/Trading-Bot/data/ml_features.parquet')[['open_spot', 'high_spot', 'low_spot', 'close_spot', 'open_futures', 'high_futures', 'low_futures', 'close_futures', 'time_period_end', 'symbol_id']]
-        price_data.columns = ['open', 'high', 'low', 'close', 'open_futures', 'high_futures', 'low_futures', 'close_futures', 'time_period_open', 'symbol_id']
+        cols = ['open_spot', 'high_spot', 'low_spot', 'close_spot', 'open_futures', 'high_futures', 'low_futures', 'close_futures', 'time_period_end', 'asset_id_base', 'asset_id_quote', 'exchange_id', 'symbol_id']
+        price_data = pd.read_parquet('/Users/louisspencer/Desktop/Trading-Bot/data/ml_features.parquet')[cols]
+        price_data.columns = ['open', 'high', 'low', 'close', 'open_futures', 'high_futures', 'low_futures', 'close_futures', 'time_period_open', 'asset_id_base', 'asset_id_quote', 'exchange_id', 'symbol_id']
         price_data['time_period_open'] = pd.to_datetime(price_data['time_period_open']) - pd.Timedelta(days=1) 
-        price_data = price_data[price_data['symbol_id'].str.contains('USDT')]
+        price_data = price_data[(price_data['asset_id_quote'] == 'USDT') & ~(price_data['asset_id_base'].str.contains('USD'))]
+        price_data = price_data.sort_values(by = ['symbol_id', 'time_period_open'])
+        # first_data_point_mask = price_data['symbol_id'].ne(price_data['symbol_id'].shift())
+        # price_data = price_data[~first_data_point_mask]
 
         # Pivot the data to get the asset universe close, high, and low prices
         self.universe = (
@@ -84,7 +66,7 @@ class BackTester:
                 dropna = False
             )
         )
-        self.universe = self.universe.sort_index().ffill()
+        self.universe = self.universe.sort_index()
 
         self.strategies = strategies
         self.resample_period = resample_period

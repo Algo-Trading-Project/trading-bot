@@ -2,6 +2,7 @@ from backtest.strategies.portfolio.portfolio_ml_strategy import PortfolioMLStrat
 from backtest.strategies.portfolio.ma_crossover_strategy import MACrossoverStrategy
 from backtest.strategies.portfolio.futures_portfolio_ml_strategy import FuturesPortfolioMLStrategy
 from backtest.strategies.portfolio.portfolio_ml_strategy_1d import PortfolioMLStrategy1D
+from backtest.strategies.portfolio.portfolio_ml_strategy_cls import PortfolioMLStrategyCls
 # Backtesters for single token and portfolio strategies
 from backtest.backtester import BackTester
 import time

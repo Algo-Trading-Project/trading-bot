@@ -239,7 +239,7 @@ tzdata==2024.1
 tzlocal==5.2
 uri-template==1.3.0
 urllib3==2.2.1
-vectorbtpro @ git+https://github.com/polakowo/vectorbt.pro.git@2624843425b5c3368025c0f12e2d5a2bbf2d5830
+vectorbtpro @ git+https://github.com/polakowo/vectorbt.pro.git
 wcwidth==0.2.13
 webcolors==1.13
 webencodings==0.5.1

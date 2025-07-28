@@ -59,10 +59,10 @@ def signal_func_nb(c, long_entry_signals, long_exit_signals, short_entry_signals
     else:
         return False, False, False, False
 
-class PortfolioMLStrategy(BasePortfolioStrategy):
+class PortfolioMLStrategyCls(BasePortfolioStrategy):
     
     indicator_factory_dict = {
-        'class_name':'PortfolioMLStrategy',
+        'class_name':'PortfolioMLStrategyCls',
     }
 
     optimize_dict = {
@@ -103,10 +103,15 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
         
         # Load the ML features from the database
         ml_features = pd.read_parquet('/Users/louisspencer/Desktop/Trading-Bot/data/ml_features.parquet')
+        ml_features['day_of_week'] = ml_features['time_period_end'].dt.dayofweek
+        ml_features['month'] = ml_features['time_period_end'].dt.month
+
         ml_features.rename(columns={'time_period_end': 'time_period_open'}, inplace=True)
+        ml_features['symbol_id'] = ml_features['symbol_id'].astype('category')
+        ml_features['day_of_week'] = ml_features['day_of_week'].astype('category')
+        ml_features['month'] = ml_features['month'].astype('category')
         ml_features.replace([np.inf, -np.inf], np.nan, inplace=True)
         ml_features = ml_features.dropna(subset=['forward_returns_7'])
-        ml_features['time_period_open'] = ml_features['time_period_open'] - pd.Timedelta(days=1)
         ml_features.set_index('time_period_open', inplace=True)
         ml_features.sort_index(inplace=True)
 
@@ -182,16 +187,23 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
     def __get_model(self, min_date: pd.Timestamp): 
         year = min_date.year
         month = min_date.month
-        model_path_long = f'/Users/louisspencer/Desktop/Trading-Bot/data/pretrained_models/regression/lgbm_long_model_{year}_{month}_7d_sign.pkl'
-        model_path_short = f'/Users/louisspencer/Desktop/Trading-Bot/data/pretrained_models/regression/lgbm_short_model_{year}_{month}_7d_sign.pkl'
-        model_long = joblib.load(model_path_long)
-        model_long.set_params(verbosity=-1)
+        model_path_long_reg = f'/Users/louisspencer/Desktop/Trading-Bot/data/pretrained_models/regression/lgbm_long_model_{year}_{month}_7d.pkl'
+        model_path_long_cls = f'/Users/louisspencer/Desktop/Trading-Bot/data/pretrained_models/classification/lgbm_long_model_{year}_{month}_7d.pkl'
+        model_path_short_reg = f'/Users/louisspencer/Desktop/Trading-Bot/data/pretrained_models/regression/lgbm_short_model_{year}_{month}_7d.pkl'
+        model_path_short_cls = f'/Users/louisspencer/Desktop/Trading-Bot/data/pretrained_models/classification/lgbm_short_model_{year}_{month}_7d.pkl'
+        model_long_reg = joblib.load(model_path_long_reg)
+        model_long_cls = joblib.load(model_path_long_cls)
+        model_long_reg.set_params(verbosity=-1)
+        model_long_cls.set_params(verbosity=-1)
         try:
-            model_short = joblib.load(model_path_short)
-            model_short.set_params(verbosity=-1)
+            model_short_reg = joblib.load(model_path_short_reg)
+            model_short_cls = joblib.load(model_path_short_cls)
+            model_short_reg.set_params(verbosity=-1)
+            model_short_cls.set_params(verbosity=-1)
         except FileNotFoundError:
-            model_short = None
-        return model_long, model_short
+            model_short_reg = None
+            model_short_cls = None
+        return model_long_reg, model_long_cls, model_short_reg, model_short_cls
 
     def calculate_size(self, volatilities):
         # Volatility targeting
@@ -220,7 +232,7 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
         max_date = universe.index.max()
 
         # Get models
-        model_long, model_short = self.__get_model(min_date)
+        model_long_reg, model_long_cls, model_short_reg, model_short_cls = self.__get_model(min_date)
 
         # Get features for this month
         feature_filter = (
@@ -245,20 +257,26 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
             futures_data = pd.DataFrame(index=spot_data.index, columns=[col for col in spot_data.columns])
 
         # Get LightGBM model features from each model
-        features_long = model_long.feature_names_in_
-        if model_short is not None:
-            features_short = model_short.feature_names_in_
+        features_long = model_long_reg.feature_names_in_
+        if model_short_reg is not None:
+            features_short = model_short_reg.feature_names_in_
 
         # Predictions on this month
-        y_pred_long = model_long.predict(spot_data[features_long])
-        if model_short is None:
+        y_pred_proba_long = model_long_cls.predict_proba(spot_data[features_long])[:, 1]
+        y_pred_long = model_long_reg.predict(spot_data[features_long])
+        expected_value_long = y_pred_proba_long * y_pred_long
+        if model_short_reg is None:
+            y_pred_proba_short = np.zeros_like(len(futures_data))
             y_pred_short = np.zeros_like(len(futures_data))
+            expected_value_short = np.zeros_like(len(futures_data))
         else:
-            y_pred_short = model_short.predict(futures_data[features_short])
+            y_pred_proba_short = model_short_cls.predict_proba(futures_data[features_short])[:, 1]
+            y_pred_short = model_short_reg.predict(futures_data[features_short])
+            expected_value_short = y_pred_proba_short * y_pred_short
         
         # Add the predictions to the DataFrame
-        spot_data['expected_value_long'] = y_pred_long
-        futures_data['expected_value_short'] = y_pred_short
+        spot_data['expected_value_long'] = expected_value_long
+        futures_data['expected_value_short'] = expected_value_short
 
         # Pivot futures model's predictions for ranking the models' signals by date
         long_model_probs = (
@@ -285,14 +303,12 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
                 top_symbols = long_universe.nlargest(10).index.to_list()
             elif regime < 0:
                 if not is_futures_available:
-                    bottom_symbols = long_universe.nsmallest(10).index.to_list()
-                    # top_symbols = long_universe.nlargest(5).index.to_list()
-                    top_symbols = []
+                    bottom_symbols = long_universe.nsmallest(5).index.to_list()
+                    top_symbols = long_universe.nlargest(5).index.to_list()
                 else:
                     short_universe = short_model_probs.loc[date, 'expected_value_short']
-                    bottom_symbols = short_universe.nsmallest(10).index.to_list()
-                    top_symbols = [] 
-                    # top_symbols = long_universe.nlargest(5).index.to_list()
+                    bottom_symbols = short_universe.nsmallest(5).index.to_list()
+                    top_symbols = long_universe.nlargest(5).index.to_list()
 
             long_entry_symbols.loc[date] = list(top_symbols)
             short_entry_symbols.loc[date] = list(bottom_symbols)
