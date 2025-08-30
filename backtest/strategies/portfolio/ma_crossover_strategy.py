@@ -16,7 +16,7 @@ class MACrossoverStrategy(BasePortfolioStrategy):
     optimize_dict = {
         # Size of slow moving average window
         'slow_window': vbt.Param(np.array([
-            60, 90, 120, 180
+            60, 90, 120
         ])),
 
         # Size of fast moving average window
@@ -31,22 +31,12 @@ class MACrossoverStrategy(BasePortfolioStrategy):
         'slippage': 0.0025,  # 0.25% slippage each way
         'sl_stop': 'std',
         'tp_stop': 'std',
-        'size': 0.05,
+        'size': 0.1,
         'size_type': "valuepercent",  # for example, 2 if 'size' is 'Fixed Percent' and 0 otherwise,
     }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-
-        ml_features = QUERY(
-            """
-            SELECT * FROM market_data.ml_features
-            """
-        )
-        ml_features['symbol_id'] = ml_features['symbol_id'].astype('category')
-        ml_features['time_period_end'] = pd.to_datetime(ml_features['time_period_end'], unit='ns')
-        ml_features = ml_features.set_index('time_period_end').sort_index()
-        self.ml_features = ml_features
 
     def calculate_size(self, volatilities, betas):
         """
@@ -80,8 +70,8 @@ class MACrossoverStrategy(BasePortfolioStrategy):
         universe.index = pd.to_datetime(universe.index)
 
         # Exponentially weighted moving average of close prices (slow and fast)
-        slow_ewma = universe.close.ewm(span=slow_window, min_periods=60).mean()
-        fast_ewma = universe.close.ewm(span=fast_window, min_periods=7).mean()
+        slow_ewma = universe.open.ewm(span=slow_window, min_periods=30).mean()
+        fast_ewma = universe.open.ewm(span=fast_window, min_periods=7).mean()
 
         # Long entries
         long_entries = (
@@ -95,25 +85,6 @@ class MACrossoverStrategy(BasePortfolioStrategy):
             (fast_ewma.shift(1) > slow_ewma.shift(1))
         )
 
-        # Pivot volatilities and betas for calculating position sizes
-        volatilities = (
-            self.ml_features
-            .reset_index()[['time_period_end', 'symbol_id', 'std_returns_1_180']]
-            .pivot_table(index='time_period_end', columns='symbol_id', values='std_returns_1_180', dropna=False)
-        ).sort_index()
-
-        betas = (
-            self.ml_features
-            .reset_index()[['time_period_end', 'symbol_id', 'beta_1d_180d']]
-            .pivot_table(index='time_period_end', columns='symbol_id', values='beta_1d_180d', dropna=False)
-        ).sort_index()
-
-        # Position sizes
-        size = self.calculate_size(volatilities, betas)
-
-        # Ensure that the signals are aligned with the universe
-        size = size[size.index.isin(universe.index)]
-
         default_size = self.backtest_params['size']
         temp_sl_stop = self.backtest_params['sl_stop']
         temp_tp_stop = self.backtest_params['tp_stop']
@@ -124,34 +95,18 @@ class MACrossoverStrategy(BasePortfolioStrategy):
         del self.backtest_params['tp_stop']
         del self.backtest_params['size']
 
-        # Intersection of columns between the universe and the signals
-        common_cols = universe.close.columns.intersection(size.columns)
-        open = universe.open[common_cols]
-        high = universe.high[common_cols]
-        low = universe.low[common_cols]
-        close = universe.close[common_cols]
-        long_entries = long_entries[common_cols]
-        short_entries = short_entries[common_cols]
-        size = size[common_cols]
+        open = universe.open
+        high = universe.high
+        low = universe.low
+        close = universe.close
 
         # Make indices all the same datatype
-        open.index = pd.to_datetime(open.index)
-        high.index = pd.to_datetime(high.index)
-        low.index = pd.to_datetime(low.index)
-        close.index = pd.to_datetime(close.index)
+        open.index = open.index.astype('datetime64[ns]')
+        high.index = high.index.astype('datetime64[ns]')
+        low.index = low.index.astype('datetime64[ns]')
+        close.index = close.index.astype('datetime64[ns]')
         long_entries.index = long_entries.index.astype('datetime64[ns]')
         short_entries.index = short_entries.index.astype('datetime64[ns]')
-        size.index = size.index.astype('datetime64[ns]')
-
-        # All signals are after start_date
-        start_date = self.start_date
-        long_entries = long_entries[long_entries.index >= start_date]
-        short_entries = short_entries[short_entries.index >= start_date]
-        open = open[open.index >= start_date]
-        high = high[high.index >= start_date]
-        low = low[low.index >= start_date]
-        close = close[close.index >= start_date]
-        size = size[size.index >= start_date]
 
         # Simulate Portfolio
         portfolio = vbt.Portfolio.from_signals(
@@ -161,6 +116,7 @@ class MACrossoverStrategy(BasePortfolioStrategy):
             high=high,
             low=low,
             close=close,
+            price = -np.inf,  
             size=0.05,
             cash_sharing=True,
             accumulate=False,

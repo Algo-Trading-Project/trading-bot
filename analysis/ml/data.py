@@ -82,7 +82,7 @@ def construct_dataset_for_ml(resample_period):
                 data_spot.loc[:,col] = data_spot.loc[:,col].fillna(mode_spot)
 
             # Downsample to resample_period
-            data_spot = data_spot.resample(resample_period, label = 'right', closed = 'left').agg({
+            data_spot = data_spot.resample(resample_period, label = 'left', closed = 'left').agg({
                 'asset_id_base': 'last',
                 'asset_id_quote': 'last',
                 'exchange_id': 'last',
@@ -130,7 +130,7 @@ def construct_dataset_for_ml(resample_period):
                 data_futures.loc[:,col] = data_futures.loc[:,col].fillna(mode_futures)
 
             # Downsample to resample_period
-            data_futures = data_futures.resample(resample_period, label = 'right', closed = 'left').agg({
+            data_futures = data_futures.resample(resample_period, label = 'left', closed = 'left').agg({
                 'asset_id_base': 'last',
                 'asset_id_quote': 'last',
                 'exchange_id': 'last',

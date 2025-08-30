@@ -1,9 +1,6 @@
-from backtest.strategies.portfolio.portfolio_ml_strategy import PortfolioMLStrategy
-from backtest.strategies.portfolio.ma_crossover_strategy import MACrossoverStrategy
-from backtest.strategies.portfolio.futures_portfolio_ml_strategy import FuturesPortfolioMLStrategy
-from backtest.strategies.portfolio.portfolio_ml_strategy_1d import PortfolioMLStrategy1D
 from backtest.strategies.portfolio.portfolio_ml_strategy_cls import PortfolioMLStrategyCls
-# Backtesters for single token and portfolio strategies
+from backtest.strategies.portfolio.ma_crossover_strategy import MACrossoverStrategy
+from backtest.strategies.portfolio.rule_based_strategy import RuleBasedStrategy
 from backtest.backtester import BackTester
 import time
 
@@ -14,10 +11,10 @@ if __name__ == '__main__':
     # a performance metric to optimize on
     b = BackTester(
         strategies = [
-            PortfolioMLStrategy(optimization_metric = 'Sortino Ratio'),
+            PortfolioMLStrategyCls(optimization_metric = 'Sortino Ratio'),
         ],
         resample_period = '1D',
-        start_date = '2018-12-01',
+        start_date = '2019-01-01',
         end_date = '2025-06-01',
     )
 

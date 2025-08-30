@@ -46,6 +46,7 @@ class RollingZScoreScaler(BaseEstimator, TransformerMixin):
             or col in z_cols \
             or col in ('hour', 'day_of_week', 'day_of_month', 'month', 'year', 'is_holiday') \
             or X[col].dtype in ['object', 'category'] \
+            or 'forward_returns' in col \
             or col in trade_returns_cols:
                 continue
 
@@ -433,8 +434,12 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
             X[f'futures_returns_{window_size}'] = X['close_futures'].pct_change(window_size).clip(-1, clip_upper_bound)
             
             # Forward returns for future prediction evaluation
-            X[f'forward_returns_{window_size}'] = X[f'spot_returns_{window_size}'].shift(-window_size)
-            X[f'futures_forward_returns_{window_size}'] = X[f'futures_returns_{window_size}'].shift(-window_size) 
+            # Forward returns are calculated as open-to-open returns starting from the next time period
+            next_spot = X['open_spot'].shift(-1)
+            next_futures = X['open_futures'].shift(-1)
+            X[f'forward_returns_{window_size}'] = next_spot.pct_change(window_size).shift(-window_size).clip(-1, clip_upper_bound)
+            X[f'futures_forward_returns_{window_size}'] = next_futures.pct_change(window_size).shift(-window_size).clip(-1, clip_upper_bound)
+            print(f'Calculated forward returns for window size {window_size}')
 
             for lookback_window in self.lookback_windows:
                 # Spot

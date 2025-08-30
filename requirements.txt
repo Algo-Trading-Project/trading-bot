@@ -136,7 +136,7 @@ nest-asyncio==1.6.0
 networkx==3.4.2
 notebook==7.2.0
 notebook_shim==0.2.4
-numba==0.60.0
+numba
 numexpr==2.10.2
 numpy==1.26.4
 openai==1.58.1
@@ -146,7 +146,7 @@ optuna==4.1.0
 osqp==0.6.7.post3
 overrides==7.7.0
 packaging==24.0
-pandas==2.2.2
+pandas
 pandas-ta==0.3.14b0
 pandocfilters==1.5.1
 parso==0.8.4

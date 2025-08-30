@@ -46,28 +46,28 @@ class BackTester:
         print('Initializing BackTester...')
         print()
 
-        # Load the price data for the universe
+        # Load the price dat a for the universe
         cols = ['open_spot', 'high_spot', 'low_spot', 'close_spot', 'open_futures', 'high_futures', 'low_futures', 'close_futures', 'time_period_end', 'asset_id_base', 'asset_id_quote', 'exchange_id', 'symbol_id']
-        price_data = pd.read_parquet('/Users/louisspencer/Desktop/Trading-Bot/data/ml_features.parquet')[cols]
-        price_data.columns = ['open', 'high', 'low', 'close', 'open_futures', 'high_futures', 'low_futures', 'close_futures', 'time_period_open', 'asset_id_base', 'asset_id_quote', 'exchange_id', 'symbol_id']
-        price_data['time_period_open'] = pd.to_datetime(price_data['time_period_open']) - pd.Timedelta(days=1) 
+        price_data = pd.read_parquet('/Users/louisspencer/Desktop/Trading-Bot/data/ml_features.parquet', columns = cols)
+        price_data.columns = ['open', 'high', 'low', 'close', 'open_futures', 'high_futures', 'low_futures', 'close_futures', 'time_period_end', 'asset_id_base', 'asset_id_quote', 'exchange_id', 'symbol_id']
         price_data = price_data[(price_data['asset_id_quote'] == 'USDT') & ~(price_data['asset_id_base'].str.contains('USD'))]
-        price_data = price_data.sort_values(by = ['symbol_id', 'time_period_open'])
-        # first_data_point_mask = price_data['symbol_id'].ne(price_data['symbol_id'].shift())
-        # price_data = price_data[~first_data_point_mask]
+        price_data = price_data.sort_values(by = ['symbol_id', 'time_period_end'])
+
+        # Remove first row of each symbol_id group to avoid unrealistically low open prices
+        # on the first row due to being recently listed
+        price_data = price_data.groupby('symbol_id').apply(lambda x: x.iloc[1:]).reset_index(drop = True)
 
         # Pivot the data to get the asset universe close, high, and low prices
         self.universe = (
             price_data
             .pivot_table(
-                index = 'time_period_open',
+                index = 'time_period_end',
                 columns = 'symbol_id',
                 values = ['open', 'high', 'low', 'close', 'open_futures', 'high_futures', 'low_futures', 'close_futures'],
                 dropna = False
             )
         )
         self.universe = self.universe.sort_index()
-
         self.strategies = strategies
         self.resample_period = resample_period
         self.use_dollar_bars = None
@@ -222,8 +222,14 @@ class BackTester:
                 WHERE 
                     strat = '{strat_name}'
                 """
+                # Register the trades DataFrame as a table in DuckDB
+                df['strat'] = strat_name
+                self.conn.register('trades', df)
                 insert_query = f"""
-                INSERT INTO backtest.{table} (strat, entry_date, exit_date, symbol_id, size, entry_fees, exit_fees, pnl, pnl_pct, is_long) VALUES {insert_str}
+                INSERT INTO backtest.{table} (strat, entry_date, exit_date, symbol_id, size, entry_fees, exit_fees, pnl, pnl_pct, is_long)
+                SELECT 
+                    strat, entry_date, exit_date, symbol_id, size, entry_fees, exit_fees, pnl, pnl_pct, is_long
+                FROM trades
                 """
 
             elif issubclass(type(strat), BaseStrategy):
@@ -345,7 +351,7 @@ class BackTester:
             print('Progress: {} / {} days...'.format(int(start / day_normalizer), int(len(backtest_data) / day_normalizer)))
             print()
 
-            if issubclass(type(strat), BasePortfolioStrategy):
+            if 'MLStrategy' in strat.indicator_factory_dict['class_name']:
                 is_start_i = start
                 # Get date associated with is_start_i
                 is_start_date = backtest_data.index[is_start_i]
@@ -487,8 +493,8 @@ class BackTester:
         quote: str = None,
         exchange: str = None
     ):
-        oos_trades_dict = oos_trades.to_dict(orient = 'records')
-        insert_str_backtest_trades = ''
+        # oos_trades_dict = oos_trades.to_dict(orient = 'records')
+        # insert_str_backtest_trades = ''
         strategy = strat.indicator_factory_dict['class_name']
 
         if issubclass(type(strat), BasePortfolioStrategy):
@@ -498,20 +504,20 @@ class BackTester:
         else:
             raise ValueError(f'Invalid strategy class: {strat}')
 
-        for trade in oos_trades_dict:
-            token_traded = trade['symbol_id']
-            entry_date = trade['entry_date']
-            exit_date = trade['exit_date']
-            size = trade['size']
-            entry_fees = trade['entry_fees']
-            exit_fees = trade['exit_fees']
-            pnl = trade['pnl']
-            pnl_pct = trade['pnl_pct']
-            is_long = trade['is_long']
+        # for trade in oos_trades_dict:
+        #     token_traded = trade['symbol_id']
+        #     entry_date = trade['entry_date']
+        #     exit_date = trade['exit_date']
+        #     size = trade['size']
+        #     entry_fees = trade['entry_fees']
+        #     exit_fees = trade['exit_fees']
+        #     pnl = trade['pnl']
+        #     pnl_pct = trade['pnl_pct']
+        #     is_long = trade['is_long']
 
-            insert_str_backtest_trades += f"""('{strategy}', '{entry_date}', '{exit_date}', '{token_traded}', {size}, {entry_fees}, {exit_fees}, {pnl}, {pnl_pct}, {is_long}), """
+        #     insert_str_backtest_trades += f"""('{strategy}', '{entry_date}', '{exit_date}', '{token_traded}', {size}, {entry_fees}, {exit_fees}, {pnl}, {pnl_pct}, {is_long}), """
 
-        insert_str_backtest_trades = insert_str_backtest_trades[:-2]
+        # insert_str_backtest_trades = insert_str_backtest_trades[:-2]
         backtest_equity_curve_df = []
         
         for i in range(len(oos_equity_curves)):
@@ -561,7 +567,8 @@ class BackTester:
                 symbol_id = symbol_id,
                 strat = strat,
                 table = 'backtest_trades',
-                insert_str = insert_str_backtest_trades
+                insert_str = '',
+                df = oos_trades
             )
             
         self.__upsert_into_table(
@@ -586,8 +593,8 @@ class BackTester:
                     quote = quote,
                     exchange = exchange,
                     strat = strat,
-                    in_sample_size = 30,
-                    out_of_sample_size = 30
+                    in_sample_size = 180,
+                    out_of_sample_size = 180
                 )
 
                 # Reset starting equity for next token
@@ -665,3 +672,9 @@ class BackTester:
 
         for strat in self.strategies:
             self.__backtest_strategy(strat, tokens)
+            # strat.long_entries = pd.concat(strat.long_entries)
+            # strat.long_entries.to_csv(f'/Users/louisspencer/Desktop/Trading-Bot/data/{strat.indicator_factory_dict["class_name"]}_long_entries.csv', index = False)
+            # strat.short_entries = pd.concat(strat.short_entries)
+            # strat.short_entries.to\_csv(f'/Users/louisspencer/Desktop/Trading-Bot/data/{strat.indicator_factory_dict["class_name"]}_short_entries.csv', index = False)
+
+        self.conn.close()
