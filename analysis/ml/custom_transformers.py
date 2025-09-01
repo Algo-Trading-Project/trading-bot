@@ -435,11 +435,13 @@ class ReturnsFeatures(BaseEstimator, TransformerMixin):
             
             # Forward returns for future prediction evaluation
             # Forward returns are calculated as open-to-open returns starting from the next time period
-            next_spot = X['open_spot'].shift(-1)
-            next_futures = X['open_futures'].shift(-1)
-            X[f'forward_returns_{window_size}'] = next_spot.pct_change(window_size).shift(-window_size).clip(-1, clip_upper_bound)
-            X[f'futures_forward_returns_{window_size}'] = next_futures.pct_change(window_size).shift(-window_size).clip(-1, clip_upper_bound)
-            print(f'Calculated forward returns for window size {window_size}')
+            # next_spot = X['open_spot'].shift(-1)
+            # next_futures = X['open_futures'].shift(-1)
+            # X[f'forward_returns_{window_size}'] = next_spot.pct_change(window_size).shift(-window_size).clip(-1, clip_upper_bound)
+            # X[f'futures_forward_returns_{window_size}'] = next_futures.pct_change(window_size).shift(-window_size).clip(-1, clip_upper_bound)
+            # print(f'Calculated forward returns for window size {window_size}')
+
+            X[f'forward_returns_{window_size}'] = X['close_spot'].pct_change(window_size).shift(-window_size).clip(-1, clip_upper_bound)
 
             for lookback_window in self.lookback_windows:
                 # Spot
@@ -3175,4 +3177,3 @@ class SpotFuturesInteractionFeatures(BaseEstimator, TransformerMixin):
             X.rename({col: new_col_name}, inplace=True, axis=1)
 
         return X
-

@@ -109,38 +109,20 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
             (self.ml_features.index >= min_date) &
             (self.ml_features.index <= max_date) &
             (~self.ml_features['close_spot'].isna()) &
-            (~self.ml_features['asset_id_base'].str.contains('USD'))
-        )
-        feature_filter_futures = (
-            (self.ml_features.index >= min_date) &
-            (self.ml_features.index <= max_date) &
-            (~self.ml_features['close_futures'].isna()) &
-            (~self.ml_features['asset_id_base'].str.contains('USD')) 
+            (~self.ml_features['asset_id_base'].str.contains('USD')) &
+            (self.ml_features['dollar_volume_spot'] >= 5_000_000)
         )
 
         spot_data = self.ml_features.loc[feature_filter]
-        futures_data = self.ml_features.loc[feature_filter_futures]
-
-        # If there are no futures features for this month, create an empty DataFrame with the same index as spot_data
-        # and columns suffixed with '_futures'
-        if futures_data.empty:
-            futures_data = spot_data.copy()
 
         # Get LightGBM model features from each model
         features_long = model_long.feature_names_in_
-        if model_short is not None:
-            features_short = model_short.feature_names_in_
 
         # Predictions on this month
         y_pred_long = model_long.predict(spot_data[features_long])
-        if model_short is None:
-            y_pred_short = np.zeros_like(len(futures_data))
-        else:
-            y_pred_short = model_short.predict(futures_data[features_short])
         
         # Add the predictions to the DataFrame
         spot_data['expected_value_long'] = y_pred_long
-        futures_data['expected_value_short'] = y_pred_short
 
         # Pivot futures model's predictions for ranking the models' signals by date
         long_model_probs = (
@@ -149,35 +131,24 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
             .pivot_table(index='time_period_end', columns='symbol_id', values=['expected_value_long', 'rolling_ema_30_cs_spot_returns_mean_7', 'rolling_ema_30_cs_futures_returns_mean_7'], dropna=False)
         )
         long_model_probs = long_model_probs[long_model_probs.index.isin(universe.index)]
-        short_model_probs = (
-            futures_data
-            .reset_index()[['time_period_end', 'symbol_id', 'expected_value_short', 'rolling_ema_30_cs_spot_returns_mean_7']]
-            .pivot_table(index='time_period_end', columns='symbol_id', values=['expected_value_short', 'rolling_ema_30_cs_spot_returns_mean_7'], dropna=False)
-        )
-        short_model_probs = short_model_probs[short_model_probs.index.isin(universe.index)]
 
-        short_entry_symbols = pd.Series(index = short_model_probs.index, dtype=object)
+        short_entry_symbols = pd.Series(index = long_model_probs.index, dtype=object)
         long_entry_symbols = pd.Series(index = long_model_probs.index, dtype=object)
+
         for date in long_model_probs.index:
             long_universe = long_model_probs.loc[date, 'expected_value_long']
             regime = long_model_probs.loc[date, 'rolling_ema_30_cs_spot_returns_mean_7'].mean()
-            is_futures_available = not np.isnan(long_model_probs.loc[date, 'rolling_ema_30_cs_futures_returns_mean_7'].mean())             
             if regime > 0:
                 bottom_symbols = []
+                top_symbols = long_universe.nlargest(10).index.to_list()
+            else:
+                bottom_symbols = long_universe.nsmallest(5).index.to_list()
                 top_symbols = long_universe.nlargest(5).index.to_list()
-            elif regime < 0:
-                if not is_futures_available:
-                    bottom_symbols = []
-                    top_symbols = long_universe.nlargest(5).index.to_list()
-                else:
-                    short_universe = short_model_probs.loc[date, 'expected_value_short']
-                    bottom_symbols = short_universe.nsmallest(5).index.to_list()
-                    top_symbols = long_universe.nlargest(5).index.to_list()
 
             long_entry_symbols.loc[date] = list(top_symbols)
             short_entry_symbols.loc[date] = list(bottom_symbols)
 
-        short_entries = short_model_probs['expected_value_short'].copy() * 0
+        short_entries = long_model_probs['expected_value_long'].copy() * 0
         short_entries = short_entries.astype(bool)
         long_entries = long_model_probs['expected_value_long'].copy() * 0
         long_entries = long_entries.astype(bool)
@@ -185,104 +156,39 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
         for date in long_entry_symbols.index:
             long_symbols = long_entry_symbols.loc[date]
             long_entries.loc[date, long_symbols] = True
-            try:
-                short_symbols = short_entry_symbols.loc[date]
-            except:
-                short_symbols = []
+
+            short_symbols = short_entry_symbols.loc[date]
             short_entries.loc[date, short_symbols] = True
-
-        empty_long = pd.DataFrame(
-            np.zeros((long_model_probs['expected_value_long'].shape[0], long_model_probs['expected_value_long'].shape[1])),
-            index=long_model_probs.index,
-            columns=[col for col in long_model_probs['expected_value_long'].columns]
-        )
-        empty_short = pd.DataFrame(
-            np.zeros((short_model_probs['expected_value_short'].shape[0], short_model_probs['expected_value_short'].shape[1])),
-            index=short_model_probs.index,
-            columns=[col for col in short_model_probs['expected_value_short'].columns]
-        )
-
-        # Merge the long and short entries w/ the empty DataFrames 
-        # to have a consistent universe structure for VBT
-        long_entries = pd.merge(
-            long_entries,
-            empty_short,
-            left_index=True,
-            right_index=True,
-            how='outer',
-            suffixes=('', '_futures')
-        ).fillna(False)
-        long_entries = long_entries[long_entries.index.isin(universe.index)]
-        short_entries = pd.merge(
-            empty_long,
-            short_entries,
-            left_index=True,
-            right_index=True,
-            how='outer',
-            suffixes=('', '_futures')
-        ).fillna(False)
-        short_entries = short_entries[short_entries.index.isin(universe.index)]
 
         # Trade signals on open of next candle, so shift by 1
         long_entries = long_entries.shift(1).fillna(False)
         short_entries = short_entries.shift(1).fillna(False)
 
         # Intersection of columns between the universe and the signals
-        open_spot = spot_data.pivot_table(
+        open = spot_data.pivot_table(
             index='time_period_end',
             columns='symbol_id',
             values='open_spot',
             dropna=False
-        )
-        open_futures = futures_data.pivot_table(
-            index='time_period_end',
-            columns='symbol_id',
-            values='open_futures',
-            dropna=False
-        )
-        open_futures.columns = [f'{col}_futures' for col in open_futures.columns]
-
-        high_spot = spot_data.pivot_table(
+        ).astype('float32')
+        high = spot_data.pivot_table(
             index='time_period_end',
             columns='symbol_id',
             values='high_spot',
             dropna=False
-        )
-        high_futures = futures_data.pivot_table(
-            index='time_period_end',
-            columns='symbol_id',
-            values='high_futures',
-            dropna=False
-        )
-        high_futures.columns = [f'{col}_futures' for col in high_futures.columns]
-
-        low_spot = spot_data.pivot_table(
+        ).astype('float32')
+        low = spot_data.pivot_table(
             index='time_period_end',
             columns='symbol_id',
             values='low_spot',
             dropna=False
-        )
-        low_futures = futures_data.pivot_table(
-            index='time_period_end',
-            columns='symbol_id',
-            values='low_futures',
-            dropna=False
-        )
-        low_futures.columns = [f'{col}_futures' for col in low_futures.columns]
-        
-        close_spot = spot_data.pivot_table(
+        ).astype('float32')     
+        close = spot_data.pivot_table(
             index='time_period_end',
             columns='symbol_id',
             values='close_spot',
             dropna=False
-        )
-        close_futures = futures_data.pivot_table(
-            index='time_period_end',
-            columns='symbol_id',
-            values='close_futures',
-            dropna=False
-        )
-        close_futures.columns = [f'{col}_futures' for col in close_futures.columns]
+        ).astype('float32')
 
         # Save these parameters temporarily
         temp_sl_stop = self.backtest_params['sl_stop']
@@ -293,35 +199,6 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
         del self.backtest_params['sl_stop']
         del self.backtest_params['tp_stop']
         del self.backtest_params['size']
-
-        open = pd.merge(
-            open_spot,
-            open_futures,
-            left_index=True,
-            right_index=True,
-            how='outer',
-        ).astype('float32')
-        high = pd.merge(
-            high_spot,
-            high_futures,
-            left_index=True,
-            right_index=True,
-            how='outer',
-        ).astype('float32')
-        low = pd.merge(
-            low_spot,
-            low_futures,
-            left_index=True,
-            right_index=True,
-            how='outer',
-        ).astype('float32')
-        close = pd.merge(
-            close_spot,
-            close_futures,
-            left_index=True,
-            right_index=True,
-            how='outer',
-        ).astype('float32')
         
         long_entries.index = long_entries.index.astype('datetime64[ns]')
         short_entries.index = short_entries.index.astype('datetime64[ns]')
@@ -332,7 +209,7 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
 
         long_entries = long_entries.astype('bool')
         short_entries = short_entries.astype('bool')
-
+        
         # Simulate Portfolio
         portfolio = vbt.Portfolio.from_signals(
             long_entries=long_entries,
@@ -342,7 +219,7 @@ class PortfolioMLStrategy(BasePortfolioStrategy):
             low=low,
             close=close,
             price = -np.inf, # Trade at open price
-            size=0.05,
+            size=0.1,
             sl_stop=1,
             td_stop=pd.Timedelta(days=7),
             cash_sharing=True,
